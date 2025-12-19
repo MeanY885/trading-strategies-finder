@@ -1,0 +1,1390 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BTCGBP ML Optimizer</title>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-primary: #0a0a0f;
+            --bg-secondary: #12121a;
+            --bg-card: #1a1a24;
+            --bg-hover: #22222e;
+            --text-primary: #e4e4e7;
+            --text-secondary: #a1a1aa;
+            --text-muted: #71717a;
+            --accent-primary: #8b5cf6;
+            --accent-secondary: #a78bfa;
+            --accent-glow: rgba(139, 92, 246, 0.3);
+            --success: #22c55e;
+            --success-bg: rgba(34, 197, 94, 0.1);
+            --danger: #ef4444;
+            --danger-bg: rgba(239, 68, 68, 0.1);
+            --warning: #f59e0b;
+            --border: #27272a;
+            --border-subtle: #1f1f23;
+        }
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Space Grotesk', sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            line-height: 1.6;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+        
+        /* Header */
+        header {
+            text-align: center;
+            padding: 3rem 0;
+            border-bottom: 1px solid var(--border-subtle);
+            margin-bottom: 2rem;
+        }
+        
+        header h1 {
+            font-size: 2.5rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 0.5rem;
+        }
+        
+        header p {
+            color: var(--text-secondary);
+            font-size: 1.1rem;
+        }
+        
+        /* Grid Layout */
+        .grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1.5rem;
+        }
+        
+        @media (max-width: 1024px) {
+            .grid {
+                grid-template-columns: 1fr;
+            }
+        }
+        
+        /* Cards */
+        .card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 1.5rem;
+        }
+        
+        .card-header {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            margin-bottom: 1.5rem;
+        }
+        
+        .card-header .icon {
+            width: 40px;
+            height: 40px;
+            background: var(--accent-glow);
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.25rem;
+        }
+        
+        .card-header h2 {
+            font-size: 1.25rem;
+            font-weight: 600;
+        }
+        
+        /* Buttons */
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            padding: 0.75rem 1.5rem;
+            border: none;
+            border-radius: 8px;
+            font-family: inherit;
+            font-size: 0.95rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .btn-primary {
+            background: linear-gradient(135deg, var(--accent-primary), #7c3aed);
+            color: white;
+        }
+        
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 20px var(--accent-glow);
+        }
+        
+        .btn-primary:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        .btn-secondary {
+            background: var(--bg-hover);
+            color: var(--text-primary);
+            border: 1px solid var(--border);
+        }
+        
+        .btn-secondary:hover {
+            background: var(--border);
+        }
+        
+        .btn-success {
+            background: var(--success);
+            color: white;
+        }
+        
+        /* Status Badge */
+        .status-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.5rem 1rem;
+            border-radius: 20px;
+            font-size: 0.85rem;
+            font-weight: 500;
+        }
+        
+        .status-badge.success {
+            background: var(--success-bg);
+            color: var(--success);
+        }
+        
+        .status-badge.warning {
+            background: rgba(245, 158, 11, 0.1);
+            color: var(--warning);
+        }
+        
+        .status-badge.danger {
+            background: var(--danger-bg);
+            color: var(--danger);
+        }
+        
+        .status-badge.neutral {
+            background: var(--bg-hover);
+            color: var(--text-secondary);
+        }
+        
+        /* Progress Bar */
+        .progress-container {
+            margin: 1.5rem 0;
+        }
+        
+        .progress-bar {
+            height: 8px;
+            background: var(--bg-secondary);
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, var(--accent-primary), var(--accent-secondary));
+            border-radius: 4px;
+            transition: width 0.3s ease;
+        }
+        
+        .progress-text {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 0.5rem;
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+        }
+        
+        /* Stats Grid */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            gap: 1rem;
+            margin-top: 1rem;
+        }
+        
+        .stat-item {
+            background: var(--bg-secondary);
+            padding: 1rem;
+            border-radius: 8px;
+            text-align: center;
+        }
+        
+        .stat-value {
+            font-size: 1.5rem;
+            font-weight: 600;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        
+        .stat-value.positive { color: var(--success); }
+        .stat-value.negative { color: var(--danger); }
+        
+        .stat-label {
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            margin-top: 0.25rem;
+        }
+        
+        /* Input */
+        .input-group {
+            margin-bottom: 1rem;
+        }
+        
+        .input-group label {
+            display: block;
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            margin-bottom: 0.5rem;
+        }
+        
+        .input-group input, .input-group select {
+            width: 100%;
+            padding: 0.75rem;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: var(--text-primary);
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.9rem;
+        }
+        
+        .input-group input:focus, .input-group select:focus {
+            outline: none;
+            border-color: var(--accent-primary);
+            box-shadow: 0 0 0 3px var(--accent-glow);
+        }
+        
+        /* Code Block */
+        .code-block {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1rem;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.8rem;
+            line-height: 1.5;
+            overflow-x: auto;
+            max-height: 400px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            color: var(--text-secondary);
+        }
+        
+        /* Logs */
+        .log-container {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1rem;
+            max-height: 200px;
+            overflow-y: auto;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.8rem;
+        }
+        
+        .log-entry {
+            padding: 0.25rem 0;
+            border-bottom: 1px solid var(--border-subtle);
+        }
+        
+        .log-entry:last-child {
+            border-bottom: none;
+        }
+        
+        .log-time {
+            color: var(--text-muted);
+            margin-right: 0.5rem;
+        }
+        
+        /* Full width card */
+        .full-width {
+            grid-column: 1 / -1;
+        }
+        
+        /* Actions row */
+        .actions {
+            display: flex;
+            gap: 1rem;
+            flex-wrap: wrap;
+        }
+        
+        /* Spinner */
+        .spinner {
+            width: 20px;
+            height: 20px;
+            border: 2px solid var(--bg-hover);
+            border-top-color: var(--accent-primary);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        
+        /* Pulsing activity indicator */
+        .pulse-dot {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            background: var(--success);
+            border-radius: 50%;
+            animation: pulse-dot 1.5s ease-in-out infinite;
+        }
+
+        @keyframes pulse-dot {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.5; transform: scale(0.8); }
+        }
+
+        .pulse {
+            animation: pulse 1.5s ease-in-out infinite;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
+        /* Active optimization card glow */
+        .card.active-optimization {
+            border-color: var(--accent-primary);
+            box-shadow: 0 0 20px var(--accent-glow);
+        }
+        
+        /* Parameters Table */
+        .params-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 1rem;
+        }
+        
+        .params-table th, .params-table td {
+            padding: 0.75rem;
+            text-align: left;
+            border-bottom: 1px solid var(--border-subtle);
+        }
+        
+        .params-table th {
+            color: var(--text-secondary);
+            font-weight: 500;
+            font-size: 0.85rem;
+        }
+        
+        .params-table td {
+            font-family: 'JetBrains Mono', monospace;
+        }
+        
+        /* Info box */
+        .info-box {
+            background: rgba(139, 92, 246, 0.1);
+            border: 1px solid rgba(139, 92, 246, 0.3);
+            border-radius: 8px;
+            padding: 1rem;
+            margin-bottom: 1rem;
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+        }
+        
+        .info-box strong {
+            color: var(--accent-secondary);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Trading Strategy Optimizer</h1>
+            <p>Find profitable strategies automatically. Get TradingView-ready code.</p>
+        </header>
+        
+        <div class="grid">
+            <!-- Data Section -->
+            <div class="card">
+                <div class="card-header">
+                    <div class="icon">📊</div>
+                    <h2>Data</h2>
+                </div>
+                
+                <div id="dataStatus">
+                    <span class="status-badge neutral">No data loaded</span>
+                </div>
+                
+                <div class="input-group" style="margin-top: 1rem;">
+                    <label>Data Source</label>
+                    <select id="sourceSelect" onchange="updatePairOptions()">
+                        <option value="yfinance" selected>Yahoo Finance</option>
+                        <option value="binance">Binance</option>
+                    </select>
+                </div>
+                
+                <div class="input-group">
+                    <label>Trading Pair</label>
+                    <select id="pairSelect">
+                        <option value="BTC-GBP" selected>BTC/GBP</option>
+                        <option value="ETH-GBP">ETH/GBP</option>
+                        <option value="BTC-EUR">BTC/EUR</option>
+                        <option value="ETH-EUR">ETH/EUR</option>
+                        <option value="BTC-USD">BTC/USD</option>
+                    </select>
+                </div>
+                
+                <div class="input-group">
+                    <label>Historical Period</label>
+                    <select id="monthsSelect">
+                        <option value="0.03">1 day</option>
+                        <option value="0.25">1 week</option>
+                        <option value="1">1 month</option>
+                        <option value="3" selected>3 months</option>
+                        <option value="6">6 months</option>
+                        <option value="12">12 months</option>
+                        <option value="24">24 months</option>
+                    </select>
+                </div>
+                
+                <div class="input-group">
+                    <label>Timeframe</label>
+                    <select id="intervalSelect">
+                        <option value="15" selected>15 minutes</option>
+                        <option value="30">30 minutes</option>
+                        <option value="60">1 hour</option>
+                        <option value="240">4 hours</option>
+                    </select>
+                </div>
+                
+                
+                <div class="actions">
+                    <button class="btn btn-primary" id="fetchDataBtn" onclick="fetchData()">
+                        Fetch Data
+                    </button>
+                    <button class="btn btn-secondary" onclick="loadExistingData()">
+                        Load Existing
+                    </button>
+                </div>
+                
+                <!-- Data Loading Progress -->
+                <div id="dataLoadingProgress" style="display: none; margin-top: 1rem;">
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="dataProgressFill" style="width: 0%; transition: width 0.5s ease;"></div>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; margin-top: 0.5rem;">
+                        <span id="dataProgressMessage" style="color: var(--text-secondary); font-size: 0.9rem;">Loading...</span>
+                        <span id="dataProgressPercent" style="color: var(--accent-primary); font-weight: 500;"></span>
+                    </div>
+                </div>
+                
+                <div style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border);">
+                    <label style="color: var(--accent-secondary); font-weight: 500;">📊 TradingView Premium Export (Recommended)</label>
+                    <p style="color: var(--text-muted); font-size: 0.85rem; margin: 0.5rem 0;">Export chart data from TradingView (Right-click → Export chart data)</p>
+                    <input type="file" id="csvUpload" accept=".csv" onchange="uploadCSV(event)" style="display: none;">
+                    <button class="btn btn-success" id="uploadCsvBtn" onclick="document.getElementById('csvUpload').click()" style="margin-top: 0.5rem;">
+                        📁 Upload TradingView CSV
+                    </button>
+                </div>
+            </div>
+            
+            <!-- UNIFIED OPTIMIZATION - THE Main Feature -->
+            <div class="card full-width" id="unifiedCard" style="position: relative; border: 2px solid var(--accent-primary);">
+                <div id="unifiedOverlay" style="position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: rgba(10,10,15,0.85); display: flex; align-items: center; justify-content: center; z-index: 10; border-radius: 12px;">
+                    <div style="text-align: center; color: var(--text-muted);">
+                        <div style="font-size: 2rem; margin-bottom: 0.5rem;">🔒</div>
+                        <div>Load data first to start</div>
+                    </div>
+                </div>
+
+                <div class="card-header">
+                    <div class="icon" style="background: linear-gradient(135deg, var(--accent-primary), #ec4899);">🎯</div>
+                    <h2>Find Profitable Strategies</h2>
+                </div>
+
+                <div class="info-box" style="background: linear-gradient(135deg, rgba(139, 92, 246, 0.15), rgba(236, 72, 153, 0.1)); border: 1px solid rgba(139, 92, 246, 0.4);">
+                    <strong>How it works:</strong> We train <strong>3 ML models</strong> (XGBoost, LightGBM, CatBoost) on your data, then test <strong>80+ strategies</strong> including ML predictions and ensembles. Results are validated on unseen data. You get TradingView-ready Pine Script code.
+                </div>
+
+                <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin: 1rem 0;">
+                    <div class="input-group">
+                        <label>Starting Capital (£)</label>
+                        <input type="number" id="unifiedCapital" value="1000" min="100" max="100000" step="100">
+                    </div>
+                    <div class="input-group">
+                        <label>Risk Per Trade (%)</label>
+                        <input type="number" id="unifiedRisk" value="2" min="0.5" max="10" step="0.5">
+                    </div>
+                    <div class="input-group">
+                        <label>Search Depth</label>
+                        <select id="unifiedTrials">
+                            <option value="100">Quick (~1-2 hours)</option>
+                            <option value="200">Standard (~3-4 hours)</option>
+                            <option value="300" selected>Thorough (~5-6 hours)</option>
+                            <option value="500">Deep (~8-10 hours)</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="actions">
+                    <button class="btn btn-primary" id="unifiedBtn" onclick="runUnifiedOptimization()" style="background: linear-gradient(135deg, var(--accent-primary), #ec4899); font-size: 1.1rem; padding: 1rem 2rem; width: 100%;">
+                        Find Best Strategies
+                    </button>
+                </div>
+                
+                <div id="unifiedProgress" style="display: none; margin-top: 1.5rem;">
+                    <div class="progress-bar" style="height: 12px;">
+                        <div class="progress-fill" id="unifiedProgressFill" style="width: 0%; background: linear-gradient(90deg, var(--accent-primary), #ec4899);"></div>
+                    </div>
+                    <p id="unifiedMessage" style="color: var(--text-secondary); margin-top: 0.75rem; font-size: 0.95rem;"></p>
+                </div>
+                
+                <div id="unifiedResults" style="margin-top: 1.5rem;"></div>
+            </div>
+            
+            <!-- Pine Script Output -->
+            <div class="card full-width">
+                <div class="card-header">
+                    <div class="icon">📝</div>
+                    <h2>Generated Pine Script</h2>
+                    <span style="margin-left: 1rem; padding: 0.25rem 0.75rem; background: rgba(34, 197, 94, 0.2); color: #22c55e; border-radius: 4px; font-size: 0.75rem; font-weight: 600;">✓ EXACT-MATCH FORMAT</span>
+                </div>
+                <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 1rem;">
+                    Percentage-based TP/SL with <code>process_orders_on_close=true</code> - guaranteed 1:1 match with Python backtester
+                </p>
+                
+                <div class="actions" style="margin-bottom: 1rem;">
+                    <button class="btn btn-secondary" onclick="copyPineScript()">
+                        📋 Copy to Clipboard
+                    </button>
+                    <button class="btn btn-success" onclick="downloadPineScript()">
+                        ⬇️ Download .pine File
+                    </button>
+                </div>
+                
+                <div class="code-block" id="pineScriptOutput">
+// Optimized Pine Script will appear here after optimization...
+                </div>
+            </div>
+            
+            <!-- Activity Log -->
+            <div class="card full-width">
+                <div class="card-header">
+                    <div class="icon">📜</div>
+                    <h2>Activity Log</h2>
+                </div>
+                <div class="log-container" id="logContainer">
+                    <div class="log-entry">
+                        <span class="log-time">[00:00:00]</span>
+                        System ready. Fetch data to begin.
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // State
+        let pollingInterval = null;
+        
+        // Utility functions
+        function formatTime() {
+            const now = new Date();
+            return now.toTimeString().split(' ')[0];
+        }
+        
+        function addLog(message) {
+            const container = document.getElementById('logContainer');
+            const entry = document.createElement('div');
+            entry.className = 'log-entry';
+            entry.innerHTML = `<span class="log-time">[${formatTime()}]</span> ${message}`;
+            container.appendChild(entry);
+            container.scrollTop = container.scrollHeight;
+        }
+        
+        function updateDataStatus(status) {
+            const container = document.getElementById('dataStatus');
+            const loadingProgress = document.getElementById('dataLoadingProgress');
+            const unifiedOverlay = document.getElementById('unifiedOverlay');
+
+            if (status.loaded) {
+                // Data loaded - update status
+                container.innerHTML = `
+                    <span class="status-badge success">✓ ${status.rows.toLocaleString()} candles loaded</span>
+                    <p style="margin-top: 0.5rem; font-size: 0.85rem; color: var(--text-secondary);">
+                        ${status.start_date?.split('T')[0] || ''} → ${status.end_date?.split('T')[0] || ''}
+                    </p>
+                `;
+
+                // Hide loading progress
+                loadingProgress.style.display = 'none';
+
+                // Enable unified optimizer section
+                if (unifiedOverlay) unifiedOverlay.style.display = 'none';
+
+            } else if (status.message && status.message.includes('Fetching')) {
+                // Data is being fetched - show loading progress
+                container.innerHTML = `<span class="status-badge warning">📥 ${status.message}</span>`;
+                loadingProgress.style.display = 'block';
+
+                // Simulate progress (actual progress isn't tracked by backend for data fetch)
+                animateDataLoading(status.message);
+
+                // Keep overlay visible
+                if (unifiedOverlay) unifiedOverlay.style.display = 'flex';
+
+            } else {
+                // No data loaded
+                container.innerHTML = `<span class="status-badge danger">No data loaded</span>`;
+                loadingProgress.style.display = 'none';
+
+                // Show overlay
+                if (unifiedOverlay) unifiedOverlay.style.display = 'flex';
+            }
+        }
+        
+        let dataLoadingAnimation = null;
+        function animateDataLoading(message) {
+            const fill = document.getElementById('dataProgressFill');
+            const msgEl = document.getElementById('dataProgressMessage');
+            const pctEl = document.getElementById('dataProgressPercent');
+            
+            msgEl.textContent = message;
+            
+            // Animate progress bar
+            if (!dataLoadingAnimation) {
+                let progress = 0;
+                dataLoadingAnimation = setInterval(() => {
+                    progress += Math.random() * 5;
+                    if (progress > 90) progress = 90; // Cap at 90% until complete
+                    fill.style.width = `${progress}%`;
+                    pctEl.textContent = `${Math.round(progress)}%`;
+                }, 500);
+            }
+        }
+        
+        function stopDataLoadingAnimation() {
+            if (dataLoadingAnimation) {
+                clearInterval(dataLoadingAnimation);
+                dataLoadingAnimation = null;
+            }
+            const fill = document.getElementById('dataProgressFill');
+            const pctEl = document.getElementById('dataProgressPercent');
+            fill.style.width = '100%';
+            pctEl.textContent = '100%';
+        }
+        
+        // Data source pair options
+        const PAIR_OPTIONS = {
+            yfinance: [
+                { value: 'BTC-GBP', label: 'BTC/GBP' },
+                { value: 'ETH-GBP', label: 'ETH/GBP' },
+                { value: 'BTC-EUR', label: 'BTC/EUR' },
+                { value: 'ETH-EUR', label: 'ETH/EUR' },
+                { value: 'BTC-USD', label: 'BTC/USD' },
+            ],
+            binance: [
+                { value: 'BTCUSDT', label: 'BTC/USDT' },
+                { value: 'ETHUSDT', label: 'ETH/USDT' },
+                { value: 'SOLUSDT', label: 'SOL/USDT' },
+                { value: 'BNBUSDT', label: 'BNB/USDT' },
+                { value: 'XRPUSDT', label: 'XRP/USDT' },
+            ]
+        };
+        
+        function updatePairOptions() {
+            const source = document.getElementById('sourceSelect').value;
+            const pairSelect = document.getElementById('pairSelect');
+            
+            // Update pairs based on source
+            pairSelect.innerHTML = PAIR_OPTIONS[source].map(p => 
+                `<option value="${p.value}">${p.label}</option>`
+            ).join('');
+        }
+        
+        // API Functions
+        async function fetchData() {
+            const source = document.getElementById('sourceSelect').value;
+            const pair = document.getElementById('pairSelect').value;
+            const months = document.getElementById('monthsSelect').value;
+            const interval = document.getElementById('intervalSelect').value;
+            const btn = document.getElementById('fetchDataBtn');
+            const loadingProgress = document.getElementById('dataLoadingProgress');
+            
+            const sourceName = source === 'binance' ? 'Binance' : 'Yahoo Finance';
+            
+            // Show loading UI
+            btn.disabled = true;
+            btn.innerHTML = `<div class="spinner"></div> Fetching...`;
+            document.getElementById('uploadCsvBtn').disabled = true;
+            
+            // Show and reset progress
+            loadingProgress.style.display = 'block';
+            document.getElementById('dataProgressFill').style.width = '0%';
+            document.getElementById('dataProgressMessage').textContent = `Connecting to ${sourceName}...`;
+            document.getElementById('dataProgressPercent').textContent = '0%';
+            
+            // Start animation
+            if (dataLoadingAnimation) clearInterval(dataLoadingAnimation);
+            let progress = 0;
+            dataLoadingAnimation = setInterval(() => {
+                progress += Math.random() * 3;
+                if (progress > 85) progress = 85;
+                document.getElementById('dataProgressFill').style.width = `${progress}%`;
+                document.getElementById('dataProgressPercent').textContent = `${Math.round(progress)}%`;
+            }, 500);
+            
+            addLog(`Fetching ${months} months of ${interval}m ${pair} from ${sourceName}...`);
+            
+            try {
+                const response = await fetch('/api/fetch-data', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ source, pair, interval: parseInt(interval), months: parseFloat(months) })
+                });
+                
+                const data = await response.json();
+                document.getElementById('dataProgressMessage').textContent = data.message;
+                addLog(data.message);
+                
+                // Start fast polling for data fetch
+                startFastPolling();
+                
+            } catch (error) {
+                addLog(`Error: ${error.message}`);
+                btn.disabled = false;
+                btn.innerHTML = 'Fetch Data';
+                document.getElementById('uploadCsvBtn').disabled = false;
+                loadingProgress.style.display = 'none';
+                stopDataLoadingAnimation();
+            }
+        }
+        
+        async function loadExistingData() {
+            const btn = document.getElementById('fetchDataBtn');
+            const loadingProgress = document.getElementById('dataLoadingProgress');
+            
+            btn.disabled = true;
+            loadingProgress.style.display = 'block';
+            document.getElementById('dataProgressMessage').textContent = 'Loading existing data...';
+            document.getElementById('dataProgressFill').style.width = '50%';
+            
+            addLog('Loading existing data...');
+            
+            try {
+                const response = await fetch('/api/load-existing-data', { method: 'POST' });
+                const data = await response.json();
+                
+                document.getElementById('dataProgressFill').style.width = '100%';
+                document.getElementById('dataProgressPercent').textContent = '100%';
+                
+                setTimeout(() => {
+                    updateDataStatus(data);
+                    addLog(`Loaded ${data.rows} candles`);
+                    btn.disabled = false;
+                    btn.innerHTML = 'Fetch Data';
+                }, 500);
+                
+            } catch (error) {
+                addLog(`Error: ${error.message}`);
+                btn.disabled = false;
+                loadingProgress.style.display = 'none';
+            }
+        }
+
+        // ============ UNIFIED OPTIMIZATION ============
+
+        let unifiedPolling = null;
+        let sseEventSource = null;
+        let streamedResults = [];  // Track streamed results
+
+        async function runUnifiedOptimization() {
+            const btn = document.getElementById('unifiedBtn');
+            const capital = parseFloat(document.getElementById('unifiedCapital').value) || 1000;
+            const riskPercent = parseFloat(document.getElementById('unifiedRisk').value) || 2;
+            const nTrials = parseInt(document.getElementById('unifiedTrials').value) || 300;
+
+            btn.disabled = true;
+            btn.innerHTML = '<div class="spinner"></div> Running Unified Optimization (75+ strategies)...';
+
+            document.getElementById('unifiedProgress').style.display = 'block';
+            document.getElementById('unifiedResults').innerHTML = createStreamingResultsContainer();
+            document.getElementById('unifiedProgressFill').style.width = '0%';
+            document.getElementById('unifiedMessage').textContent = 'Starting unified optimization...';
+
+            // Reset streamed results
+            streamedResults = [];
+
+            addLog(`Starting UNIFIED optimization: £${capital} capital, ${riskPercent}% risk, ${nTrials} trials per method, 75+ strategies`);
+
+            try {
+                const response = await fetch('/api/run-unified', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        capital: capital,
+                        risk_percent: riskPercent,
+                        n_trials: nTrials
+                    })
+                });
+
+                const data = await response.json();
+                addLog(data.message);
+
+                // Start SSE streaming for real-time results
+                startSSEStream();
+
+                // Start polling for unified status (for progress updates)
+                startUnifiedPolling();
+
+            } catch (error) {
+                addLog(`Error: ${error.message}`);
+                btn.disabled = false;
+                btn.innerHTML = '🎯 Run Unified Optimization (Tests ALL Strategies)';
+            }
+        }
+
+        function createStreamingResultsContainer() {
+            return `
+                <div id="streamingResults" style="margin-bottom: 1.5rem;">
+                    <h4 style="color: var(--accent-secondary); margin-bottom: 1rem; display: flex; align-items: center; gap: 0.5rem;">
+                        <span class="pulse-dot"></span> Live Results (streaming)
+                    </h4>
+                    <div id="streamingTable" style="max-height: 400px; overflow-y: auto; background: var(--bg-secondary); border-radius: 8px; padding: 0.5rem;">
+                        <table style="width: 100%; border-collapse: collapse; font-size: 0.85rem;">
+                            <thead style="position: sticky; top: 0; background: var(--bg-card);">
+                                <tr style="color: var(--text-muted); text-align: left;">
+                                    <th style="padding: 0.5rem; border-bottom: 1px solid var(--border);">#</th>
+                                    <th style="padding: 0.5rem; border-bottom: 1px solid var(--border);">Strategy</th>
+                                    <th style="padding: 0.5rem; border-bottom: 1px solid var(--border);">Method</th>
+                                    <th style="padding: 0.5rem; border-bottom: 1px solid var(--border);">TP/SL</th>
+                                    <th style="padding: 0.5rem; border-bottom: 1px solid var(--border);">Score</th>
+                                    <th style="padding: 0.5rem; border-bottom: 1px solid var(--border);">Win Rate</th>
+                                    <th style="padding: 0.5rem; border-bottom: 1px solid var(--border);">PnL</th>
+                                </tr>
+                            </thead>
+                            <tbody id="streamingTableBody"></tbody>
+                        </table>
+                    </div>
+                    <p id="streamingCount" style="color: var(--text-muted); margin-top: 0.5rem; font-size: 0.85rem;">
+                        Waiting for results...
+                    </p>
+                </div>
+            `;
+        }
+
+        function startSSEStream() {
+            // Close any existing connection
+            if (sseEventSource) {
+                sseEventSource.close();
+            }
+
+            sseEventSource = new EventSource('/api/unified-stream');
+
+            sseEventSource.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+
+                    if (data.type === 'connected') {
+                        addLog('📡 Real-time stream connected');
+                    } else if (data.type === 'strategy_result') {
+                        handleStreamedResult(data);
+                    } else if (data.type === 'complete') {
+                        addLog('✅ Streaming complete');
+                        sseEventSource.close();
+                        sseEventSource = null;
+                    }
+                } catch (e) {
+                    console.error('SSE parse error:', e);
+                }
+            };
+
+            sseEventSource.onerror = (error) => {
+                console.error('SSE error:', error);
+                // Don't close on error, let it reconnect
+            };
+        }
+
+        function handleStreamedResult(data) {
+            streamedResults.push(data);
+
+            // Sort by score descending
+            streamedResults.sort((a, b) => b.composite_score - a.composite_score);
+
+            // Update the streaming table
+            const tbody = document.getElementById('streamingTableBody');
+            if (tbody) {
+                tbody.innerHTML = streamedResults.slice(0, 20).map((r, idx) => `
+                    <tr style="border-bottom: 1px solid var(--border-subtle); ${idx === 0 ? 'background: rgba(34, 197, 94, 0.1);' : ''}">
+                        <td style="padding: 0.4rem 0.5rem; color: ${idx < 3 ? 'var(--success)' : 'var(--text-muted)'};">${idx + 1}</td>
+                        <td style="padding: 0.4rem 0.5rem;">
+                            <span style="color: var(--text-primary);">${r.strategy_name}</span>
+                            <span style="color: var(--text-muted); font-size: 0.75rem; display: block;">${r.strategy_category}</span>
+                        </td>
+                        <td style="padding: 0.4rem 0.5rem;">
+                            <span style="background: var(--accent-glow); padding: 0.15rem 0.4rem; border-radius: 4px; font-size: 0.75rem;">${r.method}</span>
+                        </td>
+                        <td style="padding: 0.4rem 0.5rem; color: #3b82f6; font-size: 0.8rem;">${(r.params?.tp_percent || 1.0).toFixed(1)}/${(r.params?.sl_percent || 3.0).toFixed(1)}%</td>
+                        <td style="padding: 0.4rem 0.5rem; color: var(--accent-secondary); font-weight: 600;">${r.composite_score.toFixed(3)}</td>
+                        <td style="padding: 0.4rem 0.5rem; color: ${r.win_rate >= 60 ? 'var(--success)' : r.win_rate >= 50 ? 'var(--warning)' : 'var(--danger)'};">${r.win_rate.toFixed(1)}%</td>
+                        <td style="padding: 0.4rem 0.5rem; color: ${r.total_pnl >= 0 ? 'var(--success)' : 'var(--danger)'};">£${r.total_pnl.toFixed(2)}</td>
+                    </tr>
+                `).join('');
+            }
+
+            // Update count
+            const countEl = document.getElementById('streamingCount');
+            if (countEl) {
+                countEl.textContent = `${streamedResults.length} strategies found (showing top 20)`;
+            }
+        }
+        
+        function startUnifiedPolling() {
+            if (unifiedPolling) clearInterval(unifiedPolling);
+            
+            unifiedPolling = setInterval(async () => {
+                try {
+                    const response = await fetch('/api/unified-status');
+                    const status = await response.json();
+                    
+                    document.getElementById('unifiedProgressFill').style.width = `${status.progress}%`;
+                    document.getElementById('unifiedMessage').textContent = status.message;
+                    
+                    if (!status.running) {
+                        clearInterval(unifiedPolling);
+                        unifiedPolling = null;
+                        
+                        const btn = document.getElementById('unifiedBtn');
+                        btn.disabled = false;
+                        btn.innerHTML = '🎯 Run Unified Optimization (Tests ALL Strategies)';
+                        
+                        if (status.report) {
+                            displayUnifiedReport(status.report);
+                            addLog('Unified optimization complete! Check the Top 10 results below.');
+                        }
+                    }
+                } catch (error) {
+                    console.error('Unified polling error:', error);
+                }
+            }, 1000);
+        }
+        
+        function displayUnifiedReport(report) {
+            const container = document.getElementById('unifiedResults');
+            const top10 = report.top_10 || [];
+            const config = report.config || {};
+            const stats = report.optimization_stats || {};
+            
+            if (top10.length === 0) {
+                container.innerHTML = `
+                    <div style="padding: 2rem; text-align: center; background: var(--danger-bg); border-radius: 8px; border: 1px solid var(--danger);">
+                        <h3 style="color: var(--danger); margin-bottom: 0.5rem;">No Profitable Strategies Found</h3>
+                        <p style="color: var(--text-muted);">Try adjusting parameters or using more historical data.</p>
+                    </div>
+                `;
+                return;
+            }
+            
+            let html = `
+                <div style="margin-bottom: 1.5rem; padding: 1.25rem; background: linear-gradient(135deg, rgba(34, 197, 94, 0.1), rgba(139, 92, 246, 0.05)); border-radius: 12px; border-left: 4px solid var(--success);">
+                    <h3 style="color: var(--success); margin-bottom: 0.75rem; display: flex; align-items: center; gap: 0.5rem;">
+                        <span style="font-size: 1.5rem;">🏆</span> Unified Optimization Complete
+                    </h3>
+                    <p style="color: var(--text-secondary); margin: 0; font-size: 0.95rem;">
+                        <strong>Strategies Tested:</strong> ${config.strategies_tested || 75}+ strategy types<br>
+                        <strong>Methods Used:</strong> ${(report.methods_used || []).join(', ')}<br>
+                        <strong>Candidates Found:</strong> Random: ${stats.random_candidates || 0} | Bayesian: ${stats.bayesian_candidates || 0} | CMA-ES: ${stats.cmaes_candidates || 0}<br>
+                        <strong>Training:</strong> ${config.train_candles?.toLocaleString() || 'N/A'} candles | 
+                        <strong>Validation:</strong> ${config.validation_candles?.toLocaleString() || 'N/A'} candles
+                    </p>
+                </div>
+                
+                <h3 style="color: var(--accent-primary); margin-bottom: 1rem; font-size: 1.25rem;">
+                    🎯 Top 10 Consensus Strategies
+                </h3>
+                <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 1rem;">
+                    These strategies were found by multiple ML methods and validated on held-out data.
+                </p>
+            `;
+            
+            top10.forEach((strat, idx) => {
+                const metrics = strat.metrics || {};
+                const validation = strat.validation || {};
+                const params = strat.params || {};
+                const foundBy = strat.found_by_methods || [];
+                const equityCurve = strat.equity_curve || [];
+                
+                const isTopPick = idx === 0;
+                const isTop3 = idx < 3;
+                const borderColor = isTopPick ? 'var(--success)' : (isTop3 ? 'var(--accent-primary)' : 'var(--border)');
+                
+                html += `
+                    <div style="background: var(--bg-hover); border-radius: 12px; padding: 1.25rem; margin-bottom: 1rem; border-left: 4px solid ${borderColor}; ${isTopPick ? 'box-shadow: 0 0 20px rgba(34, 197, 94, 0.2);' : ''}">
+                        <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 1rem; flex-wrap: wrap; gap: 0.75rem;">
+                            <div>
+                                <h4 style="color: var(--text-primary); margin: 0; font-size: 1.1rem; display: flex; align-items: center; gap: 0.5rem;">
+                                    ${isTopPick ? '<span style="font-size: 1.25rem;">👑</span>' : `<span style="color: var(--text-muted);">#${idx + 1}</span>`}
+                                    ${strat.strategy_name || 'Unknown Strategy'}
+                                </h4>
+                                <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0.25rem; display: flex; align-items: center; gap: 0.5rem;">
+                                    ${strat.strategy_category || ''}
+                                    ${(strat.strategy_category === 'Simple (Beginner-Friendly)' || (strat.strategy_name || '').startsWith('pct_') || (strat.strategy_name || '').startsWith('simple_') || (strat.strategy_name || '').includes('consecutive') || (strat.strategy_name || '').includes('engulfing') || (strat.strategy_name || '').includes('doji') || (strat.strategy_name || '').includes('range_breakout') || (strat.strategy_name || '').includes('inside_bar') || (strat.strategy_name || '').includes('support_resistance') || (strat.strategy_name || '').includes('candle_ratio') || (strat.strategy_name || '').includes('price_vs_sma') || (strat.strategy_name || '').includes('triple_sma')) ?
+                                        `<span style="padding: 0.15rem 0.5rem; background: rgba(34, 197, 94, 0.15); color: var(--success); border-radius: 4px; font-size: 0.65rem; font-weight: 600; text-transform: uppercase;">Simple</span>` :
+                                        `<span style="padding: 0.15rem 0.5rem; background: rgba(139, 92, 246, 0.15); color: var(--accent-primary); border-radius: 4px; font-size: 0.65rem; font-weight: 600; text-transform: uppercase;">Advanced</span>`
+                                    }
+                                    ${(metrics.win_rate || 0) >= 55 ?
+                                        `<span style="padding: 0.15rem 0.5rem; background: rgba(34, 197, 94, 0.2); color: #22c55e; border-radius: 4px; font-size: 0.65rem; font-weight: 600;">✓ High Win Rate</span>` :
+                                        ''
+                                    }
+                                </div>
+                                <div style="margin-top: 0.5rem; display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                                    ${foundBy.map(method => `
+                                        <span style="padding: 0.2rem 0.6rem; background: var(--accent-glow); border-radius: 12px; font-size: 0.7rem; color: var(--accent-secondary);">
+                                            ✓ ${method}
+                                        </span>
+                                    `).join('')}
+                                </div>
+                            </div>
+                            <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                                <span class="status-badge" style="font-size: 0.85rem; background: rgba(59, 130, 246, 0.2); color: #3b82f6;">
+                                    TP: ${(params.tp_percent || 1.0).toFixed(1)}% / SL: ${(params.sl_percent || 3.0).toFixed(1)}%
+                                </span>
+                                <span class="status-badge success" style="font-size: 0.9rem;">
+                                    PF: ${metrics.profit_factor || 0}
+                                </span>
+                                <span class="status-badge ${(metrics.total_pnl || 0) >= 0 ? 'success' : 'danger'}" style="font-size: 0.9rem;">
+                                    £${(metrics.total_pnl || 0).toFixed(2)}
+                                </span>
+                            </div>
+                        </div>
+                        
+                        <!-- Metrics Grid -->
+                        <div style="display: grid; grid-template-columns: repeat(6, 1fr); gap: 0.5rem; margin-bottom: 1rem;">
+                            <div style="text-align: center; padding: 0.6rem; background: var(--bg-card); border-radius: 6px;">
+                                <div style="color: var(--text-muted); font-size: 0.7rem;">Trades</div>
+                                <div style="color: var(--text-primary); font-weight: 600; font-size: 1.1rem;">${metrics.total_trades || 0}</div>
+                            </div>
+                            <div style="text-align: center; padding: 0.6rem; background: var(--bg-card); border-radius: 6px;">
+                                <div style="color: var(--text-muted); font-size: 0.7rem;">Win Rate</div>
+                                <div style="color: ${(metrics.win_rate || 0) >= 50 ? 'var(--success)' : 'var(--warning)'}; font-weight: 600; font-size: 1.1rem;">${(metrics.win_rate || 0).toFixed(1)}%</div>
+                            </div>
+                            <div style="text-align: center; padding: 0.6rem; background: var(--bg-card); border-radius: 6px;">
+                                <div style="color: var(--text-muted); font-size: 0.7rem;">Equity R²</div>
+                                <div style="color: ${(metrics.equity_smoothness || 0) >= 0.7 ? 'var(--success)' : 'var(--warning)'}; font-weight: 600; font-size: 1.1rem;">${(metrics.equity_smoothness || 0).toFixed(3)}</div>
+                            </div>
+                            <div style="text-align: center; padding: 0.6rem; background: var(--bg-card); border-radius: 6px;">
+                                <div style="color: var(--text-muted); font-size: 0.7rem;">Max DD</div>
+                                <div style="color: var(--danger); font-weight: 600; font-size: 1.1rem;">£${(metrics.max_drawdown || 0).toFixed(2)}</div>
+                            </div>
+                            <div style="text-align: center; padding: 0.6rem; background: var(--bg-card); border-radius: 6px;">
+                                <div style="color: var(--text-muted); font-size: 0.7rem;">Sharpe</div>
+                                <div style="color: var(--accent-secondary); font-weight: 600; font-size: 1.1rem;">${(metrics.sharpe_ratio || 0).toFixed(2)}</div>
+                            </div>
+                            <div style="text-align: center; padding: 0.6rem; background: var(--bg-card); border-radius: 6px;">
+                                <div style="color: var(--text-muted); font-size: 0.7rem;">Score</div>
+                                <div style="color: var(--accent-primary); font-weight: 600; font-size: 1.1rem;">${(metrics.composite_score || 0).toFixed(3)}</div>
+                            </div>
+                        </div>
+
+                        <!-- Score Breakdown (Balanced Triangle) -->
+                        ${metrics.score_breakdown ? `
+                        <div style="background: linear-gradient(135deg, rgba(139, 92, 246, 0.1) 0%, rgba(236, 72, 153, 0.1) 100%); border: 1px solid rgba(139, 92, 246, 0.3); border-radius: 8px; padding: 0.75rem; margin-bottom: 1rem;">
+                            <div style="color: var(--accent-primary); font-size: 0.8rem; font-weight: 600; margin-bottom: 0.6rem; display: flex; align-items: center; gap: 0.5rem;">
+                                <span style="font-size: 1rem;">🎯</span> Score Breakdown (Balanced Triangle)
+                            </div>
+                            <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.75rem;">
+                                <div style="text-align: center; padding: 0.5rem; background: rgba(34, 197, 94, 0.1); border-radius: 6px; border: 1px solid rgba(34, 197, 94, 0.2);">
+                                    <div style="color: var(--text-muted); font-size: 0.65rem; text-transform: uppercase;">Win Rate</div>
+                                    <div style="color: var(--success); font-weight: 700; font-size: 1.2rem;">${(metrics.score_breakdown.win_rate_score || 0).toFixed(1)}%</div>
+                                    <div style="color: var(--text-muted); font-size: 0.6rem; margin-top: 0.2rem;">33.3% weight</div>
+                                </div>
+                                <div style="text-align: center; padding: 0.5rem; background: rgba(59, 130, 246, 0.1); border-radius: 6px; border: 1px solid rgba(59, 130, 246, 0.2);">
+                                    <div style="color: var(--text-muted); font-size: 0.65rem; text-transform: uppercase;">Equity Smooth</div>
+                                    <div style="color: #3b82f6; font-weight: 700; font-size: 1.2rem;">${(metrics.score_breakdown.equity_smoothness_score || 0).toFixed(1)}%</div>
+                                    <div style="color: var(--text-muted); font-size: 0.6rem; margin-top: 0.2rem;">33.3% weight</div>
+                                </div>
+                                <div style="text-align: center; padding: 0.5rem; background: rgba(245, 158, 11, 0.1); border-radius: 6px; border: 1px solid rgba(245, 158, 11, 0.2);">
+                                    <div style="color: var(--text-muted); font-size: 0.65rem; text-transform: uppercase;">Total Profit</div>
+                                    <div style="color: #f59e0b; font-weight: 700; font-size: 1.2rem;">${(metrics.score_breakdown.total_profit_score || 0).toFixed(1)}%</div>
+                                    <div style="color: var(--text-muted); font-size: 0.6rem; margin-top: 0.2rem;">33.3% weight</div>
+                                </div>
+                            </div>
+                            ${metrics.score_breakdown.penalties_applied && Object.values(metrics.score_breakdown.penalties_applied).some(v => v) ? `
+                            <div style="margin-top: 0.6rem; padding: 0.4rem 0.6rem; background: rgba(239, 68, 68, 0.1); border-radius: 4px; border: 1px solid rgba(239, 68, 68, 0.2);">
+                                <span style="color: var(--danger); font-size: 0.7rem;">⚠️ Penalties: </span>
+                                <span style="color: var(--text-muted); font-size: 0.7rem;">
+                                    ${metrics.score_breakdown.penalties_applied.low_win_rate ? 'Low Win Rate (-40%) ' : ''}
+                                    ${metrics.score_breakdown.penalties_applied.not_profitable ? 'Not Profitable (-70%) ' : ''}
+                                    ${metrics.score_breakdown.penalties_applied.low_profit_factor ? 'PF<1 (-50%) ' : ''}
+                                    ${metrics.score_breakdown.penalties_applied.too_few_trades ? 'Few Trades (-30%) ' : ''}
+                                </span>
+                            </div>
+                            ` : ''}
+                        </div>
+                        ` : ''}
+
+                        <!-- Validation Results -->
+                        <div style="background: var(--bg-primary); border-radius: 6px; padding: 0.75rem; margin-bottom: 1rem;">
+                            <div style="color: var(--text-secondary); font-size: 0.8rem; margin-bottom: 0.5rem;">📊 Validation (Out-of-Sample)</div>
+                            <div style="display: flex; gap: 1.5rem; font-size: 0.9rem;">
+                                <span style="color: ${(validation.val_pnl || 0) >= 0 ? 'var(--success)' : 'var(--danger)'};">
+                                    P&L: <strong>£${(validation.val_pnl || 0).toFixed(2)}</strong>
+                                </span>
+                                <span style="color: ${(validation.val_profit_factor || 0) >= 1 ? 'var(--success)' : 'var(--danger)'};">
+                                    PF: <strong>${(validation.val_profit_factor || 0).toFixed(2)}</strong>
+                                </span>
+                                <span style="color: ${(validation.val_win_rate || 0) >= 50 ? 'var(--success)' : 'var(--warning)'};">
+                                    Win: <strong>${(validation.val_win_rate || 0).toFixed(1)}%</strong>
+                                </span>
+                            </div>
+                        </div>
+                        
+                        <!-- Equity Curve -->
+                        ${equityCurve.length > 0 ? `
+                            <div style="background: var(--bg-primary); border-radius: 6px; padding: 0.75rem; margin-bottom: 1rem; overflow: hidden;">
+                                <div style="color: var(--text-secondary); font-size: 0.8rem; margin-bottom: 0.5rem;">📈 Equity Curve</div>
+                                <div style="height: 60px; display: flex; align-items: flex-end; gap: 1px;">
+                                    ${equityCurve.slice(-50).map((val, i, arr) => {
+                                        const min = Math.min(...arr);
+                                        const max = Math.max(...arr);
+                                        const range = max - min || 1;
+                                        const height = ((val - min) / range) * 100;
+                                        const color = val >= 0 ? 'var(--success)' : 'var(--danger)';
+                                        return `<div style="flex: 1; height: ${Math.max(height, 2)}%; background: ${color}; border-radius: 1px 1px 0 0;"></div>`;
+                                    }).join('')}
+                                </div>
+                            </div>
+                        ` : ''}
+                        
+                        <!-- Parameters -->
+                        <details style="margin-top: 0.5rem;">
+                            <summary style="cursor: pointer; color: var(--accent-secondary); font-size: 0.85rem;">⚙️ Strategy Parameters</summary>
+                            <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 0.5rem; margin-top: 0.75rem; font-size: 0.8rem;">
+                                ${Object.entries(params).map(([key, val]) => `
+                                    <div style="padding: 0.4rem 0.6rem; background: var(--bg-primary); border-radius: 4px;">
+                                        <span style="color: var(--text-muted);">${key}:</span>
+                                        <span style="color: var(--text-primary); font-family: 'JetBrains Mono', monospace; margin-left: 0.25rem;">${typeof val === 'number' ? val.toFixed(2) : val}</span>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        </details>
+
+                        <!-- Export Pine Script Button -->
+                        <div style="margin-top: 1rem; display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                            <button onclick="exportStrategyPineScript(${idx + 1})" class="btn btn-success" style="font-size: 0.85rem; padding: 0.5rem 1rem;">
+                                📜 Export Pine Script
+                            </button>
+                            <button onclick="downloadStrategyPineScript(${idx + 1})" class="btn btn-secondary" style="font-size: 0.85rem; padding: 0.5rem 1rem;">
+                                ⬇️ Download .pine
+                            </button>
+                        </div>
+                    </div>
+                `;
+            });
+            
+            container.innerHTML = html;
+        }
+        
+        async function uploadCSV(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            
+            const btn = document.getElementById('uploadCsvBtn');
+            const fetchBtn = document.getElementById('fetchDataBtn');
+            const loadingProgress = document.getElementById('dataLoadingProgress');
+            
+            // Show loading UI
+            btn.disabled = true;
+            btn.innerHTML = '<div class="spinner"></div> Uploading...';
+            fetchBtn.disabled = true;
+            
+            loadingProgress.style.display = 'block';
+            document.getElementById('dataProgressFill').style.width = '30%';
+            document.getElementById('dataProgressMessage').textContent = `Uploading ${file.name}...`;
+            document.getElementById('dataProgressPercent').textContent = '30%';
+            
+            addLog(`Uploading TradingView CSV: ${file.name}...`);
+            
+            const formData = new FormData();
+            formData.append('file', file);
+            
+            try {
+                document.getElementById('dataProgressFill').style.width = '60%';
+                document.getElementById('dataProgressPercent').textContent = '60%';
+                document.getElementById('dataProgressMessage').textContent = 'Processing CSV...';
+                
+                const response = await fetch('/api/upload-csv', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    document.getElementById('dataProgressFill').style.width = '100%';
+                    document.getElementById('dataProgressPercent').textContent = '100%';
+                    document.getElementById('dataProgressMessage').textContent = data.message;
+                    
+                    addLog(data.message);
+                    
+                    // Update status after brief delay
+                    setTimeout(() => {
+                        startPolling();
+                    }, 500);
+                } else {
+                    addLog(`Error: ${data.detail || 'Upload failed'}`);
+                    loadingProgress.style.display = 'none';
+                }
+            } catch (error) {
+                addLog(`Error: ${error.message}`);
+                loadingProgress.style.display = 'none';
+            }
+            
+            // Reset buttons and file input
+            btn.disabled = false;
+            btn.innerHTML = '📁 Upload TradingView CSV';
+            fetchBtn.disabled = false;
+            event.target.value = '';
+        }
+        
+        async function fetchPineScript() {
+            try {
+                const response = await fetch('/api/pinescript');
+                const data = await response.json();
+                
+                document.getElementById('pineScriptOutput').textContent = data.pinescript;
+                addLog('Pine Script generated successfully!');
+                
+            } catch (error) {
+                addLog(`Error fetching Pine Script: ${error.message}`);
+            }
+        }
+        
+        function copyPineScript() {
+            const code = document.getElementById('pineScriptOutput').textContent;
+            navigator.clipboard.writeText(code).then(() => {
+                addLog('Pine Script copied to clipboard!');
+            });
+        }
+        
+        async function downloadPineScript() {
+            window.location.href = '/api/download-pinescript';
+            addLog('Downloading Pine Script file...');
+        }
+
+        // Export Pine Script for a specific unified optimizer strategy
+        async function exportStrategyPineScript(rank) {
+            try {
+                addLog(`Generating Pine Script for strategy #${rank}...`);
+                const response = await fetch(`/api/unified-pinescript/${rank}`);
+
+                if (!response.ok) {
+                    const err = await response.json();
+                    throw new Error(err.detail || 'Failed to generate Pine Script');
+                }
+
+                const data = await response.json();
+
+                // Display in the Pine Script output section
+                document.getElementById('pineScriptOutput').textContent = data.pinescript;
+
+                // Scroll to Pine Script section
+                document.getElementById('pineScriptOutput').scrollIntoView({ behavior: 'smooth' });
+
+                addLog(`✅ Pine Script generated for "${data.strategy_name}" (Rank #${rank}) - TP: ${data.tp_percent?.toFixed(1) || '1.0'}% / SL: ${data.sl_percent?.toFixed(1) || '3.0'}% [EXACT-MATCH]`);
+
+            } catch (error) {
+                addLog(`❌ Error generating Pine Script: ${error.message}`);
+            }
+        }
+
+        // Download Pine Script file for a specific strategy
+        async function downloadStrategyPineScript(rank) {
+            try {
+                addLog(`Downloading Pine Script for strategy #${rank}...`);
+                window.location.href = `/api/download-unified-pinescript/${rank}`;
+            } catch (error) {
+                addLog(`❌ Error downloading: ${error.message}`);
+            }
+        }
+        
+        // Polling
+        function startPolling() {
+            if (pollingInterval) clearInterval(pollingInterval);
+            
+            // Immediate first poll
+            pollStatus();
+            
+            pollingInterval = setInterval(pollStatus, 1500);
+        }
+        
+        async function pollStatus() {
+            try {
+                const response = await fetch('/api/status');
+                const data = await response.json();
+
+                updateDataStatus(data.data);
+
+                // Handle data loading completion
+                if (data.data.loaded) {
+                    // Stop data loading animation
+                    stopDataLoadingAnimation();
+
+                    // Complete progress bar
+                    const fill = document.getElementById('dataProgressFill');
+                    const pct = document.getElementById('dataProgressPercent');
+                    const msg = document.getElementById('dataProgressMessage');
+                    if (fill) fill.style.width = '100%';
+                    if (pct) pct.textContent = '100%';
+                    if (msg) msg.textContent = `✓ ${data.data.rows?.toLocaleString() || ''} candles loaded`;
+
+                    // Re-enable buttons
+                    const fetchBtn = document.getElementById('fetchDataBtn');
+                    const uploadBtn = document.getElementById('uploadCsvBtn');
+                    if (fetchBtn) {
+                        fetchBtn.disabled = false;
+                        fetchBtn.innerHTML = 'Fetch Data';
+                    }
+                    if (uploadBtn) uploadBtn.disabled = false;
+
+                    // Hide progress after a delay
+                    setTimeout(() => {
+                        const loadingProgress = document.getElementById('dataLoadingProgress');
+                        if (loadingProgress && data.data.loaded) {
+                            loadingProgress.style.display = 'none';
+                        }
+                    }, 2000);
+                }
+
+            } catch (error) {
+                console.error('Polling error:', error);
+            }
+        }
+        
+        // Initial load
+        document.addEventListener('DOMContentLoaded', () => {
+            addLog('System initialized');
+            startPolling();
+        });
+    </script>
+</body>
+</html>
+

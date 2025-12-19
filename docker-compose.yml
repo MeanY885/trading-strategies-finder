@@ -1,0 +1,14 @@
+services:
+  btcgbp-optimizer:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/app/data
+      - ./output:/app/output
+      - ./frontend:/app/frontend  # Hot reload frontend changes
+      - ./backend:/app/backend    # Hot reload backend changes (requires restart)
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+
