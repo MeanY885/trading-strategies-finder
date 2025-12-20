@@ -387,7 +387,7 @@ class StrategyResult:
             wr_consistency = 50
 
         # 2. Profitability Consistency (how many periods are profitable)
-        profitable_periods = sum(1 for pm in valid_periods if pm.total_pnl > 0)
+        profitable_periods = sum(1 for pm in valid_periods if pm.total_pnl is not None and pm.total_pnl > 0)
         pnl_consistency = (profitable_periods / len(valid_periods)) * 100
 
         # 3. Max Drawdown Score (lower is better)
@@ -442,24 +442,26 @@ class StrategyResult:
         - Consistency: 20% (stable performance across periods)
         """
         # Win Rate Score (0-100): Target 60%+, penalize below 40%
-        if self.win_rate >= 60:
+        win_rate = self.win_rate if self.win_rate is not None else 0
+        if win_rate >= 60:
             wr_score = 100
-        elif self.win_rate >= 50:
-            wr_score = 60 + (self.win_rate - 50) * 4
-        elif self.win_rate >= 40:
-            wr_score = 40 + (self.win_rate - 40) * 2
+        elif win_rate >= 50:
+            wr_score = 60 + (win_rate - 50) * 4
+        elif win_rate >= 40:
+            wr_score = 40 + (win_rate - 40) * 2
         else:
-            wr_score = max(0, self.win_rate)
+            wr_score = max(0, win_rate)
 
         # Profit Factor Score (0-100): Target PF > 1.5
-        if self.profit_factor >= 2.0:
+        profit_factor = self.profit_factor if self.profit_factor is not None else 0
+        if profit_factor >= 2.0:
             pf_score = 100
-        elif self.profit_factor >= 1.5:
-            pf_score = 70 + (self.profit_factor - 1.5) * 60
-        elif self.profit_factor >= 1.0:
-            pf_score = 30 + (self.profit_factor - 1.0) * 80
+        elif profit_factor >= 1.5:
+            pf_score = 70 + (profit_factor - 1.5) * 60
+        elif profit_factor >= 1.0:
+            pf_score = 30 + (profit_factor - 1.0) * 80
         else:
-            pf_score = max(0, self.profit_factor * 30)
+            pf_score = max(0, profit_factor * 30)
 
         # PnL Score (0-100): Based on percentage return
         pnl_pct = self.total_pnl_percent if self.total_pnl_percent else 0
@@ -2294,11 +2296,11 @@ class StrategyEngine:
                                 progress
                             )
 
-                        if result.total_trades >= 1 and result.win_rate >= min_win_rate:
+                        if result.total_trades >= 1 and (result.win_rate or 0) >= min_win_rate:
                             results.append(result)
 
                             # Stream profitable ones
-                            if result.total_pnl > 0:
+                            if result.total_pnl is not None and result.total_pnl > 0:
                                 profitable_count += 1
                                 self._publish_result(result)
 
@@ -2307,12 +2309,12 @@ class StrategyEngine:
 
         # Sort by COMPOSITE SCORE (not just PnL)
         # This ensures high win rate + good PF strategies rank higher
-        results.sort(key=lambda x: x.composite_score, reverse=True)
+        results.sort(key=lambda x: x.composite_score if x.composite_score is not None else 0, reverse=True)
 
         self._update_status(f"Filtering profitable strategies...", 92)
 
         # Save profitable strategies to database
-        profitable = [r for r in results if r.total_pnl > 0]
+        profitable = [r for r in results if r.total_pnl is not None and r.total_pnl > 0]
 
         # Phase: Saving to DB (95-100%)
         if self.db and save_to_db and profitable:
@@ -2382,7 +2384,7 @@ class StrategyEngine:
                     if result.total_trades >= 3:
                         results.append(result)
 
-        results.sort(key=lambda x: x.total_pnl, reverse=True)
+        results.sort(key=lambda x: x.total_pnl if x.total_pnl is not None else 0, reverse=True)
         return results
 
     # =========================================================================
@@ -2782,8 +2784,8 @@ class StrategyEngine:
             List of TunedResult with before/after comparisons
         """
         # Filter to profitable strategies and take top N by composite score
-        profitable = [r for r in phase1_results if r.total_pnl > 0]
-        profitable.sort(key=lambda x: x.composite_score, reverse=True)
+        profitable = [r for r in phase1_results if r.total_pnl is not None and r.total_pnl > 0]
+        profitable.sort(key=lambda x: x.composite_score if x.composite_score is not None else 0, reverse=True)
         top_strategies = profitable[:top_n]
 
         tuned_results = []
@@ -2816,7 +2818,7 @@ class StrategyEngine:
                 })
 
         # Sort by tuned score
-        tuned_results.sort(key=lambda x: x.after_score, reverse=True)
+        tuned_results.sort(key=lambda x: x.after_score if x.after_score is not None else 0, reverse=True)
 
         return tuned_results
 
@@ -3210,7 +3212,7 @@ def run_strategy_finder(df: pd.DataFrame,
     )
 
     # Format report
-    profitable = [r for r in results if r.total_pnl > 0]
+    profitable = [r for r in results if r.total_pnl is not None and r.total_pnl > 0]
     beats_bh = [r for r in profitable if r.beats_buy_hold]
 
     report = {
