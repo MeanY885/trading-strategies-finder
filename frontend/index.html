@@ -1303,7 +1303,11 @@
                                 const wrColor = pm.win_rate >= 60 ? 'var(--success)' : pm.win_rate >= 50 ? 'var(--warning)' : 'var(--danger)';
                                 const pnlColor = pm.pnl >= 0 ? 'var(--success)' : 'var(--danger)';
                                 const ddColor = (pm.max_dd_pct || 0) < 5 ? 'var(--success)' : (pm.max_dd_pct || 0) < 15 ? 'var(--warning)' : 'var(--danger)';
-                                return `<span style="display: inline-block; background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 4px; padding: 0.2rem 0.6rem; margin-right: 0.4rem;"><span style="color: var(--text-muted); font-weight: 600;">${p.toUpperCase()}</span> <span style="color: ${wrColor};">${pm.win_rate?.toFixed(0) || '-'}%</span> <span style="color: ${pnlColor};">${pm.pnl >= 0 ? '+' : ''}£${pm.pnl?.toFixed(0) || '0'}</span> <span style="color: ${ddColor};">-${(pm.max_dd_pct || 0).toFixed(1)}%</span> <span style="color: var(--text-muted);">${pm.trades}t</span></span>`;
+                                return `<div style="display: inline-block; text-align: center; margin-right: 1.5rem;">
+                                    <div style="color: var(--text-muted); font-weight: 600; font-size: 0.7rem; margin-bottom: 0.15rem;">${p.toUpperCase()}</div>
+                                    <div style="font-size: 0.75rem;"><span style="color: ${wrColor};">${pm.win_rate?.toFixed(0) || '-'}%</span> <span style="color: ${pnlColor};">${pm.pnl >= 0 ? '+' : ''}£${pm.pnl?.toFixed(0) || '0'}</span></div>
+                                    <div style="font-size: 0.65rem;"><span style="color: ${ddColor};">DD ${(pm.max_dd_pct || 0).toFixed(1)}%</span> <span style="color: var(--text-muted);">${pm.trades} trades</span></div>
+                                </div>`;
                             }).join('');
 
                             periodRow = `
