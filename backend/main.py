@@ -22,34 +22,15 @@ import threading
 thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=2)
 
 from data_fetcher import BinanceDataFetcher, YFinanceDataFetcher
-from strategy import SidewaysScalperStrategy
-from optimizer import StrategyOptimizer
 from pinescript_generator import PineScriptGenerator
-# Unified optimizer that tests ALL 75+ strategies with 3 ML methods
-from unified_optimizer import run_unified_optimization
-# Strategy database for persistence
-try:
-    from strategy_database import get_strategy_db
-    HAS_DATABASE = True
-except ImportError:
-    HAS_DATABASE = False
-    print("Warning: Strategy database not available")
+from strategy_engine import run_strategy_finder, generate_pinescript, StrategyEngine
+from strategy_database import get_strategy_db
+HAS_DATABASE = True
 
 # Initialize FastAPI
 app = FastAPI(title="BTCGBP ML Optimizer", version="1.0.0")
 
 # Global state
-optimization_status = {
-    "running": False,
-    "progress": 0,
-    "current_trial": 0,
-    "total_trials": 0,
-    "best_params": None,
-    "best_score": None,
-    "message": "Ready",
-    "results": []
-}
-
 unified_status = {
     "running": False,
     "progress": 0,
@@ -67,8 +48,60 @@ data_status = {
     "rows": 0,
     "start_date": None,
     "end_date": None,
-    "message": "No data loaded"
+    "message": "No data loaded",
+    "stats": None
 }
+
+def calculate_data_stats(df: pd.DataFrame) -> dict:
+    """Calculate statistics about the loaded data"""
+    close = df['close']
+    high = df['high']
+    low = df['low']
+
+    # Basic price stats
+    min_price = float(low.min())
+    max_price = float(high.max())
+    avg_price = float(close.mean())
+
+    # Calculate swings (percentage moves)
+    returns = close.pct_change() * 100
+    max_up_swing = float(returns.max())
+    max_down_swing = float(returns.min())
+
+    # Calculate ATR-based volatility percentage
+    tr1 = high - low
+    tr2 = (high - close.shift()).abs()
+    tr3 = (low - close.shift()).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr = tr.rolling(14).mean()
+    volatility_pct = float((atr / close * 100).mean())
+
+    # Calculate daily bull/bear trend
+    df_copy = df.copy()
+    df_copy['date'] = pd.to_datetime(df_copy['time']).dt.date
+    daily = df_copy.groupby('date').agg({
+        'open': 'first',
+        'close': 'last'
+    })
+    daily['trend'] = (daily['close'] > daily['open']).map({True: 'bull', False: 'bear'})
+    # Mark flat days (< 0.1% change)
+    daily['pct_change'] = ((daily['close'] - daily['open']) / daily['open'] * 100).abs()
+    daily.loc[daily['pct_change'] < 0.1, 'trend'] = 'flat'
+
+    daily_trends = [
+        {"date": str(date), "trend": row['trend']}
+        for date, row in daily.iterrows()
+    ]
+
+    return {
+        "min_price": round(min_price, 2),
+        "max_price": round(max_price, 2),
+        "avg_price": round(avg_price, 2),
+        "max_up_swing": round(max_up_swing, 2),
+        "max_down_swing": round(max_down_swing, 2),
+        "volatility_pct": round(volatility_pct, 2),
+        "daily_trends": daily_trends
+    }
 
 # Paths
 DATA_DIR = Path("/app/data")
@@ -85,26 +118,6 @@ class DataFetchRequest(BaseModel):
     interval: int = 15        # Candle interval in minutes
     months: float = 3         # Historical period (supports decimals: 0.03=1day, 0.25=1week)
 
-class OptimizationRequest(BaseModel):
-    n_trials: int = 100
-    timeout: int = 300  # seconds
-
-class ParameterRanges(BaseModel):
-    adx_threshold_min: int = 15
-    adx_threshold_max: int = 35
-    bb_length_min: int = 10
-    bb_length_max: int = 30
-    bb_mult_min: float = 1.5
-    bb_mult_max: float = 3.0
-    rsi_oversold_min: int = 20
-    rsi_oversold_max: int = 40
-    rsi_overbought_min: int = 60
-    rsi_overbought_max: int = 80
-    sl_fixed_min: float = 50
-    sl_fixed_max: float = 300
-    tp_ratio_min: float = 1.0
-    tp_ratio_max: float = 3.0
-
 # API Endpoints
 
 @app.get("/", response_class=HTMLResponse)
@@ -116,7 +129,7 @@ async def serve_frontend():
 async def get_status():
     """Get current system status"""
     return {
-        "optimization": optimization_status,
+        "optimization": unified_status,
         "data": data_status
     }
 
@@ -187,8 +200,9 @@ async def fetch_data_task(source: str, pair: str, interval: int, months: float):
         data_status["source"] = source
         data_status["start_date"] = df['time'].min().isoformat()
         data_status["end_date"] = df['time'].max().isoformat()
+        data_status["stats"] = calculate_data_stats(df)
         data_status["message"] = f"✓ {len(df)} candles ({days} days) from {source_name}"
-        
+
     except Exception as e:
         data_status["message"] = f"Error: {str(e)}"
         data_status["loaded"] = False
@@ -227,8 +241,9 @@ async def load_existing_data():
     data_status["pair"] = pair
     data_status["start_date"] = df['time'].min().isoformat()
     data_status["end_date"] = df['time'].max().isoformat()
+    data_status["stats"] = calculate_data_stats(df)
     data_status["message"] = f"✓ Loaded {len(df)} {pair} candles ({days} days)"
-    
+
     return data_status
 
 
@@ -331,6 +346,7 @@ async def upload_csv(file: UploadFile = File(...)):
         data_status["source"] = exchange or "TradingView"
         data_status["start_date"] = df['time'].min().isoformat()
         data_status["end_date"] = df['time'].max().isoformat()
+        data_status["stats"] = calculate_data_stats(df)
 
         days_of_data = (df['time'].max() - df['time'].min()).days
         pair_display = f"{pair}/" if pair else ""
@@ -354,162 +370,97 @@ async def upload_csv(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"Upload error: {str(e)}")
 
 
-@app.post("/api/optimize")
-async def start_optimization(request: OptimizationRequest, background_tasks: BackgroundTasks):
-    """Start ML optimization"""
-    global optimization_status
-    
-    if optimization_status["running"]:
-        raise HTTPException(status_code=400, detail="Optimization already running")
-    
-    if not data_status["loaded"]:
-        raise HTTPException(status_code=400, detail="No data loaded. Please fetch data first.")
-    
-    optimization_status["running"] = True
-    optimization_status["progress"] = 0
-    optimization_status["total_trials"] = request.n_trials
-    optimization_status["message"] = "Starting optimization..."
-    
-    background_tasks.add_task(run_optimization_task, request.n_trials, request.timeout)
-    
-    return {"status": "started", "message": f"Running {request.n_trials} optimization trials"}
+# ============ STRATEGY FINDER ============
 
-def run_optimization_sync(n_trials: int, timeout: int):
-    """Synchronous optimization task that runs in thread pool"""
-    global optimization_status
-    
-    try:
-        import pandas as pd
-        
-        # Load data - find most recent data file
-        data_files = list(DATA_DIR.glob("*_*m.csv"))
-        if not data_files:
-            optimization_status["message"] = "Error: No data file found"
-            optimization_status["running"] = False
-            return
-        
-        csv_path = max(data_files, key=lambda p: p.stat().st_mtime)
-        optimization_status["message"] = f"Loading data from {csv_path.name}..."
-        
-        df = pd.read_csv(csv_path)
-        df['time'] = pd.to_datetime(df['time'])
-        
-        optimization_status["message"] = f"Creating optimizer with {len(df)} candles..."
-        
-        # Create optimizer
-        optimizer = StrategyOptimizer(df)
-        
-        optimization_status["message"] = f"Starting {n_trials} optimization trials..."
-        
-        # Progress callback - updates global state from worker thread
-        def progress_callback(trial_num, total, params, score):
-            optimization_status["current_trial"] = trial_num
-            optimization_status["progress"] = int((trial_num / total) * 100)
-            optimization_status["message"] = f"Trial {trial_num}/{total} - Score: {score:.4f}"
-            
-            if optimization_status["best_score"] is None or score > optimization_status["best_score"]:
-                optimization_status["best_score"] = score
-                optimization_status["best_params"] = dict(params) if params else None
-        
-        # Run optimization
-        best_params, best_score, all_results = optimizer.optimize(
-            n_trials=n_trials,
-            timeout=timeout,
-            callback=progress_callback
-        )
-        
-        optimization_status["best_params"] = best_params
-        optimization_status["best_score"] = best_score
-        optimization_status["results"] = all_results[-20:]  # Keep last 20 results
-        optimization_status["message"] = f"Optimization complete! Best score: {best_score:.4f}"
-        
-        # Generate Pine Script
-        generator = PineScriptGenerator()
-        pine_script = generator.generate(best_params)
-        
-        # Save to file
-        output_path = OUTPUT_DIR / "optimized_strategy.pine"
-        with open(output_path, "w") as f:
-            f.write(pine_script)
-        
-        optimization_status["message"] = f"Complete! Best profit factor: {best_score:.4f}"
-        
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        optimization_status["message"] = f"Error: {str(e)}"
-    finally:
-        optimization_status["running"] = False
-
-
-async def run_optimization_task(n_trials: int, timeout: int):
-    """Background task for optimization - runs sync code in thread pool"""
-    global optimization_status
-    
-    # Run the blocking optimization in a thread pool so it doesn't block the event loop
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(thread_pool, run_optimization_sync, n_trials, timeout)
-
-@app.get("/api/optimization-results")
-async def get_optimization_results():
-    """Get detailed optimization results"""
-    return {
-        "status": optimization_status,
-        "best_params": optimization_status.get("best_params"),
-        "best_score": optimization_status.get("best_score")
-    }
-
-
-# ============ UNIFIED OPTIMIZATION (Tests ALL 75+ Strategies) ============
+class DateRange(BaseModel):
+    enabled: bool = True
+    startDate: str = None
+    startTime: str = "00:00"
+    endDate: str = None
+    endTime: str = "23:59"
 
 class UnifiedRequest(BaseModel):
     capital: float = 1000.0
     risk_percent: float = 2.0
     n_trials: int = 300  # Trials per optimization method
+    engine: str = "all"  # "all" to compare all engines, or specific: tradingview, pandas_ta, mihakralj
+    date_range: DateRange = None  # Optional date range for Pine Script generation
 
 
 @app.post("/api/run-unified")
 async def start_unified_optimization(request: UnifiedRequest, background_tasks: BackgroundTasks):
     """
-    Run UNIFIED optimization - tests ALL 75+ strategies with ALL methods.
-    
-    This is THE optimization endpoint that:
-    1. Tests 75+ strategy types (Mean Reversion, Trend, Momentum, DaviddTech, etc.)
-    2. Uses 3 ML methods (Random Search, Bayesian TPE, CMA-ES)
-    3. Finds consensus strategies that multiple methods agree on
-    4. Validates on held-out data
-    5. Returns Top 10 most robust strategies
+    Run strategy finder - tests 18 entry strategies with optimized TP/SL combinations.
+
+    Tests combinations of:
+    - Entry strategies: RSI, BB, MACD, EMA cross, engulfing patterns, etc.
+    - Directions: Long and Short
+    - TP/SL: Small percentages (0.3% - 5%) that actually get hit
+
+    Args:
+        capital: Starting capital
+        risk_percent: Position size as % of equity
+        n_trials: Number of optimization trials
+        engine: Calculation engine - "tradingview", "pandas_ta", or "mihakralj"
+
+    Returns profitable strategies ranked by P&L.
     """
     global unified_status
-    
+
+    # Validate engine parameter
+    valid_engines = ["tradingview", "pandas_ta", "mihakralj", "all"]
+    if request.engine not in valid_engines:
+        raise HTTPException(status_code=400, detail=f"Invalid engine. Must be one of: {valid_engines}")
+
     if unified_status["running"]:
         raise HTTPException(status_code=400, detail="Optimization already running")
-    
+
     if not data_status["loaded"]:
         raise HTTPException(status_code=400, detail="No data loaded. Please load data first.")
-    
+
     unified_status["running"] = True
     unified_status["progress"] = 0
-    unified_status["message"] = "Starting unified optimization (testing ALL strategies)..."
+    unified_status["message"] = f"Starting unified optimization [{request.engine.upper()} engine]..."
     unified_status["report"] = None
-    
+
+    # Convert date_range to dict for storage
+    date_range_dict = None
+    if request.date_range:
+        date_range_dict = {
+            "enabled": request.date_range.enabled,
+            "startDate": request.date_range.startDate,
+            "startTime": request.date_range.startTime,
+            "endDate": request.date_range.endDate,
+            "endTime": request.date_range.endTime
+        }
+
     background_tasks.add_task(
-        run_unified_task, 
-        request.capital, 
-        request.risk_percent, 
-        request.n_trials
+        run_unified_task,
+        request.capital,
+        request.risk_percent,
+        request.n_trials,
+        request.engine,
+        date_range_dict
     )
     
     return {
-        "status": "started", 
-        "message": f"Running UNIFIED optimization: £{request.capital} capital, {request.risk_percent}% risk, {request.n_trials} trials/method, 75+ strategies"
+        "status": "started",
+        "message": f"Finding profitable strategies - testing 18 entry rules x 2 directions x TP/SL combinations"
     }
 
 
-def run_unified_sync(capital: float, risk_percent: float, n_trials: int):
-    """Synchronous unified optimization that runs in thread pool"""
+def run_unified_sync(capital: float, risk_percent: float, n_trials: int, engine: str = "all", date_range: dict = None):
+    """
+    Synchronous unified optimization that runs in thread pool.
+
+    When engine="all", runs all three engines for comparison.
+    Otherwise runs just the specified engine.
+
+    Args:
+        date_range: Optional date range dict for Pine Script generation
+    """
     global unified_status
-    
+
     try:
         # Load data - find most recent data file
         data_files = list(DATA_DIR.glob("*_*m.csv"))
@@ -517,46 +468,163 @@ def run_unified_sync(capital: float, risk_percent: float, n_trials: int):
             unified_status["message"] = "Error: No data file found"
             unified_status["running"] = False
             return
-        
+
         csv_path = max(data_files, key=lambda p: p.stat().st_mtime)
         unified_status["message"] = f"Loading data from {csv_path.name}..."
 
-        # Extract metadata from filename (e.g., "kraken_btcgbp_15m.csv")
-        filename = csv_path.stem  # e.g., "kraken_btcgbp_15m"
+        # Extract metadata from filename
+        filename = csv_path.stem
         parts = filename.split("_")
-        data_source = parts[0] if len(parts) > 0 else None
-        symbol = parts[1].upper() if len(parts) > 1 else None
-        timeframe = parts[2] if len(parts) > 2 else None
+
+        if len(parts) >= 3:
+            data_source = parts[0]
+            symbol = parts[1].upper()
+            timeframe = parts[2]
+        elif len(parts) == 2:
+            symbol = parts[0].upper()
+            timeframe = parts[1]
+            if "GBP" in symbol:
+                data_source = "KRAKEN"
+            elif "USDT" in symbol:
+                data_source = "BINANCE"
+            else:
+                data_source = None
+        else:
+            data_source = None
+            symbol = filename.upper()
+            timeframe = "15m"
 
         df = pd.read_csv(csv_path)
         df['time'] = pd.to_datetime(df['time'])
 
-        unified_status["message"] = f"Starting UNIFIED optimization on {len(df)} candles..."
-        unified_status["progress"] = 2
+        # Apply date range filter if provided (MUST match TradingView date filter)
+        if date_range and date_range.get('enabled'):
+            start_date = date_range.get('startDate')
+            end_date = date_range.get('endDate')
+            start_time = date_range.get('startTime', '00:00')
+            end_time = date_range.get('endTime', '23:59')
 
-        # Run unified optimization with streaming callback for real-time results
-        report = run_unified_optimization(
-            df=df,
-            capital=capital,
-            risk_percent=risk_percent,
-            n_trials=n_trials,
-            status=unified_status,
-            streaming_callback=publish_strategy_result,
-            symbol=symbol,
-            timeframe=timeframe,
-            data_source=data_source
-        )
-        
-        unified_status["report"] = report
-        unified_status["progress"] = 100
-        
-        top_count = len(report.get("top_10", []))
-        if top_count > 0:
-            best = report["top_10"][0]
-            unified_status["message"] = f"Complete! #{1} {best['strategy_name']} (PF: {best['metrics']['profit_factor']}, PnL: £{best['metrics']['total_pnl']:.2f})"
+            if start_date:
+                start_datetime = pd.to_datetime(f"{start_date} {start_time}")
+                df = df[df['time'] >= start_datetime]
+            if end_date:
+                end_datetime = pd.to_datetime(f"{end_date} {end_time}")
+                df = df[df['time'] <= end_datetime]
+
+            unified_status["message"] = f"Filtered to {len(df)} candles ({start_date} to {end_date})"
+
+        # Determine which engines to run
+        if engine == "all":
+            engines_to_run = ["tradingview", "pandas_ta", "mihakralj"]
         else:
-            unified_status["message"] = "Complete! No profitable strategies found."
-        
+            engines_to_run = [engine]
+
+        all_reports = {}
+        total_engines = len(engines_to_run)
+
+        for idx, eng in enumerate(engines_to_run):
+            engine_label = eng.upper()
+            # Short tags for display: TV, PT, MH
+            engine_tag = {"tradingview": "TV", "pandas_ta": "PT", "mihakralj": "MH"}.get(eng, eng[:2].upper())
+
+            # Calculate progress range for this engine (continuous 0-100 across all engines)
+            progress_min = int((idx / total_engines) * 95)
+            progress_max = int(((idx + 1) / total_engines) * 95)
+
+            unified_status["message"] = f"[{engine_tag}] Finding strategies on {len(df)} candles..."
+            unified_status["progress"] = progress_min
+
+            # Create engine-aware streaming callback
+            def make_callback(tag, engine_name):
+                def callback(result):
+                    result['engine'] = engine_name
+                    result['engine_tag'] = tag
+                    publish_strategy_result(result)
+                return callback
+
+            # Run strategy finder with this engine - stream ALL engines
+            report = run_strategy_finder(
+                df=df.copy(),  # Use copy to avoid any state issues
+                status=unified_status,
+                streaming_callback=make_callback(engine_tag, eng),
+                symbol=symbol,
+                timeframe=timeframe,
+                exchange=data_source.upper() if data_source else None,
+                capital=capital,
+                position_size_pct=risk_percent,
+                engine=eng,
+                progress_min=progress_min,
+                progress_max=progress_max
+            )
+
+            all_reports[eng] = report
+
+        # Create combined report for comparison mode
+        if engine == "all":
+            # Find the best performing engine
+            best_engine = None
+            best_pnl = float('-inf')
+            for eng, report in all_reports.items():
+                top_10 = report.get("top_10", [])
+                if top_10:
+                    engine_best_pnl = top_10[0]["metrics"]["total_pnl"]
+                    if engine_best_pnl > best_pnl:
+                        best_pnl = engine_best_pnl
+                        best_engine = eng
+
+            # Create comparison report structure
+            combined_report = {
+                'generated_at': datetime.now().isoformat(),
+                'data_rows': len(df),
+                'exchange': data_source.upper() if data_source else None,
+                'symbol': symbol,
+                'timeframe': timeframe,
+                'mode': 'comparison',
+                'engines': engines_to_run,
+                'best_engine': best_engine,
+                'capital': capital,
+                'position_size_pct': risk_percent,
+                # Include all engine reports
+                'engine_reports': all_reports,
+                # Also include the best engine's results as the "main" report for backward compatibility
+                'engine': best_engine or 'tradingview',
+                'top_10': all_reports.get(best_engine or 'tradingview', {}).get('top_10', []),
+                'total_tested': all_reports.get(best_engine or 'tradingview', {}).get('total_tested', 0),
+                'profitable_found': all_reports.get(best_engine or 'tradingview', {}).get('profitable_found', 0),
+                'beats_buy_hold_count': all_reports.get(best_engine or 'tradingview', {}).get('beats_buy_hold_count', 0),
+                'buy_hold_return': all_reports.get(best_engine or 'tradingview', {}).get('buy_hold_return', 0),
+            }
+            unified_status["report"] = combined_report
+        else:
+            # Single engine mode - use original format
+            unified_status["report"] = all_reports[engine]
+
+        # Store date_range for Pine Script generation
+        if date_range:
+            unified_status["report"]["date_range"] = date_range
+
+        unified_status["progress"] = 100
+
+        # Final message
+        if engine == "all":
+            summary_parts = []
+            for eng in engines_to_run:
+                top_10 = all_reports[eng].get("top_10", [])
+                if top_10:
+                    best = top_10[0]
+                    summary_parts.append(f"{eng.upper()}: £{best['metrics']['total_pnl']:.0f}")
+                else:
+                    summary_parts.append(f"{eng.upper()}: No profitable")
+            unified_status["message"] = f"Complete! {' | '.join(summary_parts)}"
+        else:
+            report = unified_status["report"]
+            top_count = len(report.get("top_10", []))
+            if top_count > 0:
+                best = report["top_10"][0]
+                unified_status["message"] = f"Complete! #{1} {best['strategy_name']} (PF: {best['metrics']['profit_factor']}, PnL: £{best['metrics']['total_pnl']:.2f})"
+            else:
+                unified_status["message"] = "Complete! No profitable strategies found."
+
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -565,17 +633,19 @@ def run_unified_sync(capital: float, risk_percent: float, n_trials: int):
         unified_status["running"] = False
 
 
-async def run_unified_task(capital: float, risk_percent: float, n_trials: int):
+async def run_unified_task(capital: float, risk_percent: float, n_trials: int, engine: str = "all", date_range: dict = None):
     """Background task for unified optimization - runs sync code in thread pool"""
     global unified_status
-    
+
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(
-        thread_pool, 
-        run_unified_sync, 
-        capital, 
-        risk_percent, 
-        n_trials
+        thread_pool,
+        run_unified_sync,
+        capital,
+        risk_percent,
+        n_trials,
+        engine,
+        date_range
     )
 
 
@@ -678,12 +748,13 @@ async def get_unified_report():
 
 
 @app.get("/api/unified-pinescript/{rank}")
-async def get_unified_pinescript(rank: int = 1):
+async def get_unified_pinescript(rank: int = 1, engine: str = "tradingview"):
     """
     Generate Pine Script for any of the Top 10 unified optimization results.
 
     Args:
         rank: Strategy rank (1-10)
+        engine: Calculation engine - "tradingview" (default), "pandas_ta", or "mihakralj"
 
     Returns:
         Pine Script code for the specified strategy
@@ -696,14 +767,28 @@ async def get_unified_pinescript(rank: int = 1):
     if rank < 1 or rank > len(top_10):
         raise HTTPException(status_code=400, detail=f"Invalid rank. Must be 1-{len(top_10)}")
 
+    # Validate engine parameter
+    valid_engines = ["tradingview", "pandas_ta", "mihakralj"]
+    if engine not in valid_engines:
+        raise HTTPException(status_code=400, detail=f"Invalid engine. Must be one of: {valid_engines}")
+
     strategy_data = top_10[rank - 1]
     strategy_name = strategy_data["strategy_name"]
     params = strategy_data["params"]
     metrics = strategy_data["metrics"]
+    entry_rule = strategy_data.get("entry_rule")
+    direction = strategy_data.get("direction")
+
+    # Get trading parameters from report (passed from UI)
+    position_size_pct = unified_status["report"].get("position_size_pct", 75.0)
+    capital = unified_status["report"].get("capital", 1000.0)
+    date_range = unified_status["report"].get("date_range")
 
     # Use EXACT-MATCH generator for guaranteed TradingView compatibility
     generator = PineScriptGenerator()
-    pine_script = generator.generate_exact_match(strategy_name, params, metrics)
+    pine_script = generator.generate_exact_match(strategy_name, params, metrics, entry_rule, direction,
+                                                  position_size_pct=position_size_pct, capital=capital,
+                                                  engine=engine, date_range=date_range)
 
     return {
         "rank": rank,
@@ -712,14 +797,18 @@ async def get_unified_pinescript(rank: int = 1):
         "tp_percent": params.get("tp_percent", 1.0),
         "sl_percent": params.get("sl_percent", 3.0),
         "metrics": metrics,
+        "engine": engine,
         "pinescript": pine_script
     }
 
 
 @app.get("/api/unified-pinescript-all")
-async def get_all_unified_pinescripts():
+async def get_all_unified_pinescripts(engine: str = "tradingview"):
     """
     Generate Pine Scripts for ALL Top 10 strategies.
+
+    Args:
+        engine: Calculation engine - "tradingview" (default), "pandas_ta", or "mihakralj"
 
     Returns:
         List of Pine Script codes for all top strategies
@@ -727,17 +816,31 @@ async def get_all_unified_pinescripts():
     if unified_status["report"] is None:
         raise HTTPException(status_code=404, detail="No optimization results. Run unified optimization first.")
 
+    # Validate engine parameter
+    valid_engines = ["tradingview", "pandas_ta", "mihakralj"]
+    if engine not in valid_engines:
+        raise HTTPException(status_code=400, detail=f"Invalid engine. Must be one of: {valid_engines}")
+
     top_10 = unified_status["report"].get("top_10", [])
     generator = PineScriptGenerator()
+
+    # Get trading parameters from report (passed from UI)
+    position_size_pct = unified_status["report"].get("position_size_pct", 75.0)
+    capital = unified_status["report"].get("capital", 1000.0)
+    date_range = unified_status["report"].get("date_range")
 
     results = []
     for i, strategy_data in enumerate(top_10, 1):
         strategy_name = strategy_data["strategy_name"]
         params = strategy_data["params"]
         metrics = strategy_data["metrics"]
+        entry_rule = strategy_data.get("entry_rule")
+        direction = strategy_data.get("direction")
 
         # Use EXACT-MATCH generator for guaranteed TradingView compatibility
-        pine_script = generator.generate_exact_match(strategy_name, params, metrics)
+        pine_script = generator.generate_exact_match(strategy_name, params, metrics, entry_rule, direction,
+                                                      position_size_pct=position_size_pct, capital=capital,
+                                                      engine=engine, date_range=date_range)
 
         results.append({
             "rank": i,
@@ -746,16 +849,17 @@ async def get_all_unified_pinescripts():
             "tp_percent": params.get("tp_percent", 1.0),
             "sl_percent": params.get("sl_percent", 3.0),
             "metrics": metrics,
+            "engine": engine,
             "pinescript": pine_script
         })
 
-    return {"strategies": results}
+    return {"strategies": results, "engine": engine}
 
 
 @app.get("/api/download-unified-pinescript/{rank}")
-async def download_unified_pinescript(rank: int = 1):
+async def download_unified_pinescript(rank: int = 1, engine: str = "tradingview"):
     """Download Pine Script file for a specific ranked strategy"""
-    result = await get_unified_pinescript(rank)
+    result = await get_unified_pinescript(rank, engine=engine)
 
     # Create output file
     filename = f"{result['strategy_name']}_rank{rank}.pine"
@@ -771,210 +875,172 @@ async def download_unified_pinescript(rank: int = 1):
     )
 
 
-# =============================================================================
-# ML MODEL TRAINING ENDPOINTS
-# =============================================================================
+@app.get("/api/unified-trades-csv/{rank}")
+async def download_trades_csv(rank: int = 1):
+    """
+    Download trades list as CSV for a specific ranked strategy.
+    Matches TradingView's trade list export format.
+    """
+    if unified_status["report"] is None:
+        raise HTTPException(status_code=404, detail="No optimization results. Run unified optimization first.")
 
-# ML Training Status
-ml_training_status = {
-    "running": False,
-    "progress": 0,
-    "message": "Ready",
-    "current_model": None,
-    "models_trained": [],
-    "models_failed": [],
-    "results": {}
-}
+    top_10 = unified_status["report"].get("top_10", [])
 
+    if rank < 1 or rank > len(top_10):
+        raise HTTPException(status_code=400, detail=f"Invalid rank. Must be 1-{len(top_10)}")
 
-class MLTrainingRequest(BaseModel):
-    """Request model for ML training"""
-    models: List[str] = ["ml_xgboost", "ml_lightgbm", "ml_catboost"]  # Models to train
-    n_estimators: int = 100
-    max_depth: int = 6
-    learning_rate: float = 0.1
-    target_horizon: int = 1
-    target_threshold: float = 0.001
+    strategy_data = top_10[rank - 1]
+    strategy_name = strategy_data["strategy_name"]
+    trades_list = strategy_data.get("trades_list", [])
 
+    if not trades_list:
+        raise HTTPException(status_code=404, detail="No trades found for this strategy")
 
-@app.post("/api/ml-train")
-async def start_ml_training(request: MLTrainingRequest, background_tasks: BackgroundTasks):
-    """Start ML model training"""
-    global ml_training_status
+    # Build CSV content (TradingView-style format)
+    csv_lines = [
+        "Trade #,Type,Entry Time,Exit Time,Entry Price,Exit Price,Position Size (GBP),Position Size (qty),Net P&L GBP,Net P&L %,Run-up GBP,Run-up %,Drawdown GBP,Drawdown %,Cumulative P&L GBP,Result"
+    ]
 
-    if not data_status["loaded"]:
-        raise HTTPException(status_code=400, detail="No data loaded. Load data first.")
-
-    if ml_training_status["running"]:
-        raise HTTPException(status_code=400, detail="ML training already running")
-
-    ml_training_status["running"] = True
-    ml_training_status["progress"] = 0
-    ml_training_status["message"] = "Starting ML training..."
-    ml_training_status["models_trained"] = []
-    ml_training_status["models_failed"] = []
-    ml_training_status["results"] = {}
-
-    # Run training in background
-    background_tasks.add_task(
-        run_ml_training_task,
-        request.models,
-        request.n_estimators,
-        request.max_depth,
-        request.learning_rate,
-        request.target_horizon,
-        request.target_threshold
-    )
-
-    return {"status": "started", "message": f"Training {len(request.models)} ML models..."}
-
-
-async def run_ml_training_task(models: List[str], n_estimators: int, max_depth: int,
-                                learning_rate: float, target_horizon: int, target_threshold: float):
-    """Background task to train ML models"""
-    global ml_training_status
-
-    try:
-        # Load data
-        data_files = list(DATA_DIR.glob("*_*m.csv"))
-        if not data_files:
-            ml_training_status["running"] = False
-            ml_training_status["message"] = "Error: No data file found"
-            return
-
-        csv_path = max(data_files, key=lambda p: p.stat().st_mtime)
-        df = pd.read_csv(csv_path)
-        df['time'] = pd.to_datetime(df['time'])
-
-        # Import and run ML optimizer
-        from ml_optimizer import MLOptimizer
-
-        def status_callback(status):
-            ml_training_status.update(status)
-
-        optimizer = MLOptimizer(df)
-        results = optimizer.train_models(
-            models,
-            status_callback=status_callback,
-            n_estimators=n_estimators,
-            max_depth=max_depth,
-            learning_rate=learning_rate,
-            target_horizon=target_horizon,
-            target_threshold=target_threshold
+    for trade in trades_list:
+        csv_lines.append(
+            f"{trade['trade_num']},"
+            f"{trade['direction'].upper()},"
+            f"{trade['entry_time']},"
+            f"{trade['exit_time']},"
+            f"{trade['entry']},"
+            f"{trade['exit']},"
+            f"{trade['position_size']},"
+            f"{trade['position_qty']},"
+            f"{trade['pnl']},"
+            f"{trade['pnl_pct']},"
+            f"{trade['run_up']},"
+            f"{trade['run_up_pct']},"
+            f"{trade['drawdown']},"
+            f"{trade['drawdown_pct']},"
+            f"{trade['cumulative_pnl']},"
+            f"{trade['result']}"
         )
 
-        ml_training_status["results"] = results
+    csv_content = "\n".join(csv_lines)
 
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        ml_training_status["message"] = f"Error: {str(e)}"
+    # Create output file
+    from datetime import datetime
+    date_str = datetime.now().strftime("%Y-%m-%d")
+    filename = f"{strategy_name}_{date_str}.csv"
+    output_path = OUTPUT_DIR / filename
 
-    finally:
-        ml_training_status["running"] = False
-        ml_training_status["progress"] = 100
+    with open(output_path, "w") as f:
+        f.write(csv_content)
 
-
-@app.get("/api/ml-status")
-async def get_ml_status():
-    """Get current ML training status"""
-    return ml_training_status
-
-
-@app.get("/api/ml-models")
-async def get_available_ml_models():
-    """Get list of available ML models"""
-    return {
-        "available_models": {
-            "ml_xgboost": {"name": "XGBoost Classifier", "installed": True},
-            "ml_lightgbm": {"name": "LightGBM Classifier", "installed": True},
-            "ml_catboost": {"name": "CatBoost Classifier", "installed": True},
-            "ml_lstm": {"name": "LSTM Neural Network", "installed": False, "requires": "torch"},
-            "ml_gru": {"name": "GRU Neural Network", "installed": False, "requires": "torch"},
-            "ml_transformer": {"name": "Transformer Time-Series", "installed": False, "requires": "torch"},
-            "ml_rl_ppo": {"name": "RL Agent (PPO)", "installed": False, "requires": "stable-baselines3"},
-            "ml_rl_dqn": {"name": "RL Agent (DQN)", "installed": False, "requires": "stable-baselines3"},
-        },
-        "trained_models": ml_training_status.get("models_trained", [])
-    }
-
-
-# =============================================================================
-# END ML MODEL TRAINING ENDPOINTS
-# =============================================================================
-
-
-@app.get("/api/backtest")
-async def run_backtest(
-    adx_threshold: int = 25,
-    bb_length: int = 20,
-    bb_mult: float = 2.0,
-    rsi_oversold: int = 35,
-    rsi_overbought: int = 65,
-    sl_fixed: float = 100,
-    tp_ratio: float = 1.5
-):
-    """Run a single backtest with specified parameters"""
-    if not data_status["loaded"]:
-        raise HTTPException(status_code=400, detail="No data loaded")
-    
-    import pandas as pd
-    
-    # Find most recent data file
-    data_files = list(DATA_DIR.glob("btcgbp_*m.csv"))
-    if not data_files:
-        raise HTTPException(status_code=400, detail="No data file found")
-    
-    csv_path = max(data_files, key=lambda p: p.stat().st_mtime)
-    df = pd.read_csv(csv_path)
-    df['time'] = pd.to_datetime(df['time'])
-    
-    strategy = SidewaysScalperStrategy(
-        adx_threshold=adx_threshold,
-        adx_length=14,
-        bb_length=bb_length,
-        bb_mult=bb_mult,
-        rsi_length=14,
-        rsi_oversold=rsi_oversold,
-        rsi_overbought=rsi_overbought,
-        sl_fixed=sl_fixed,
-        tp_ratio=tp_ratio
-    )
-    
-    results = strategy.backtest(df)
-    
-    return results
-
-@app.get("/api/pinescript")
-async def get_pinescript():
-    """Get the generated Pine Script"""
-    output_path = OUTPUT_DIR / "optimized_strategy.pine"
-    
-    if not output_path.exists():
-        if optimization_status.get("best_params"):
-            # Generate on the fly
-            generator = PineScriptGenerator()
-            return {"pinescript": generator.generate(optimization_status["best_params"])}
-        raise HTTPException(status_code=404, detail="No optimized strategy found. Run optimization first.")
-    
-    with open(output_path, "r") as f:
-        content = f.read()
-    
-    return {"pinescript": content}
-
-@app.get("/api/download-pinescript")
-async def download_pinescript():
-    """Download the Pine Script file"""
-    output_path = OUTPUT_DIR / "optimized_strategy.pine"
-    
-    if not output_path.exists():
-        raise HTTPException(status_code=404, detail="No optimized strategy found")
-    
     return FileResponse(
         output_path,
-        media_type="text/plain",
-        filename="btcgbp_optimized_scalper.pine"
+        media_type="text/csv",
+        filename=filename
     )
+
+
+@app.get("/api/tradingview-link/{rank}")
+async def get_tradingview_link(rank: int = 1, engine: str = "tradingview"):
+    """
+    Generate TradingView deep link for a strategy.
+    Opens TradingView with the correct exchange:symbol and timeframe.
+    Also returns the Pine Script for clipboard copy.
+
+    Args:
+        rank: Strategy rank (1-10)
+        engine: Calculation engine - "tradingview" (default), "pandas_ta", or "mihakralj"
+    """
+    if unified_status["report"] is None:
+        raise HTTPException(status_code=404, detail="No optimization results. Run unified optimization first.")
+
+    report = unified_status["report"]
+    top_10 = report.get("top_10", [])
+
+    if rank < 1 or rank > len(top_10):
+        raise HTTPException(status_code=400, detail=f"Invalid rank. Must be 1-{len(top_10)}")
+
+    # Get chart settings from report
+    raw_exchange = report.get("exchange", "")
+    symbol = report.get("symbol", "BTCUSDT")
+    timeframe = report.get("timeframe", "15m")
+
+    # Map data source to TradingView-supported exchange
+    # TradingView supports: BINANCE, KRAKEN, COINBASE, BITSTAMP, etc.
+    # Yahoo Finance and other unsupported sources need mapping
+    tv_exchange_map = {
+        "BINANCE": "BINANCE",
+        "KRAKEN": "KRAKEN",
+        "COINBASE": "COINBASE",
+        "BITSTAMP": "BITSTAMP",
+        "BLOFIN": "BLOFIN",
+    }
+
+    # Check if exchange is supported, otherwise infer from symbol
+    exchange = tv_exchange_map.get(raw_exchange.upper() if raw_exchange else "", None)
+    exchange_warning = None
+
+    if not exchange:
+        # Infer exchange from symbol
+        if symbol and "GBP" in symbol.upper():
+            exchange = "KRAKEN"  # KRAKEN has GBP pairs
+        elif symbol and "USDT" in symbol.upper():
+            exchange = "BINANCE"  # BINANCE has most USDT pairs
+        elif symbol and "USD" in symbol.upper():
+            exchange = "COINBASE"  # COINBASE has USD pairs
+        else:
+            exchange = "BINANCE"  # Default fallback
+
+        if raw_exchange and raw_exchange.upper() not in tv_exchange_map:
+            exchange_warning = f"Data source '{raw_exchange}' not available on TradingView. Using {exchange} instead - slight price differences may occur."
+
+    # Convert timeframe to TradingView format: "15m" → "15", "1h" → "60"
+    tf_map = {
+        "1m": "1", "5m": "5", "15m": "15", "30m": "30",
+        "1h": "60", "4h": "240", "1d": "D", "1w": "W"
+    }
+    tv_interval = tf_map.get(timeframe, "15")
+
+    # Build TradingView URL
+    tv_url = f"https://www.tradingview.com/chart/?symbol={exchange}:{symbol}&interval={tv_interval}"
+
+    # Get strategy data and generate Pine Script
+    strategy_data = top_10[rank - 1]
+    strategy_name = strategy_data["strategy_name"]
+    params = strategy_data["params"]
+    metrics = strategy_data["metrics"]
+    entry_rule = strategy_data.get("entry_rule")
+    direction = strategy_data.get("direction")
+
+    # Get trading parameters from report
+    position_size_pct = report.get("position_size_pct", 75.0)
+    capital = report.get("capital", 1000.0)
+    date_range = report.get("date_range")
+
+    # Validate engine parameter
+    valid_engines = ["tradingview", "pandas_ta", "mihakralj"]
+    if engine not in valid_engines:
+        raise HTTPException(status_code=400, detail=f"Invalid engine. Must be one of: {valid_engines}")
+
+    # Generate Pine Script
+    generator = PineScriptGenerator()
+    pine_script = generator.generate_exact_match(
+        strategy_name, params, metrics, entry_rule, direction,
+        position_size_pct=position_size_pct, capital=capital,
+        engine=engine, date_range=date_range
+    )
+
+    return {
+        "tradingview_url": tv_url,
+        "pinescript": pine_script,
+        "exchange": exchange,
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "strategy_name": strategy_name,
+        "rank": rank,
+        "engine": engine,
+        "exchange_warning": exchange_warning  # None if no warning
+    }
+
 
 # =============================================================================
 # DATABASE API ENDPOINTS - Strategy Persistence
@@ -1155,6 +1221,372 @@ async def delete_strategy(strategy_id: int):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# TRADINGVIEW COMPARISON FEATURE - Compare our results vs TradingView
+# =============================================================================
+
+# Store comparison results
+comparison_data = {
+    "tv_trades": None,
+    "our_trades": None,
+    "comparison": None,
+    "strategy_rank": None
+}
+
+
+@app.post("/api/upload-tv-comparison/{rank}")
+async def upload_tv_comparison(rank: int, file: UploadFile = File(...)):
+    """
+    Upload TradingView trade list export CSV for comparison.
+
+    TradingView format (Entry long + Exit long rows per trade):
+    Trade #,Type,Date/Time,Signal,Price GBP,Position size (qty),...
+
+    Args:
+        rank: Strategy rank to compare against (1-10)
+        file: TradingView exported trade list CSV
+    """
+    global comparison_data
+
+    if unified_status["report"] is None:
+        raise HTTPException(status_code=400, detail="Run optimization first before comparing")
+
+    top_10 = unified_status["report"].get("top_10", [])
+    if rank < 1 or rank > len(top_10):
+        raise HTTPException(status_code=400, detail=f"Invalid rank. Must be 1-{len(top_10)}")
+
+    try:
+        contents = await file.read()
+
+        # Parse TradingView CSV
+        df = pd.read_csv(io.StringIO(contents.decode('utf-8')))
+        df.columns = df.columns.str.strip()
+
+        # TradingView exports Entry + Exit rows per trade
+        # Group by Trade # to combine entry/exit into single trade records
+        tv_trades = []
+
+        for trade_num in df['Trade #'].unique():
+            trade_rows = df[df['Trade #'] == trade_num]
+
+            entry_row = trade_rows[trade_rows['Type'].str.contains('Entry', case=False, na=False)]
+            exit_row = trade_rows[trade_rows['Type'].str.contains('Exit', case=False, na=False)]
+
+            if len(entry_row) == 0 or len(exit_row) == 0:
+                continue
+
+            entry_row = entry_row.iloc[0]
+            exit_row = exit_row.iloc[0]
+
+            # Extract direction from Signal or Type
+            direction = 'long' if 'long' in str(entry_row.get('Signal', '')).lower() or 'long' in str(entry_row.get('Type', '')).lower() else 'short'
+
+            tv_trades.append({
+                'trade_num': int(trade_num),
+                'direction': direction.upper(),
+                'entry_time': str(entry_row.get('Date/Time', '')),
+                'exit_time': str(exit_row.get('Date/Time', '')),
+                'entry_price': float(entry_row.get('Price GBP', 0)),
+                'exit_price': float(exit_row.get('Price GBP', 0)),
+                'pnl': float(exit_row.get('Net P&L GBP', 0)),
+                'pnl_pct': float(str(exit_row.get('Net P&L %', '0')).replace('%', '')),
+                'cumulative_pnl': float(exit_row.get('Cumulative P&L GBP', 0))
+            })
+
+        # Get our trades for this strategy
+        our_strategy = top_10[rank - 1]
+        our_trades_list = our_strategy.get("trades_list", [])
+
+        # Perform comparison
+        comparison = compare_trades(tv_trades, our_trades_list)
+
+        # Store for UI access
+        comparison_data["tv_trades"] = tv_trades
+        comparison_data["our_trades"] = our_trades_list
+        comparison_data["comparison"] = comparison
+        comparison_data["strategy_rank"] = rank
+        comparison_data["strategy_name"] = our_strategy["strategy_name"]
+
+        return {
+            "status": "success",
+            "tv_trade_count": len(tv_trades),
+            "our_trade_count": len(our_trades_list),
+            "comparison": comparison
+        }
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=400, detail=f"Error parsing CSV: {str(e)}")
+
+
+def compare_trades(tv_trades: list, our_trades: list) -> dict:
+    """
+    Compare TradingView trades vs our backtester trades.
+
+    Returns detailed comparison with:
+    - Summary stats
+    - Trade-by-trade matching
+    - Discrepancies highlighted
+    """
+    # Summary comparison
+    tv_total_pnl = sum(t['pnl'] for t in tv_trades) if tv_trades else 0
+    our_total_pnl = sum(t['pnl'] for t in our_trades) if our_trades else 0
+
+    tv_wins = len([t for t in tv_trades if t['pnl'] > 0])
+    our_wins = len([t for t in our_trades if t.get('pnl', 0) > 0])
+
+    tv_win_rate = (tv_wins / len(tv_trades) * 100) if tv_trades else 0
+    our_win_rate = (our_wins / len(our_trades) * 100) if our_trades else 0
+
+    # Try to match trades by time (within 1 hour tolerance)
+    matched_trades = []
+    unmatched_tv = []
+    unmatched_ours = []
+
+    our_trades_copy = list(our_trades)
+
+    for tv_trade in tv_trades:
+        tv_entry = pd.to_datetime(tv_trade['entry_time'])
+        matched = False
+
+        for i, our_trade in enumerate(our_trades_copy):
+            our_entry = pd.to_datetime(our_trade['entry_time'])
+            time_diff = abs((tv_entry - our_entry).total_seconds() / 3600)  # hours
+
+            if time_diff <= 1:  # Within 1 hour
+                pnl_diff = tv_trade['pnl'] - our_trade['pnl']
+                matched_trades.append({
+                    'tv_trade': tv_trade,
+                    'our_trade': our_trade,
+                    'time_diff_hours': round(time_diff, 2),
+                    'pnl_diff': round(pnl_diff, 2),
+                    'pnl_diff_pct': round((pnl_diff / abs(our_trade['pnl']) * 100) if our_trade['pnl'] != 0 else 0, 1),
+                    'match_quality': 'exact' if time_diff < 0.1 else 'close'
+                })
+                our_trades_copy.pop(i)
+                matched = True
+                break
+
+        if not matched:
+            unmatched_tv.append(tv_trade)
+
+    unmatched_ours = our_trades_copy
+
+    return {
+        "summary": {
+            "tradingview": {
+                "trade_count": len(tv_trades),
+                "total_pnl": round(tv_total_pnl, 2),
+                "win_rate": round(tv_win_rate, 1),
+                "wins": tv_wins,
+                "losses": len(tv_trades) - tv_wins
+            },
+            "our_system": {
+                "trade_count": len(our_trades),
+                "total_pnl": round(our_total_pnl, 2),
+                "win_rate": round(our_win_rate, 1),
+                "wins": our_wins,
+                "losses": len(our_trades) - our_wins
+            },
+            "difference": {
+                "trade_count_diff": len(our_trades) - len(tv_trades),
+                "pnl_diff": round(our_total_pnl - tv_total_pnl, 2),
+                "win_rate_diff": round(our_win_rate - tv_win_rate, 1)
+            }
+        },
+        "matched_trades": matched_trades,
+        "unmatched_tv": unmatched_tv,
+        "unmatched_ours": unmatched_ours,
+        "match_rate": round(len(matched_trades) / len(tv_trades) * 100, 1) if tv_trades else 0
+    }
+
+
+@app.get("/api/comparison")
+async def get_comparison():
+    """Get the current comparison data between TradingView and our system"""
+    if comparison_data["comparison"] is None:
+        raise HTTPException(status_code=404, detail="No comparison data. Upload TradingView trade export first.")
+
+    return {
+        "strategy_rank": comparison_data["strategy_rank"],
+        "strategy_name": comparison_data["strategy_name"],
+        "comparison": comparison_data["comparison"],
+        "tv_trades": comparison_data["tv_trades"],
+        "our_trades": comparison_data["our_trades"]
+    }
+
+
+@app.delete("/api/comparison")
+async def clear_comparison():
+    """Clear comparison data"""
+    global comparison_data
+    comparison_data = {
+        "tv_trades": None,
+        "our_trades": None,
+        "comparison": None,
+        "strategy_rank": None
+    }
+    return {"status": "cleared"}
+
+
+# =============================================================================
+# INDICATOR ENGINE COMPARISON - Compare TV Default vs pandas_ta vs mihakralj
+# =============================================================================
+
+from indicator_engines import MultiEngineCalculator, IndicatorEngine
+
+@app.get("/api/indicator-comparison")
+async def get_indicator_comparison():
+    """
+    Compare indicator calculations across all three engines:
+    - TradingView Default (matches ta.* functions)
+    - pandas_ta (current library)
+    - mihakralj (mathematically rigorous)
+
+    Returns comparison for last 100 bars of loaded data.
+    """
+    global current_df
+
+    if current_df is None or len(current_df) == 0:
+        raise HTTPException(status_code=400, detail="No data loaded. Fetch data first.")
+
+    try:
+        # Use last 100 bars for comparison
+        df_sample = current_df.tail(100).copy()
+        calc = MultiEngineCalculator(df_sample)
+
+        # Get comparison summary
+        summary = calc.get_comparison_summary()
+
+        # Get detailed comparison for each indicator (last 20 values)
+        detailed = {}
+
+        # RSI comparison
+        rsi_df = calc.compare_indicator('rsi', length=14).tail(20)
+        detailed['rsi'] = {
+            'values': {
+                'tradingview': rsi_df['tradingview'].round(4).tolist(),
+                'pandas_ta': rsi_df['pandas_ta'].round(4).tolist(),
+                'mihakralj': rsi_df['mihakralj'].round(4).tolist(),
+            },
+            'timestamps': [str(t) for t in rsi_df.index.tolist()],
+        }
+
+        # EMA comparison
+        ema_df = calc.compare_indicator('ema', length=20).tail(20)
+        detailed['ema'] = {
+            'values': {
+                'tradingview': ema_df['tradingview'].round(2).tolist(),
+                'pandas_ta': ema_df['pandas_ta'].round(2).tolist(),
+                'mihakralj': ema_df['mihakralj'].round(2).tolist(),
+            },
+            'timestamps': [str(t) for t in ema_df.index.tolist()],
+        }
+
+        # SMA comparison
+        sma_df = calc.compare_indicator('sma', length=20).tail(20)
+        detailed['sma'] = {
+            'values': {
+                'tradingview': sma_df['tradingview'].round(2).tolist(),
+                'pandas_ta': sma_df['pandas_ta'].round(2).tolist(),
+                'mihakralj': sma_df['mihakralj'].round(2).tolist(),
+            },
+            'timestamps': [str(t) for t in sma_df.index.tolist()],
+        }
+
+        # ATR comparison
+        atr_df = calc.compare_indicator('atr', length=14).tail(20)
+        detailed['atr'] = {
+            'values': {
+                'tradingview': atr_df['tradingview'].round(2).tolist(),
+                'pandas_ta': atr_df['pandas_ta'].round(2).tolist(),
+                'mihakralj': atr_df['mihakralj'].round(2).tolist(),
+            },
+            'timestamps': [str(t) for t in atr_df.index.tolist()],
+        }
+
+        # MACD comparison (special handling for tuple return)
+        macd_tv = calc.macd_tradingview()
+        macd_pta = calc.macd_pandas_ta()
+        macd_mih = calc.macd_mihakralj()
+
+        detailed['macd'] = {
+            'values': {
+                'tradingview': macd_tv[0].tail(20).round(2).tolist(),
+                'pandas_ta': macd_pta[0].tail(20).round(2).tolist(),
+                'mihakralj': macd_mih[0].tail(20).round(2).tolist(),
+            },
+            'timestamps': [str(t) for t in macd_tv[0].tail(20).index.tolist()],
+        }
+
+        # Stochastic comparison
+        stoch_tv = calc.stoch_tradingview()
+        stoch_pta = calc.stoch_pandas_ta()
+        stoch_mih = calc.stoch_mihakralj()
+
+        detailed['stochastic'] = {
+            'values': {
+                'tradingview': stoch_tv[0].tail(20).round(2).tolist(),
+                'pandas_ta': stoch_pta[0].tail(20).round(2).tolist(),
+                'mihakralj': stoch_mih[0].tail(20).round(2).tolist(),
+            },
+            'timestamps': [str(t) for t in stoch_tv[0].tail(20).index.tolist()],
+        }
+
+        # Bollinger Bands comparison
+        bb_tv = calc.bbands_tradingview()
+        bb_pta = calc.bbands_pandas_ta()
+        bb_mih = calc.bbands_mihakralj()
+
+        detailed['bollinger_upper'] = {
+            'values': {
+                'tradingview': bb_tv[1].tail(20).round(2).tolist(),
+                'pandas_ta': bb_pta[1].tail(20).round(2).tolist(),
+                'mihakralj': bb_mih[1].tail(20).round(2).tolist(),
+            },
+            'timestamps': [str(t) for t in bb_tv[1].tail(20).index.tolist()],
+        }
+
+        return {
+            "summary": summary,
+            "detailed": detailed,
+            "sample_size": len(df_sample),
+            "engines": ["tradingview", "pandas_ta", "mihakralj"]
+        }
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error comparing indicators: {str(e)}")
+
+
+@app.get("/api/indicator-engines")
+async def list_indicator_engines():
+    """List available indicator calculation engines"""
+    return {
+        "engines": [
+            {
+                "id": "tradingview",
+                "name": "TradingView Default",
+                "description": "Matches TradingView's built-in ta.* functions exactly"
+            },
+            {
+                "id": "pandas_ta",
+                "name": "pandas_ta",
+                "description": "pandas_ta library implementation (current default)"
+            },
+            {
+                "id": "mihakralj",
+                "name": "mihakralj/QuanTAlib",
+                "description": "Mathematically rigorous implementations with proper warmup"
+            }
+        ],
+        "current": "pandas_ta",
+        "recommendation": "mihakralj - best for matching Pine Script output"
+    }
 
 
 # Mount static files

@@ -329,20 +329,194 @@ alertcondition(isEmergency, title="Emergency Exit", message="BTCGBP ML Scalper: 
         # Could add more features here in the future
         return base_script
 
-    def generate_exact_match(self, strategy_name: str, params: Dict, metrics: Dict = None) -> str:
+    def get_mihakralj_indicator_functions(self) -> str:
+        """
+        Get mihakralj's mathematically rigorous indicator implementations.
+        These are included in the Pine Script when engine='mihakralj'.
+
+        Reference: https://github.com/mihakralj/pinescript
+        """
+        return '''
+// =============================================================================
+// MIHAKRALJ INDICATOR FUNCTIONS (Mathematically Rigorous)
+// Reference: https://github.com/mihakralj/pinescript
+// =============================================================================
+
+// RSI with proper warmup compensation
+mih_rsi(series float src, simple int len) =>
+    if len <= 0
+        runtime.error("Length must be greater than 0")
+    float u = math.max(src - src[1], 0)
+    float d = math.max(src[1] - src, 0)
+    float alpha = 1.0 / len
+    var float smoothUp = 0.0
+    var float smoothDown = 0.0
+    if bar_index < len
+        smoothUp := u
+        smoothDown := d
+    else
+        smoothUp := nz(smoothUp[1]) * (1 - alpha) + u * alpha
+        smoothDown := nz(smoothDown[1]) * (1 - alpha) + d * alpha
+    float rs = smoothDown == 0 ? 0 : smoothUp / smoothDown
+    smoothDown == 0 ? 100 : 100 - (100 / (1 + rs))
+
+// EMA with warmup compensation
+mih_ema(series float source, simple int period) =>
+    float a = 2.0 / (period + 1)
+    float beta = 1.0 - a
+    var bool warmup = true
+    var float e = 1.0
+    var float ema = 0.0
+    var float result = source
+    ema := a * (source - ema) + ema
+    if warmup
+        e *= beta
+        float c = 1.0 / (1.0 - e)
+        result := c * ema
+        warmup := e > 1e-10
+    else
+        result := ema
+    result
+
+// SMA with O(1) circular buffer
+mih_sma(series float source, simple int period) =>
+    if period <= 0
+        runtime.error("Period must be greater than 0")
+    var array<float> buffer = array.new_float(period, na)
+    var int head = 0
+    var float sum = 0.0
+    var int count = 0
+    float oldest = array.get(buffer, head)
+    if not na(oldest)
+        sum -= oldest
+    else
+        count += 1
+    float current = nz(source)
+    sum += current
+    array.set(buffer, head, current)
+    head := (head + 1) % period
+    sum / math.max(1, count)
+
+// MACD with warmup compensation
+mih_macd(series float src, simple int fast_length, simple int slow_length, simple int signal_length) =>
+    float alpha_fast = 2.0 / (fast_length + 1)
+    float alpha_slow = 2.0 / (slow_length + 1)
+    float alpha_signal = 2.0 / (signal_length + 1)
+    float beta_fast = 1.0 - alpha_fast
+    float beta_slow = 1.0 - alpha_slow
+    float beta_signal = 1.0 - alpha_signal
+    var bool warmup = true
+    var float e_fast = 1.0
+    var float e_slow = 1.0
+    var float e_signal = 1.0
+    var float ema_fast = 0.0
+    var float ema_slow = 0.0
+    var float ema_signal = 0.0
+    var float result_fast = src
+    var float result_slow = src
+    var float result_signal = 0.0
+    ema_fast := alpha_fast * (src - ema_fast) + ema_fast
+    ema_slow := alpha_slow * (src - ema_slow) + ema_slow
+    if warmup
+        e_fast *= beta_fast
+        e_slow *= beta_slow
+        e_signal *= beta_signal
+        float c_fast = 1.0 / (1.0 - e_fast)
+        float c_slow = 1.0 / (1.0 - e_slow)
+        float c_signal = 1.0 / (1.0 - e_signal)
+        result_fast := c_fast * ema_fast
+        result_slow := c_slow * ema_slow
+        float macd_line = result_fast - result_slow
+        ema_signal := alpha_signal * (macd_line - ema_signal) + ema_signal
+        result_signal := c_signal * ema_signal
+        warmup := e_fast > 1e-10 or e_slow > 1e-10 or e_signal > 1e-10
+    else
+        result_fast := ema_fast
+        result_slow := ema_slow
+        float macd_line = result_fast - result_slow
+        ema_signal := alpha_signal * (macd_line - ema_signal) + ema_signal
+        result_signal := ema_signal
+    float macd_line = result_fast - result_slow
+    float histogram = macd_line - result_signal
+    [macd_line, result_signal, histogram]
+
+// Stochastic with smoothing
+mih_stoch(simple int kLength, simple int smoothK, simple int dPeriod) =>
+    float lowest = ta.lowest(low, kLength)
+    float highest = ta.highest(high, kLength)
+    float range_val = highest - lowest
+    float raw_k = range_val > 0 ? 100 * (close - lowest) / range_val : 0.0
+    float k = mih_sma(raw_k, smoothK)
+    float d = mih_sma(k, dPeriod)
+    [k, d]
+
+// Bollinger Bands with O(1) complexity
+mih_bbands(series float src, simple int period, simple float mult) =>
+    var array<float> buffer = array.new_float(period, na)
+    var int head = 0
+    var float sum = 0.0
+    var float sumSq = 0.0
+    var int count = 0
+    float oldest = array.get(buffer, head)
+    if not na(oldest)
+        sum -= oldest
+        sumSq -= oldest * oldest
+    else
+        count += 1
+    float current = nz(src)
+    sum += current
+    sumSq += current * current
+    array.set(buffer, head, current)
+    head := (head + 1) % period
+    float basis = sum / math.max(1, count)
+    float variance = math.max(0.0, sumSq / count - basis * basis)
+    float dev = mult * math.sqrt(variance)
+    [basis, basis + dev, basis - dev]
+
+// ATR with RMA warmup compensation
+mih_atr(simple int length) =>
+    var float prevClose = close
+    float tr1 = high - low
+    float tr2 = math.abs(high - prevClose)
+    float tr3 = math.abs(low - prevClose)
+    float trueRange = math.max(tr1, tr2, tr3)
+    prevClose := close
+    float alpha = 1.0 / float(length)
+    float beta = 1.0 - alpha
+    var float raw_rma = 0.0
+    var float e = 1.0
+    if not na(trueRange)
+        raw_rma := (raw_rma * (length - 1) + trueRange) / length
+        e *= beta
+        e > 1e-10 ? raw_rma / (1.0 - e) : raw_rma
+    else
+        na
+
+'''
+
+    def generate_exact_match(self, strategy_name: str, params: Dict, metrics: Dict = None,
+                              entry_rule: str = None, direction: str = None,
+                              position_size_pct: float = 75.0, capital: float = 1000.0,
+                              engine: str = "tradingview", date_range: Dict = None) -> str:
         """
         Generate EXACT-MATCH Pine Script v6 that guarantees 1:1 match with Python backtester.
 
         Key matching rules:
         - Entry at CLOSE of signal bar (process_orders_on_close=true)
         - Percentage-based TP/SL (not ATR-based)
-        - Fixed position size: 0.01 BTC
+        - Position size as % of equity (matches Python exactly)
         - Commission: 0.1% per side
 
         Args:
             strategy_name: Name of the strategy
             params: Optimized parameters (must include tp_percent, sl_percent)
             metrics: Performance metrics from backtesting
+            entry_rule: Entry rule identifier (e.g., 'williams_r', 'rsi_extreme')
+            direction: Trade direction ('long' or 'short')
+            position_size_pct: Position size as % of equity (from UI)
+            capital: Starting capital (from UI)
+            engine: Calculation engine ("tradingview", "pandas_ta", or "mihakralj")
+            date_range: Optional date range dict with keys: enabled, startDate, startTime, endDate, endTime
 
         Returns:
             Complete Pine Script v6 code as string
@@ -364,21 +538,415 @@ alertcondition(isEmergency, title="Emergency Exit", message="BTCGBP ML Scalper: 
 //   Profit Factor: {metrics.get('profit_factor', 0):.2f}
 //   Max Drawdown: £{metrics.get('max_drawdown', 0):.2f}"""
 
-        # Determine direction from strategy name or default to both
-        direction = "both"
-        if "long" in strategy_name.lower():
-            direction = "long"
-        elif "short" in strategy_name.lower():
-            direction = "short"
+        # Determine direction from parameter or strategy name
+        if direction is None:
+            direction = "both"
+            if "long" in strategy_name.lower():
+                direction = "long"
+            elif "short" in strategy_name.lower():
+                direction = "short"
 
+        is_long = direction == "long"
         enable_longs = direction in ["long", "both"]
         enable_shorts = direction in ["short", "both"]
+
+        # Variables for stats table
+        direction_upper = direction.upper()
+        direction_color = "color.green" if is_long else "color.red"
+
+        # Generate date range filtering code
+        date_range_code = ""
+        date_range_condition = ""
+        if date_range and date_range.get('enabled'):
+            # Format dates for Pine Script timestamp function (YYYY-MM-DD HH:MM)
+            start_date = date_range.get('startDate', '2024-01-01')
+            start_time = date_range.get('startTime', '00:00')
+            end_date = date_range.get('endDate', '2025-12-31')
+            end_time = date_range.get('endTime', '23:59')
+
+            date_range_code = f'''
+// =============================================================================
+// DATE RANGE FILTER
+// =============================================================================
+
+useDateRange = input.bool(true, "Limit Backtest to Date Range", group="Date Range")
+fromDate = input.time(timestamp("{start_date} {start_time} +0000"), "From Date", group="Date Range")
+toDate = input.time(timestamp("{end_date} {end_time} +0000"), "To Date", group="Date Range")
+
+// Function to check if current bar is within date range
+inDateRange() => not useDateRange or (time >= fromDate and time <= toDate)
+'''
+            date_range_condition = " and inDateRange()"
+
+        # Strategy-specific entry conditions - MUST MATCH PYTHON EXACTLY
+        entry_conditions = {
+            # === MOMENTUM ===
+            'rsi_extreme': f'''// RSI Strategy (TradingView built-in pattern)
+// Long: RSI crosses OVER oversold (30), Short: RSI crosses UNDER overbought (70)
+rsiValue = ta.rsi(close, 14)
+entrySignal = {"ta.crossover(rsiValue, 30)" if is_long else "ta.crossunder(rsiValue, 70)"}''',
+
+            'rsi_cross_50': f'''// RSI Cross 50 Entry
+rsiValue = ta.rsi(close, 14)
+entrySignal = {"ta.crossover(rsiValue, 50)" if is_long else "ta.crossunder(rsiValue, 50)"}''',
+
+            'stoch_extreme': f'''// Stochastic Slow Strategy (TradingView built-in pattern)
+// Long: K crosses OVER D while K < 20, Short: K crosses UNDER D while K > 80
+k = ta.sma(ta.stoch(close, high, low, 14), 3)
+d = ta.sma(k, 3)
+entrySignal = {"ta.crossover(k, d) and k < 20" if is_long else "ta.crossunder(k, d) and k > 80"}''',
+
+            'williams_r': f'''// Williams %R Extreme Entry (< -80 long, > -20 short)
+willrValue = ta.wpr(14)
+entrySignal = {"willrValue < -80" if is_long else "willrValue > -20"}''',
+
+            'cci_extreme': f'''// CCI Extreme Entry (< -100 long, > 100 short)
+cciValue = ta.cci(high, low, close, 20)
+entrySignal = {"cciValue < -100" if is_long else "cciValue > 100"}''',
+
+            'rsi_divergence': f'''// RSI Divergence Entry (simplified)
+rsiValue = ta.rsi(close, 14)
+lookback = 5
+priceLowerLow = low < ta.lowest(low, lookback)[1]
+rsiHigherLow = rsiValue > ta.valuewhen(priceLowerLow[1], rsiValue, 0)
+priceHigherHigh = high > ta.highest(high, lookback)[1]
+rsiLowerHigh = rsiValue < ta.valuewhen(priceHigherHigh[1], rsiValue, 0)
+entrySignal = {"priceLowerLow and rsiHigherLow and rsiValue < 40" if is_long else "priceHigherHigh and rsiLowerHigh and rsiValue > 60"}''',
+
+            # === MEAN REVERSION ===
+            'bb_touch': f'''// Bollinger Bands Strategy (TradingView built-in pattern)
+// Long: price crosses OVER lower band, Short: price crosses UNDER upper band
+[bbMiddle, bbUpper, bbLower] = ta.bb(close, 20, 2.0)
+entrySignal = {"ta.crossover(close, bbLower)" if is_long else "ta.crossunder(close, bbUpper)"}''',
+
+            'bb_squeeze_breakout': f'''// BB Squeeze Breakout Entry
+[bbMiddle, bbUpper, bbLower] = ta.bb(close, 20, 2.0)
+bbWidth = (bbUpper - bbLower) / bbMiddle
+avgWidth = ta.sma(bbWidth, 20)
+squeezed = bbWidth[1] < avgWidth * 0.8
+expanding = bbWidth > bbWidth[1]
+entrySignal = squeezed and expanding and {"close > bbMiddle" if is_long else "close < bbMiddle"}''',
+
+            'price_vs_sma': f'''// Price vs SMA Entry (1% deviation from SMA = mean reversion signal)
+sma20 = ta.sma(close, 20)
+entrySignal = {"close < sma20 * 0.99" if is_long else "close > sma20 * 1.01"}''',
+
+            'vwap_bounce': f'''// VWAP Bounce Entry
+vwapValue = ta.vwap(hlc3)
+touchedBelow = low < vwapValue
+touchedAbove = high > vwapValue
+closedAbove = close > vwapValue
+closedBelow = close < vwapValue
+entrySignal = {"touchedBelow and closedAbove" if is_long else "touchedAbove and closedBelow"}''',
+
+            # === TREND ===
+            'ema_cross': f'''// EMA 9/21 Cross Entry
+emaFast = ta.ema(close, 9)
+emaSlow = ta.ema(close, 21)
+entrySignal = {"ta.crossover(emaFast, emaSlow)" if is_long else "ta.crossunder(emaFast, emaSlow)"}''',
+
+            'sma_cross': f'''// MovingAvg2Line Cross (TradingView built-in pattern)
+// Fast SMA(9) crosses Slow SMA(18)
+mafast = ta.sma(close, 9)
+maslow = ta.sma(close, 18)
+entrySignal = {"ta.crossover(mafast, maslow)" if is_long else "ta.crossunder(mafast, maslow)"}''',
+
+            'macd_cross': f'''// MACD Strategy (TradingView built-in pattern)
+// Long: histogram crosses OVER zero, Short: histogram crosses UNDER zero
+[macdLine, signalLine, histLine] = ta.macd(close, 12, 26, 9)
+delta = macdLine - signalLine  // histogram
+entrySignal = {"ta.crossover(delta, 0)" if is_long else "ta.crossunder(delta, 0)"}''',
+
+            'price_above_sma': f'''// Price Crosses SMA Entry
+sma20 = ta.sma(close, 20)
+entrySignal = {"ta.crossover(close, sma20)" if is_long else "ta.crossunder(close, sma20)"}''',
+
+            'supertrend': f'''// Supertrend Strategy (TradingView built-in pattern)
+// if ta.change(direction) < 0 -> long, if ta.change(direction) > 0 -> short
+[supertrendValue, supertrendDir] = ta.supertrend(3, 10)
+dirChange = ta.change(supertrendDir)
+entrySignal = {"dirChange < 0" if is_long else "dirChange > 0"}''',
+
+            'adx_strong_trend': f'''// ADX Strong Trend Entry (ADX > 25)
+[diPlus, diMinus, adxValue] = ta.dmi(14, 14)
+strongTrend = adxValue > 25
+entrySignal = strongTrend and {"diPlus > diMinus" if is_long else "diMinus > diPlus"}''',
+
+            'psar_reversal': f'''// Parabolic SAR Reversal Entry
+psarValue = ta.sar(0.02, 0.02, 0.2)
+entrySignal = {"close > psarValue and close[1] <= psarValue[1]" if is_long else "close < psarValue and close[1] >= psarValue[1]"}''',
+
+            # === PATTERN ===
+            'consecutive_candles': f'''// Consecutive Candles Entry (3 in a row)
+greenCandle = close > open
+redCandle = close < open
+threeRed = redCandle[2] and redCandle[1] and redCandle
+threeGreen = greenCandle[2] and greenCandle[1] and greenCandle
+entrySignal = {"threeRed" if is_long else "threeGreen"}''',
+
+            'big_candle': f'''// Big Candle Reversal Entry (> 2x ATR)
+atrValue = ta.atr(14)
+candleRange = high - low
+bigCandle = candleRange > atrValue * 2
+greenCandle = close > open
+redCandle = close < open
+entrySignal = bigCandle and {"redCandle" if is_long else "greenCandle"}''',
+
+            'doji_reversal': f'''// Doji Reversal Entry
+body = math.abs(close - open)
+totalRange = high - low
+isDoji = totalRange > 0 and body < totalRange * 0.1
+prevRed = close[1] < open[1]
+prevGreen = close[1] > open[1]
+entrySignal = isDoji and {"prevRed" if is_long else "prevGreen"}''',
+
+            'engulfing': f'''// Engulfing Pattern Entry
+greenCandle = close > open
+redCandle = close < open
+bullishEngulf = greenCandle and redCandle[1] and close > open[1] and open < close[1]
+bearishEngulf = redCandle and greenCandle[1] and close < open[1] and open > close[1]
+entrySignal = {"bullishEngulf" if is_long else "bearishEngulf"}''',
+
+            'inside_bar': f'''// InSide Bar Strategy (TradingView built-in pattern)
+// if (high < high[1] and low > low[1]) - bar range inside previous bar
+// if (close > open) -> long, if (close < open) -> short
+insideBar = high < high[1] and low > low[1]
+greenCandle = close > open
+redCandle = close < open
+entrySignal = insideBar and {"greenCandle" if is_long else "redCandle"}''',
+
+            'outside_bar': f'''// OutSide Bar Strategy (TradingView built-in pattern)
+// if (high > high[1] and low < low[1]) - bar range engulfs previous bar
+// if (close > open) -> long, if (close < open) -> short
+outsideBar = high > high[1] and low < low[1]
+greenCandle = close > open
+redCandle = close < open
+entrySignal = outsideBar and {"greenCandle" if is_long else "redCandle"}''',
+
+            # === VOLATILITY ===
+            'atr_breakout': f'''// ATR Breakout Entry (move > 1.5x ATR)
+atrValue = ta.atr(14)
+priceMove = math.abs(close - close[1])
+bigMove = priceMove > atrValue * 1.5
+moveUp = close > close[1]
+moveDown = close < close[1]
+entrySignal = bigMove and {"moveUp" if is_long else "moveDown"}''',
+
+            'low_volatility_breakout': f'''// Low Volatility Breakout Entry
+atrValue = ta.atr(14)
+avgAtr = ta.sma(atrValue, 20)
+lowVol = atrValue[1] < avgAtr * 0.7
+breakHigh = close > high[1]
+breakLow = close < low[1]
+entrySignal = lowVol and {"breakHigh" if is_long else "breakLow"}''',
+
+            # === PRICE ACTION ===
+            'higher_low': f'''// Higher Low / Lower High Entry
+higherLow = low > low[1] and low[1] > low[2]
+lowerHigh = high < high[1] and high[1] < high[2]
+entrySignal = {"higherLow" if is_long else "lowerHigh"}''',
+
+            'support_resistance': f'''// Support/Resistance Entry (within 0.5% of recent extreme)
+recentLow = ta.lowest(low, 20)
+recentHigh = ta.highest(high, 20)
+entrySignal = {"close <= recentLow * 1.005" if is_long else "close >= recentHigh * 0.995"}''',
+        }
+
+        # Mihakralj entry conditions - uses mathematically rigorous mih_* functions
+        mihakralj_entry_conditions = {
+            # === MOMENTUM ===
+            'rsi_extreme': f'''// RSI Strategy (mihakralj warmup-compensated)
+rsiValue = mih_rsi(close, 14)
+entrySignal = {"ta.crossover(rsiValue, 30)" if is_long else "ta.crossunder(rsiValue, 70)"}''',
+
+            'rsi_cross_50': f'''// RSI Cross 50 Entry (mihakralj)
+rsiValue = mih_rsi(close, 14)
+entrySignal = {"ta.crossover(rsiValue, 50)" if is_long else "ta.crossunder(rsiValue, 50)"}''',
+
+            'stoch_extreme': f'''// Stochastic Slow Strategy (mihakralj O(1) SMA)
+[k, d] = mih_stoch(14, 3, 3)
+entrySignal = {"ta.crossover(k, d) and k < 20" if is_long else "ta.crossunder(k, d) and k > 80"}''',
+
+            'williams_r': f'''// Williams %R Extreme Entry (< -80 long, > -20 short)
+willrValue = ta.wpr(14)
+entrySignal = {"willrValue < -80" if is_long else "willrValue > -20"}''',
+
+            'cci_extreme': f'''// CCI Extreme Entry (< -100 long, > 100 short)
+cciValue = ta.cci(high, low, close, 20)
+entrySignal = {"cciValue < -100" if is_long else "cciValue > 100"}''',
+
+            'rsi_divergence': f'''// RSI Divergence Entry (mihakralj RSI)
+rsiValue = mih_rsi(close, 14)
+lookback = 5
+priceLowerLow = low < ta.lowest(low, lookback)[1]
+rsiHigherLow = rsiValue > ta.valuewhen(priceLowerLow[1], rsiValue, 0)
+priceHigherHigh = high > ta.highest(high, lookback)[1]
+rsiLowerHigh = rsiValue < ta.valuewhen(priceHigherHigh[1], rsiValue, 0)
+entrySignal = {"priceLowerLow and rsiHigherLow and rsiValue < 40" if is_long else "priceHigherHigh and rsiLowerHigh and rsiValue > 60"}''',
+
+            # === MEAN REVERSION ===
+            'bb_touch': f'''// Bollinger Bands Strategy (mihakralj O(1) complexity)
+[bbMiddle, bbUpper, bbLower] = mih_bbands(close, 20, 2.0)
+entrySignal = {"ta.crossover(close, bbLower)" if is_long else "ta.crossunder(close, bbUpper)"}''',
+
+            'bb_squeeze_breakout': f'''// BB Squeeze Breakout Entry (mihakralj O(1) BBands)
+[bbMiddle, bbUpper, bbLower] = mih_bbands(close, 20, 2.0)
+bbWidth = (bbUpper - bbLower) / bbMiddle
+avgWidth = mih_sma(bbWidth, 20)
+squeezed = bbWidth[1] < avgWidth * 0.8
+expanding = bbWidth > bbWidth[1]
+entrySignal = squeezed and expanding and {"close > bbMiddle" if is_long else "close < bbMiddle"}''',
+
+            'price_vs_sma': f'''// Price vs SMA Entry (mihakralj O(1) SMA)
+sma20 = mih_sma(close, 20)
+entrySignal = {"close < sma20 * 0.99" if is_long else "close > sma20 * 1.01"}''',
+
+            'vwap_bounce': f'''// VWAP Bounce Entry
+vwapValue = ta.vwap(hlc3)
+touchedBelow = low < vwapValue
+touchedAbove = high > vwapValue
+closedAbove = close > vwapValue
+closedBelow = close < vwapValue
+entrySignal = {"touchedBelow and closedAbove" if is_long else "touchedAbove and closedBelow"}''',
+
+            # === TREND ===
+            'ema_cross': f'''// EMA 9/21 Cross Entry (mihakralj warmup-compensated)
+emaFast = mih_ema(close, 9)
+emaSlow = mih_ema(close, 21)
+entrySignal = {"ta.crossover(emaFast, emaSlow)" if is_long else "ta.crossunder(emaFast, emaSlow)"}''',
+
+            'sma_cross': f'''// MovingAvg2Line Cross (mihakralj O(1) SMA)
+mafast = mih_sma(close, 9)
+maslow = mih_sma(close, 18)
+entrySignal = {"ta.crossover(mafast, maslow)" if is_long else "ta.crossunder(mafast, maslow)"}''',
+
+            'macd_cross': f'''// MACD Strategy (mihakralj warmup-compensated)
+[macdLine, signalLine, histLine] = mih_macd(close, 12, 26, 9)
+entrySignal = {"ta.crossover(histLine, 0)" if is_long else "ta.crossunder(histLine, 0)"}''',
+
+            'price_above_sma': f'''// Price Crosses SMA Entry (mihakralj O(1) SMA)
+sma20 = mih_sma(close, 20)
+entrySignal = {"ta.crossover(close, sma20)" if is_long else "ta.crossunder(close, sma20)"}''',
+
+            'supertrend': f'''// Supertrend Strategy (TradingView built-in pattern)
+// if ta.change(direction) < 0 -> long, if ta.change(direction) > 0 -> short
+[supertrendValue, supertrendDir] = ta.supertrend(3, 10)
+dirChange = ta.change(supertrendDir)
+entrySignal = {"dirChange < 0" if is_long else "dirChange > 0"}''',
+
+            'adx_strong_trend': f'''// ADX Strong Trend Entry (ADX > 25)
+[diPlus, diMinus, adxValue] = ta.dmi(14, 14)
+strongTrend = adxValue > 25
+entrySignal = strongTrend and {"diPlus > diMinus" if is_long else "diMinus > diPlus"}''',
+
+            'psar_reversal': f'''// Parabolic SAR Reversal Entry
+psarValue = ta.sar(0.02, 0.02, 0.2)
+entrySignal = {"close > psarValue and close[1] <= psarValue[1]" if is_long else "close < psarValue and close[1] >= psarValue[1]"}''',
+
+            # === PATTERN ===
+            'consecutive_candles': f'''// Consecutive Candles Entry (3 in a row)
+greenCandle = close > open
+redCandle = close < open
+threeRed = redCandle[2] and redCandle[1] and redCandle
+threeGreen = greenCandle[2] and greenCandle[1] and greenCandle
+entrySignal = {"threeRed" if is_long else "threeGreen"}''',
+
+            'big_candle': f'''// Big Candle Reversal Entry (> 2x ATR, mihakralj ATR)
+atrValue = mih_atr(14)
+candleRange = high - low
+bigCandle = candleRange > atrValue * 2
+greenCandle = close > open
+redCandle = close < open
+entrySignal = bigCandle and {"redCandle" if is_long else "greenCandle"}''',
+
+            'doji_reversal': f'''// Doji Reversal Entry
+body = math.abs(close - open)
+totalRange = high - low
+isDoji = totalRange > 0 and body < totalRange * 0.1
+prevRed = close[1] < open[1]
+prevGreen = close[1] > open[1]
+entrySignal = isDoji and {"prevRed" if is_long else "prevGreen"}''',
+
+            'engulfing': f'''// Engulfing Pattern Entry
+greenCandle = close > open
+redCandle = close < open
+bullishEngulf = greenCandle and redCandle[1] and close > open[1] and open < close[1]
+bearishEngulf = redCandle and greenCandle[1] and close < open[1] and open > close[1]
+entrySignal = {"bullishEngulf" if is_long else "bearishEngulf"}''',
+
+            'inside_bar': f'''// InSide Bar Strategy (TradingView built-in pattern)
+// if (high < high[1] and low > low[1]) - bar range inside previous bar
+// if (close > open) -> long, if (close < open) -> short
+insideBar = high < high[1] and low > low[1]
+greenCandle = close > open
+redCandle = close < open
+entrySignal = insideBar and {"greenCandle" if is_long else "redCandle"}''',
+
+            'outside_bar': f'''// OutSide Bar Strategy (TradingView built-in pattern)
+// if (high > high[1] and low < low[1]) - bar range engulfs previous bar
+// if (close > open) -> long, if (close < open) -> short
+outsideBar = high > high[1] and low < low[1]
+greenCandle = close > open
+redCandle = close < open
+entrySignal = outsideBar and {"greenCandle" if is_long else "redCandle"}''',
+
+            # === VOLATILITY ===
+            'atr_breakout': f'''// ATR Breakout Entry (mihakralj ATR with warmup)
+atrValue = mih_atr(14)
+priceMove = math.abs(close - close[1])
+bigMove = priceMove > atrValue * 1.5
+moveUp = close > close[1]
+moveDown = close < close[1]
+entrySignal = bigMove and {"moveUp" if is_long else "moveDown"}''',
+
+            'low_volatility_breakout': f'''// Low Volatility Breakout Entry (mihakralj ATR + SMA)
+atrValue = mih_atr(14)
+avgAtr = mih_sma(atrValue, 20)
+lowVol = atrValue[1] < avgAtr * 0.7
+breakHigh = close > high[1]
+breakLow = close < low[1]
+entrySignal = lowVol and {"breakHigh" if is_long else "breakLow"}''',
+
+            # === PRICE ACTION ===
+            'higher_low': f'''// Higher Low / Lower High Entry
+higherLow = low > low[1] and low[1] > low[2]
+lowerHigh = high < high[1] and high[1] < high[2]
+entrySignal = {"higherLow" if is_long else "lowerHigh"}''',
+
+            'support_resistance': f'''// Support/Resistance Entry (within 0.5% of recent extreme)
+recentLow = ta.lowest(low, 20)
+recentHigh = ta.highest(high, 20)
+entrySignal = {"close <= recentLow * 1.005" if is_long else "close >= recentHigh * 0.995"}''',
+        }
+
+        # Select the appropriate entry conditions based on engine
+        if engine == "mihakralj":
+            selected_conditions = mihakralj_entry_conditions
+        else:
+            # Both "tradingview" and "pandas_ta" use TradingView's built-in ta.* functions
+            selected_conditions = entry_conditions
+
+        # Get the entry condition code for this strategy
+        entry_code = selected_conditions.get(entry_rule, '// Unknown strategy - defaulting to manual signal\n// TODO: Add proper entry condition\nentrySignal = false  // DISABLED - unknown entry rule')
+
+        # Get engine label and indicator functions for header
+        engine_label = engine.upper() if engine else "TRADINGVIEW"
+        if engine == "mihakralj":
+            engine_note = "// Calculation Engine: MIHAKRALJ (warmup-compensated, mathematically rigorous)"
+            indicator_functions = self.get_mihakralj_indicator_functions()
+        elif engine == "pandas_ta":
+            engine_note = "// Calculation Engine: PANDAS_TA (Python library, may differ slightly from TV)"
+            indicator_functions = ""
+        else:
+            engine_note = "// Calculation Engine: TRADINGVIEW (built-in ta.* functions)"
+            indicator_functions = ""
 
         script = f'''// =============================================================================
 // {strategy_name}
 // =============================================================================
 // Generated: {gen_date}
 // GUARANTEED 1:1 MATCH with Python backtester
+{engine_note}
 //
 // STRATEGY CONFIGURATION:
 //   Take Profit: {tp_percent}%
@@ -388,7 +956,7 @@ alertcondition(isEmergency, title="Emergency Exit", message="BTCGBP ML Scalper: 
 // MATCHING RULES (DO NOT MODIFY):
 //   - Entry at CLOSE of signal bar (process_orders_on_close=true)
 //   - TP/SL as percentage of entry price
-//   - Fixed position size: 0.01 BTC
+//   - Position size: {position_size_pct}% of equity
 //   - Commission: 0.1% per side
 // =============================================================================
 
@@ -396,14 +964,15 @@ alertcondition(isEmergency, title="Emergency Exit", message="BTCGBP ML Scalper: 
 strategy("{strategy_name}",
          overlay=true,
          process_orders_on_close=true,  // CRITICAL: Entry at CLOSE
-         default_qty_type=strategy.fixed,
-         default_qty_value=0.01,
-         initial_capital=1000,
+         default_qty_type=strategy.percent_of_equity,
+         default_qty_value={position_size_pct},
+         initial_capital={int(capital)},
+         currency=currency.GBP,
          commission_type=strategy.commission.percent,
          commission_value=0.1,
          calc_on_every_tick=false,
          max_bars_back=500)
-
+{indicator_functions}
 // =============================================================================
 // INPUTS - PERCENTAGE-BASED TP/SL (matches Python exactly)
 // =============================================================================
@@ -413,20 +982,15 @@ slPercent = input.float({sl_percent}, "Stop Loss %", minval=0.1, maxval=20.0, st
 
 enableLongs = input.bool({str(enable_longs).lower()}, "Enable Long Trades", group="Direction")
 enableShorts = input.bool({str(enable_shorts).lower()}, "Enable Short Trades", group="Direction")
-
-showLabels = input.bool(true, "Show Labels", group="Visuals")
-showLevels = input.bool(true, "Show TP/SL Levels", group="Visuals")
-
+{date_range_code}
 // =============================================================================
 // ENTRY CONDITIONS
 // =============================================================================
 
-// Simple entry - can be customized based on strategy
-longSignal = true
-shortSignal = true
+{entry_code}
 
-longCondition = longSignal and enableLongs and strategy.position_size == 0
-shortCondition = shortSignal and enableShorts and strategy.position_size == 0
+longCondition = entrySignal and enableLongs and strategy.position_size == 0{date_range_condition}
+shortCondition = entrySignal and enableShorts and strategy.position_size == 0{date_range_condition}
 
 // =============================================================================
 // TRADE EXECUTION - EXACT MATCH WITH PYTHON
@@ -453,33 +1017,19 @@ if strategy.position_size < 0  // Short position
     strategy.exit("Short Exit", "Short", limit=shortTP, stop=shortSL)
 
 // =============================================================================
-// VISUAL ELEMENTS
+// VISUAL ELEMENTS (Simplified to avoid TradingView rendering issues)
 // =============================================================================
 
-tpLevel = strategy.position_size > 0 ? strategy.position_avg_price * (1 + tpPercent / 100) :
-          strategy.position_size < 0 ? strategy.position_avg_price * (1 - tpPercent / 100) : na
-slLevel = strategy.position_size > 0 ? strategy.position_avg_price * (1 - slPercent / 100) :
-          strategy.position_size < 0 ? strategy.position_avg_price * (1 + slPercent / 100) : na
+// Entry signal markers
+plotshape(longCondition, "Long Signal", shape.triangleup, location.belowbar, color.new(color.green, 0), size=size.small)
+plotshape(shortCondition, "Short Signal", shape.triangledown, location.abovebar, color.new(color.red, 0), size=size.small)
 
-plot(showLevels and strategy.position_size != 0 ? tpLevel : na, "TP Level",
-     color=color.new(color.green, 0), style=plot.style_linebr, linewidth=2)
-plot(showLevels and strategy.position_size != 0 ? slLevel : na, "SL Level",
-     color=color.new(color.red, 0), style=plot.style_linebr, linewidth=2)
+// =============================================================================
+// ALERTS
+// =============================================================================
 
-plotshape(longCondition, "Long Signal", shape.triangleup, location.belowbar,
-          color.new(color.green, 0), size=size.small)
-plotshape(shortCondition, "Short Signal", shape.triangledown, location.abovebar,
-          color.new(color.red, 0), size=size.small)
-
-if showLabels
-    if strategy.position_size != 0 and strategy.position_size[1] == 0
-        isLong = strategy.position_size > 0
-        entryLabel = isLong ? "LONG\\n£" + str.tostring(close, "#.##") : "SHORT\\n£" + str.tostring(close, "#.##")
-        labelColor = isLong ? color.green : color.red
-        labelY = isLong ? low : high
-        labelStyle = isLong ? label.style_label_up : label.style_label_down
-        label.new(bar_index, labelY, entryLabel, style=labelStyle, color=labelColor,
-                  textcolor=color.white, size=size.small)
+alertcondition(longCondition, title="Long Entry", message="LONG entry at {{{{close}}}}")
+alertcondition(shortCondition, title="Short Entry", message="SHORT entry at {{{{close}}}}")
 
 // =============================================================================
 // PERFORMANCE STATS TABLE
@@ -490,20 +1040,19 @@ var table statsTable = table.new(position.top_right, 2, 8, bgcolor=color.new(col
 if barstate.islast
     totalTrades = strategy.closedtrades
     winTrades = strategy.wintrades
+    lossTrades = strategy.losstrades
     winRate = totalTrades > 0 ? (winTrades / totalTrades) * 100 : 0
     netProfit = strategy.netprofit
     grossProfit = strategy.grossprofit
     grossLoss = strategy.grossloss
     profitFactor = grossLoss != 0 ? grossProfit / math.abs(grossLoss) : 0
 
-    table.cell(statsTable, 0, 0, "{strategy_name[:25]}", text_color=color.white,
+    table.cell(statsTable, 0, 0, "{strategy_name}", text_color=color.white,
                bgcolor=color.new(color.purple, 60), text_size=size.small)
-    table.cell(statsTable, 1, 0, "EXACT", bgcolor=color.new(color.purple, 60),
-               text_color=color.white, text_size=size.small)
+    table.cell(statsTable, 1, 0, "{direction_upper}", bgcolor=color.new({direction_color}, 60), text_color=color.white, text_size=size.small)
 
     table.cell(statsTable, 0, 1, "TP / SL", text_color=color.gray, text_size=size.tiny)
-    table.cell(statsTable, 1, 1, str.tostring(tpPercent) + "% / " + str.tostring(slPercent) + "%",
-               text_color=color.white, text_size=size.tiny)
+    table.cell(statsTable, 1, 1, str.tostring(tpPercent) + "% / " + str.tostring(slPercent) + "%", text_color=color.white, text_size=size.tiny)
 
     table.cell(statsTable, 0, 2, "Trades", text_color=color.gray, text_size=size.tiny)
     table.cell(statsTable, 1, 2, str.tostring(totalTrades), text_color=color.white, text_size=size.tiny)
@@ -513,7 +1062,7 @@ if barstate.islast
                text_color=winRate >= 50 ? color.lime : color.red, text_size=size.tiny)
 
     table.cell(statsTable, 0, 4, "Net Profit", text_color=color.gray, text_size=size.tiny)
-    table.cell(statsTable, 1, 4, "£" + str.tostring(netProfit, "#.##"),
+    table.cell(statsTable, 1, 4, "$" + str.tostring(netProfit, "#.##"),
                text_color=netProfit >= 0 ? color.lime : color.red, text_size=size.tiny)
 
     table.cell(statsTable, 0, 5, "Profit Factor", text_color=color.gray, text_size=size.tiny)
@@ -521,17 +1070,10 @@ if barstate.islast
                text_color=profitFactor >= 1 ? color.lime : color.red, text_size=size.tiny)
 
     table.cell(statsTable, 0, 6, "Gross Profit", text_color=color.gray, text_size=size.tiny)
-    table.cell(statsTable, 1, 6, "£" + str.tostring(grossProfit, "#.##"), text_color=color.lime, text_size=size.tiny)
+    table.cell(statsTable, 1, 6, "$" + str.tostring(grossProfit, "#.##"), text_color=color.lime, text_size=size.tiny)
 
     table.cell(statsTable, 0, 7, "Gross Loss", text_color=color.gray, text_size=size.tiny)
-    table.cell(statsTable, 1, 7, "£" + str.tostring(math.abs(grossLoss), "#.##"), text_color=color.red, text_size=size.tiny)
-
-// =============================================================================
-// ALERTS
-// =============================================================================
-
-alertcondition(longCondition, title="Long Entry", message="LONG entry at {{{{close}}}}")
-alertcondition(shortCondition, title="Short Entry", message="SHORT entry at {{{{close}}}}")
+    table.cell(statsTable, 1, 7, "$" + str.tostring(math.abs(grossLoss), "#.##"), text_color=color.red, text_size=size.tiny)
 '''
 
         return script

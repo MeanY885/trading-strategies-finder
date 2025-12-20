@@ -180,6 +180,7 @@ class StrategyDatabase:
         # Convert equity curve to JSON
         equity_curve = json.dumps(result.equity_curve) if hasattr(result, 'equity_curve') else '[]'
 
+        # Use getattr with defaults for compatibility with both old and new result formats
         cursor.execute('''
             INSERT INTO strategies
             (strategy_name, strategy_category, params, total_trades, win_rate,
@@ -189,23 +190,23 @@ class StrategyDatabase:
              timeframe, data_start, data_end, optimization_run_id, equity_curve)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
-            result.strategy_name,
-            result.strategy_category,
+            getattr(result, 'strategy_name', 'unknown'),
+            getattr(result, 'strategy_category', 'unknown'),
             json.dumps(params),
-            result.total_trades,
-            result.win_rate,
-            result.profit_factor,
-            result.total_pnl,
-            result.max_drawdown,
-            result.equity_r_squared,
-            result.recovery_factor,
-            result.sharpe_ratio,
-            result.composite_score,
+            getattr(result, 'total_trades', 0),
+            getattr(result, 'win_rate', 0),
+            getattr(result, 'profit_factor', 0),
+            getattr(result, 'total_pnl', 0),
+            getattr(result, 'max_drawdown', 0),
+            getattr(result, 'equity_r_squared', 0),
+            getattr(result, 'recovery_factor', 0),
+            getattr(result, 'sharpe_ratio', 0),
+            getattr(result, 'composite_score', getattr(result, 'profit_factor', 0) * 10),
             tp_percent,
             sl_percent,
-            result.val_pnl,
-            result.val_profit_factor,
-            result.val_win_rate,
+            getattr(result, 'val_pnl', 0),
+            getattr(result, 'val_profit_factor', 0),
+            getattr(result, 'val_win_rate', 0),
             found_by,
             data_source,
             symbol,

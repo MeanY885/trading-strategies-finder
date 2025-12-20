@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 WORKDIR /app
 
@@ -18,8 +18,8 @@ RUN apt-get update && apt-get install -y \
 RUN wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz && \
     tar -xzf ta-lib-0.4.0-src.tar.gz && \
     cd ta-lib/ && \
-    wget -O config.guess 'https://git.savannah.gnu.org/cgit/config.git/plain/config.guess' && \
-    wget -O config.sub 'https://git.savannah.gnu.org/cgit/config.git/plain/config.sub' && \
+    wget -O config.guess 'https://raw.githubusercontent.com/gcc-mirror/gcc/master/config.guess' && \
+    wget -O config.sub 'https://raw.githubusercontent.com/gcc-mirror/gcc/master/config.sub' && \
     ./configure --prefix=/usr && \
     make && \
     make install && \
