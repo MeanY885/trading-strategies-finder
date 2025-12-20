@@ -1296,29 +1296,62 @@
                     const availablePeriods = Object.keys(periodMetrics);
                     let periodRow = '';
                     if (availablePeriods.length > 0) {
-                        const periodCards = availablePeriods.map(period => {
-                            const pm = periodMetrics[period];
-                            if (!pm || pm.trades === 0) return '';
-                            const wrColor = pm.win_rate >= 60 ? 'var(--success)' : pm.win_rate >= 50 ? 'var(--warning)' : 'var(--danger)';
-                            const pnlColor = pm.pnl >= 0 ? 'var(--success)' : 'var(--danger)';
-                            const ddPctColor = (pm.max_dd_pct || 0) < 5 ? 'var(--success)' : (pm.max_dd_pct || 0) < 15 ? 'var(--warning)' : 'var(--danger)';
-                            return `
-                                <div style="background: var(--bg-card); padding: 0.4rem 0.6rem; border-radius: 4px; min-width: 75px; text-align: center;">
-                                    <div style="color: var(--text-muted); font-weight: 600; font-size: 0.7rem;">${period.toUpperCase()}</div>
-                                    <div style="color: ${wrColor}; font-size: 0.75rem;">${pm.win_rate?.toFixed(0) || '-'}% WR</div>
-                                    <div style="color: ${pnlColor}; font-size: 0.75rem;">${pm.pnl >= 0 ? '+' : ''}£${pm.pnl?.toFixed(0) || '0'}</div>
-                                    <div style="color: ${ddPctColor}; font-size: 0.65rem;">DD: -${(pm.max_dd_pct || 0).toFixed(1)}%</div>
-                                    <div style="color: var(--text-muted); font-size: 0.65rem;">${pm.trades} trades</div>
-                                </div>`;
-                        }).filter(c => c).join('');
+                        const validPeriods = availablePeriods.filter(p => periodMetrics[p] && periodMetrics[p].trades > 0);
+                        if (validPeriods.length > 0) {
+                            // Build sub-table header row
+                            const headerCells = validPeriods.map(p =>
+                                `<th style="padding: 0.2rem 0.5rem; color: var(--text-muted); font-weight: 600; font-size: 0.7rem; text-align: center; border-bottom: 1px solid var(--border-subtle);">${p.toUpperCase()}</th>`
+                            ).join('');
 
-                        if (periodCards) {
+                            // Build data cells for each metric
+                            const wrCells = validPeriods.map(p => {
+                                const pm = periodMetrics[p];
+                                const wrColor = pm.win_rate >= 60 ? 'var(--success)' : pm.win_rate >= 50 ? 'var(--warning)' : 'var(--danger)';
+                                return `<td style="padding: 0.15rem 0.5rem; color: ${wrColor}; font-size: 0.75rem; text-align: center;">${pm.win_rate?.toFixed(0) || '-'}%</td>`;
+                            }).join('');
+
+                            const pnlCells = validPeriods.map(p => {
+                                const pm = periodMetrics[p];
+                                const pnlColor = pm.pnl >= 0 ? 'var(--success)' : 'var(--danger)';
+                                return `<td style="padding: 0.15rem 0.5rem; color: ${pnlColor}; font-size: 0.75rem; text-align: center;">${pm.pnl >= 0 ? '+' : ''}£${pm.pnl?.toFixed(0) || '0'}</td>`;
+                            }).join('');
+
+                            const ddCells = validPeriods.map(p => {
+                                const pm = periodMetrics[p];
+                                const ddPctColor = (pm.max_dd_pct || 0) < 5 ? 'var(--success)' : (pm.max_dd_pct || 0) < 15 ? 'var(--warning)' : 'var(--danger)';
+                                return `<td style="padding: 0.15rem 0.5rem; color: ${ddPctColor}; font-size: 0.7rem; text-align: center;">-${(pm.max_dd_pct || 0).toFixed(1)}%</td>`;
+                            }).join('');
+
+                            const tradeCells = validPeriods.map(p => {
+                                const pm = periodMetrics[p];
+                                return `<td style="padding: 0.15rem 0.5rem; color: var(--text-muted); font-size: 0.7rem; text-align: center;">${pm.trades}</td>`;
+                            }).join('');
+
                             periodRow = `
-                            <tr class="period-row" style="background: var(--bg-secondary); border-bottom: 1px solid var(--border-subtle);">
-                                <td colspan="12" style="padding: 0.4rem 0.75rem 0.6rem 2.5rem;">
-                                    <div style="display: flex; gap: 0.4rem; flex-wrap: wrap; font-size: 0.75rem;">
-                                        ${periodCards}
-                                    </div>
+                            <tr class="period-row" style="background: var(--bg-secondary);">
+                                <td colspan="12" style="padding: 0.3rem 0.5rem 0.4rem 2rem;">
+                                    <table style="border-collapse: collapse; font-size: 0.75rem;">
+                                        <tr>
+                                            <td style="padding: 0.15rem 0.4rem; color: var(--text-muted); font-size: 0.65rem; text-align: right;">Period</td>
+                                            ${headerCells}
+                                        </tr>
+                                        <tr>
+                                            <td style="padding: 0.15rem 0.4rem; color: var(--text-muted); font-size: 0.65rem; text-align: right;">Win%</td>
+                                            ${wrCells}
+                                        </tr>
+                                        <tr>
+                                            <td style="padding: 0.15rem 0.4rem; color: var(--text-muted); font-size: 0.65rem; text-align: right;">P&L</td>
+                                            ${pnlCells}
+                                        </tr>
+                                        <tr>
+                                            <td style="padding: 0.15rem 0.4rem; color: var(--text-muted); font-size: 0.65rem; text-align: right;">DD</td>
+                                            ${ddCells}
+                                        </tr>
+                                        <tr>
+                                            <td style="padding: 0.15rem 0.4rem; color: var(--text-muted); font-size: 0.65rem; text-align: right;">Trades</td>
+                                            ${tradeCells}
+                                        </tr>
+                                    </table>
                                 </td>
                             </tr>`;
                         }
