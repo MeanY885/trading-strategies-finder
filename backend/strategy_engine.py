@@ -589,24 +589,23 @@ class StrategyEngine:
         Calculate indicators using the selected calculation engine.
 
         Engines:
-        - tradingview: Uses TradingView-compatible formulas (RMA, etc.)
-        - pandas_ta: Uses pandas-ta library (130+ indicators)
-        - mihakralj: Uses mathematically rigorous implementations with warmup compensation
+        - tradingview: Uses TradingView-compatible formulas (for Pine Script export)
+        - native: Uses TA-Lib for fast execution + candlestick patterns
         """
         df = self.df
         engine = self.calc_engine
 
         # Use MultiEngineCalculator for main indicators if available
-        if HAS_MULTI_ENGINE and engine in ['tradingview', 'mihakralj']:
+        if HAS_MULTI_ENGINE and engine in ['tradingview', 'native']:
             calc = MultiEngineCalculator(df)
 
             # === MOMENTUM INDICATORS ===
             if engine == 'tradingview':
                 df['rsi'] = calc.rsi_tradingview(14)
                 stoch_k, stoch_d = calc.stoch_tradingview(14, 3, 3)
-            else:  # mihakralj
-                df['rsi'] = calc.rsi_mihakralj(14)
-                stoch_k, stoch_d = calc.stoch_mihakralj(14, 3, 3)
+            else:  # native (TA-Lib)
+                df['rsi'] = calc.rsi_native(14)
+                stoch_k, stoch_d = calc.stoch_native(14, 3, 3)
             df['stoch_k'] = stoch_k
             df['stoch_d'] = stoch_d
 
@@ -614,9 +613,9 @@ class StrategyEngine:
             if engine == 'tradingview':
                 bb_mid, bb_upper, bb_lower = calc.bbands_tradingview(20, 2.0)
                 df['atr'] = calc.atr_tradingview(14)
-            else:  # mihakralj
-                bb_mid, bb_upper, bb_lower = calc.bbands_mihakralj(20, 2.0)
-                df['atr'] = calc.atr_mihakralj(14)
+            else:  # native (TA-Lib)
+                bb_mid, bb_upper, bb_lower = calc.bbands_native(20, 2.0)
+                df['atr'] = calc.atr_native(14)
             df['bb_upper'] = bb_upper
             df['bb_lower'] = bb_lower
             df['bb_mid'] = bb_mid
@@ -629,12 +628,12 @@ class StrategyEngine:
                 df['ema_9'] = calc.ema_tradingview(9)
                 df['ema_21'] = calc.ema_tradingview(21)
                 macd_line, signal_line, histogram = calc.macd_tradingview(12, 26, 9)
-            else:  # mihakralj
-                df['sma_20'] = calc.sma_mihakralj(20)
-                df['sma_50'] = calc.sma_mihakralj(50)
-                df['ema_9'] = calc.ema_mihakralj(9)
-                df['ema_21'] = calc.ema_mihakralj(21)
-                macd_line, signal_line, histogram = calc.macd_mihakralj(12, 26, 9)
+            else:  # native (TA-Lib)
+                df['sma_20'] = calc.sma_native(20)
+                df['sma_50'] = calc.sma_native(50)
+                df['ema_9'] = calc.ema_native(9)
+                df['ema_21'] = calc.ema_native(21)
+                macd_line, signal_line, histogram = calc.macd_native(12, 26, 9)
             df['macd'] = macd_line
             df['macd_signal'] = signal_line
             df['macd_hist'] = histogram
@@ -678,7 +677,7 @@ class StrategyEngine:
             df['macd_hist'] = macd[macd_hist_col]
 
         # === ADDITIONAL INDICATORS ===
-        # Use MultiEngineCalculator if available for TradingView, otherwise pandas_ta
+        # Use MultiEngineCalculator if available, otherwise pandas_ta
 
         if HAS_MULTI_ENGINE and engine == 'tradingview':
             # Use TradingView-specific implementations
@@ -737,6 +736,92 @@ class StrategyEngine:
                 df['vwap'] = calc.vwap_tradingview()
             else:
                 df['vwap'] = df['sma_20']  # Fallback to SMA if no volume
+
+        elif HAS_MULTI_ENGINE and engine == 'native':
+            # Use Native (TA-Lib) implementations
+            df['willr'] = calc.willr_native(14)
+            df['cci'] = calc.cci_native(20)
+            df['mom'] = calc.mom_native(10)
+            df['roc'] = calc.roc_native(9)
+
+            # ADX
+            adx, di_plus, di_minus = calc.adx_native(14)
+            df['adx'] = adx
+            df['di_plus'] = di_plus
+            df['di_minus'] = di_minus
+
+            # Supertrend (uses TradingView impl as no TA-Lib equivalent)
+            supertrend, supertrend_dir = calc.supertrend_native(3.0, 10)
+            df['supertrend'] = supertrend
+            df['supertrend_dir'] = supertrend_dir
+
+            # Native-only: Candlestick patterns
+            patterns = calc.detect_all_patterns()
+            for col in patterns.columns:
+                df[col.lower()] = patterns[col]
+
+            # Native-only: Hilbert Transform
+            df['ht_trendmode'] = calc.hilbert_trendmode()
+            df['ht_dcperiod'] = calc.hilbert_dominant_cycle()
+
+            # Fall through to pandas_ta for remaining indicators
+            # Aroon (no native equivalent)
+            aroon = ta.aroon(df['high'], df['low'], length=14)
+            aroon_up_col = [c for c in aroon.columns if 'AROONU' in c][0]
+            aroon_down_col = [c for c in aroon.columns if 'AROOND' in c][0]
+            aroon_osc_col = [c for c in aroon.columns if 'AROONOSC' in c][0]
+            df['aroon_up'] = aroon[aroon_up_col]
+            df['aroon_down'] = aroon[aroon_down_col]
+            df['aroon_osc'] = aroon[aroon_osc_col]
+
+            # PSAR (using pandas_ta as fallback)
+            psar = ta.psar(df['high'], df['low'], df['close'])
+            psar_l = [c for c in psar.columns if 'PSARl' in c]
+            psar_s = [c for c in psar.columns if 'PSARs' in c]
+            if psar_l and psar_s:
+                df['psar'] = psar[psar_l[0]].fillna(psar[psar_s[0]])
+            else:
+                df['psar'] = psar.iloc[:, 0]
+
+            # Use pandas_ta for remaining indicators (no TA-Lib equivalent)
+            # Keltner Channels
+            kc = ta.kc(df['high'], df['low'], df['close'], length=20, scalar=2.0)
+            kc_upper_col = [c for c in kc.columns if 'KCU' in c][0]
+            kc_mid_col = [c for c in kc.columns if 'KCB' in c][0]
+            kc_lower_col = [c for c in kc.columns if 'KCL' in c][0]
+            df['kc_mid'] = kc[kc_mid_col]
+            df['kc_upper'] = kc[kc_upper_col]
+            df['kc_lower'] = kc[kc_lower_col]
+
+            # Donchian Channels
+            dc = ta.donchian(df['high'], df['low'], lower_length=20, upper_length=20)
+            dc_upper_col = [c for c in dc.columns if 'DCU' in c][0]
+            dc_mid_col = [c for c in dc.columns if 'DCM' in c][0]
+            dc_lower_col = [c for c in dc.columns if 'DCL' in c][0]
+            df['dc_mid'] = dc[dc_mid_col]
+            df['dc_upper'] = dc[dc_upper_col]
+            df['dc_lower'] = dc[dc_lower_col]
+
+            # Ichimoku
+            ichimoku = ta.ichimoku(df['high'], df['low'], df['close'], tenkan=9, kijun=26, senkou=52)
+            if isinstance(ichimoku, tuple):
+                lines = ichimoku[0]
+                df['tenkan'] = lines.iloc[:, 0]
+                df['kijun'] = lines.iloc[:, 1]
+                df['senkou_a'] = lines.iloc[:, 2] if lines.shape[1] > 2 else np.nan
+                df['senkou_b'] = lines.iloc[:, 3] if lines.shape[1] > 3 else np.nan
+
+            # Ultimate Oscillator
+            df['uo'] = ta.uo(df['high'], df['low'], df['close'], fast=7, medium=14, slow=28)
+
+            # Choppiness Index
+            df['chop'] = ta.chop(df['high'], df['low'], df['close'], length=14)
+
+            # VWAP
+            if 'volume' in df.columns and df['volume'].sum() > 0:
+                df['vwap'] = ta.vwap(df['high'], df['low'], df['close'], df['volume'])
+            else:
+                df['vwap'] = df['sma_20']
 
         else:
             # Use pandas_ta for all additional indicators
@@ -1522,23 +1607,54 @@ class StrategyEngine:
                         min_win_rate: float = 0,
                         save_to_db: bool = True,
                         symbol: str = None,
-                        timeframe: str = None) -> List[StrategyResult]:
+                        timeframe: str = None,
+                        n_trials: int = 300) -> List[StrategyResult]:
         """
         Find all profitable strategies.
         Saves winners to database for future reference.
+
+        n_trials controls granularity of TP/SL testing:
+        - 100: 1.0% increments (fast)
+        - 225: 0.67% increments
+        - 400: 0.5% increments (thorough)
+        - 625: 0.4% increments
+        - 10000: 0.1% increments (exhaustive)
         """
         strategies = list(self.ENTRY_STRATEGIES.keys())
         directions = ['long', 'short']
 
-        # TP/SL ranges that actually get hit
-        tp_range = [0.3, 0.5, 0.7, 1.0, 1.5, 2.0, 2.5, 3.0]
-        sl_range = [0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0]
+        # TP/SL range: 0.1% to 10%
+        # Granularity based on n_trials: more trials = finer increments
+        # n_trials roughly equals TP_steps × SL_steps per strategy/direction
+        steps = max(10, int(n_trials ** 0.5))  # sqrt of trials
+        increment = 10.0 / steps  # 10% range divided by steps
+
+        # Generate TP and SL ranges from 0.1% to 10%
+        tp_range = [round(0.1 + i * increment, 2) for i in range(steps) if 0.1 + i * increment <= 10.0]
+        sl_range = [round(0.1 + i * increment, 2) for i in range(steps) if 0.1 + i * increment <= 10.0]
+
+        # Ensure we have at least some values
+        if not tp_range:
+            tp_range = [0.5, 1.0, 2.0, 3.0, 5.0]
+        if not sl_range:
+            sl_range = [1.0, 2.0, 3.0, 5.0, 7.0]
 
         results = []
-        total = len(strategies) * len(directions) * len(tp_range) * len(sl_range)
+        num_strategies = len(strategies)
+        num_directions = len(directions)
+        num_tp = len(tp_range)
+        num_sl = len(sl_range)
+        total = num_strategies * num_directions * num_tp * num_sl
         tested = 0
+        profitable_count = 0
 
-        self._update_status(f"Testing {total} combinations...", 5)
+        # Progress phases:
+        # 0-2%: Initialization (already done)
+        # 2-90%: Testing combinations (main work)
+        # 90-95%: Sorting/filtering
+        # 95-100%: Saving to DB
+
+        self._update_status(f"Testing {total:,} combinations ({num_strategies} strategies × 2 directions × {num_tp}×{num_sl} TP/SL @ {increment:.2f}% steps)...", 2)
 
         # Start database run if available
         db_run_id = None
@@ -1549,8 +1665,15 @@ class StrategyEngine:
                 data_rows=len(self.df)
             )
 
-        for strategy in strategies:
-            for direction in directions:
+        # Calculate update frequency - update at least every 1% of progress or every 25 tests
+        update_interval = max(1, min(25, total // 100))
+
+        for strat_idx, strategy in enumerate(strategies):
+            for dir_idx, direction in enumerate(directions):
+                # Update at start of each strategy/direction combination
+                combo_num = strat_idx * num_directions + dir_idx + 1
+                combo_total = num_strategies * num_directions
+
                 for tp in tp_range:
                     for sl in sl_range:
                         result = self.backtest(strategy, direction, tp, sl,
@@ -1558,32 +1681,51 @@ class StrategyEngine:
                                                position_size_pct=self.position_size_pct)
                         tested += 1
 
-                        if tested % 100 == 0:
-                            progress = int(5 + (tested / total) * 90)
-                            self._update_status(f"Testing... {tested}/{total}", progress)
+                        # Update progress more frequently
+                        if tested % update_interval == 0 or tested == total:
+                            # Progress from 2% to 90% during testing phase
+                            progress = int(2 + (tested / total) * 88)
+                            pct_complete = (tested / total) * 100
+                            self._update_status(
+                                f"[{combo_num}/{combo_total}] {strategy} {direction.upper()} | {tested:,}/{total:,} ({pct_complete:.1f}%) | Found: {profitable_count}",
+                                progress
+                            )
 
-                        if result.total_trades >= min_trades and result.win_rate >= min_win_rate:
+                        if result.total_trades >= 1 and result.win_rate >= min_win_rate:
                             results.append(result)
 
                             # Stream profitable ones
                             if result.total_pnl > 0:
+                                profitable_count += 1
                                 self._publish_result(result)
+
+        # Phase: Sorting results (90-95%)
+        self._update_status(f"Sorting {len(results):,} results by composite score...", 90)
 
         # Sort by COMPOSITE SCORE (not just PnL)
         # This ensures high win rate + good PF strategies rank higher
         results.sort(key=lambda x: x.composite_score, reverse=True)
 
+        self._update_status(f"Filtering profitable strategies...", 92)
+
         # Save profitable strategies to database
         profitable = [r for r in results if r.total_pnl > 0]
 
+        # Phase: Saving to DB (95-100%)
         if self.db and save_to_db and profitable:
-            for result in profitable[:50]:  # Save top 50
+            self._update_status(f"Saving top {min(50, len(profitable))} strategies to database...", 95)
+
+            for i, result in enumerate(profitable[:50]):  # Save top 50
                 self.db.save_strategy(
                     result,
                     run_id=db_run_id,
                     symbol=symbol,
                     timeframe=timeframe
                 )
+                # Update progress during save
+                if i % 10 == 0:
+                    save_progress = 95 + int((i / min(50, len(profitable))) * 4)
+                    self._update_status(f"Saving strategies... {i+1}/{min(50, len(profitable))}", save_progress)
 
             self.db.complete_optimization_run(
                 db_run_id,
@@ -1594,7 +1736,7 @@ class StrategyEngine:
             print(f"Saved {min(50, len(profitable))} strategies to database")
 
         self._update_status(
-            f"Done! {len(profitable)} profitable strategies found",
+            f"Complete! Tested {tested:,} | Found {len(profitable)} profitable strategies",
             100
         )
 
@@ -1995,6 +2137,7 @@ def run_strategy_finder(df: pd.DataFrame,
                         capital: float = 1000.0,
                         position_size_pct: float = 75.0,
                         engine: str = "tradingview",
+                        n_trials: int = 300,
                         progress_min: int = 0,
                         progress_max: int = 100) -> Dict:
     """Main entry point for the strategy engine.
@@ -2005,7 +2148,8 @@ def run_strategy_finder(df: pd.DataFrame,
         exchange: Exchange name (e.g., 'KRAKEN', 'BINANCE')
         capital: Starting capital (from UI)
         position_size_pct: Position size as % of equity (from UI "Position Size %")
-        engine: Calculation engine - "tradingview", "pandas_ta", or "mihakralj"
+        engine: Calculation engine - "tradingview" or "native"
+        n_trials: Controls TP/SL granularity (100=1%, 300=0.33%, 500=0.2% increments)
     """
 
     strategy_engine = StrategyEngine(df, status, streaming_callback,
@@ -2020,10 +2164,11 @@ def run_strategy_finder(df: pd.DataFrame,
 
     # Find new strategies
     results = strategy_engine.find_strategies(
-        min_trades=3,
+        min_trades=1,
         save_to_db=True,
         symbol=symbol,
-        timeframe=timeframe
+        timeframe=timeframe,
+        n_trials=n_trials
     )
 
     # Format report

@@ -610,7 +610,7 @@
                 </div>
 
                 <div class="info-box" style="background: linear-gradient(135deg, rgba(139, 92, 246, 0.15), rgba(236, 72, 153, 0.1)); border: 1px solid rgba(139, 92, 246, 0.4);">
-                    <strong>How it works:</strong> Tests <strong>29 entry strategies</strong> (RSI, Bollinger Bands, MACD, Ichimoku, Keltner, Donchian, Aroon, engulfing patterns, etc.) with both long and short directions. Optimizes <strong>TP/SL percentages</strong> (0.3% - 5%) using the TradingView calculation engine. Results are compared across 3 engines for accuracy.
+                    <strong>How it works:</strong> Tests <strong>29 entry strategies</strong> (RSI, Bollinger Bands, MACD, Ichimoku, Keltner, Donchian, Aroon, etc.) with both long and short directions. Optimizes <strong>TP/SL percentages</strong> (0.3% - 5%). Native engine also supports candlestick pattern recognition.
                 </div>
 
                 <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin: 1rem 0;">
@@ -623,18 +623,19 @@
                         <input type="number" id="unifiedRisk" value="75" min="1" max="100" step="5">
                     </div>
                     <div class="input-group">
-                        <label>Min Trades Required</label>
+                        <label>TP/SL Granularity</label>
                         <select id="unifiedTrials">
-                            <option value="100">3 trades (fast)</option>
-                            <option value="200">5 trades (balanced)</option>
-                            <option value="300" selected>10 trades (reliable)</option>
-                            <option value="500">20 trades (strict)</option>
+                            <option value="100">1.0% steps (fast)</option>
+                            <option value="225">0.67% steps (balanced)</option>
+                            <option value="400" selected>0.5% steps (thorough)</option>
+                            <option value="625">0.4% steps (fine)</option>
+                            <option value="10000">0.1% steps (exhaustive)</option>
                         </select>
                     </div>
                 </div>
 
                 <div class="info-box" style="background: linear-gradient(135deg, rgba(16, 185, 129, 0.1), rgba(5, 150, 105, 0.1)); border: 1px solid rgba(16, 185, 129, 0.3); margin-top: 0.5rem;">
-                    <strong>🔬 Multi-Engine Comparison:</strong> Runs optimization with all 3 calculation engines (TradingView, pandas_ta, mihakralj) so you can see which produces the best results and matches TradingView most closely.
+                    <strong>🔬 Dual-Engine:</strong> TradingView engine for Pine Script export, Native engine (TA-Lib) for fast in-app execution with candlestick patterns.
                 </div>
 
                 <div class="actions">
@@ -1150,7 +1151,7 @@
             // Reset streamed results
             streamedResults = [];
 
-            addLog(`🔬 Running ALL 3 engines: TradingView, pandas_ta, mihakralj...`);
+            addLog(`🔬 Running dual-engine optimization: TradingView + Native (TA-Lib)...`);
 
             try {
                 // Get backtest date range settings
@@ -1267,8 +1268,8 @@
                     const vsBH = r.vs_buy_hold || 0;
                     const beatsBH = r.beats_buy_hold || false;
 
-                    // Engine tag colors
-                    const engineColors = { 'TV': '#2962FF', 'PT': '#22c55e', 'MH': '#f97316' };
+                    // Engine tag colors (TV = TradingView, NT = Native/TA-Lib)
+                    const engineColors = { 'TV': '#2962FF', 'NT': '#22c55e' };
                     const engineTag = r.engine_tag || 'TV';
                     const engineColor = engineColors[engineTag] || '#666';
 
@@ -1363,7 +1364,7 @@
 
         function displayComparisonReport(report, container) {
             const engineReports = report.engine_reports || {};
-            const engines = report.engines || ['tradingview', 'pandas_ta', 'mihakralj'];
+            const engines = report.engines || ['tradingview', 'native'];
             const bestEngine = report.best_engine || 'tradingview';
 
             // Combine all strategies from all engines with engine tag
@@ -1371,7 +1372,7 @@
             engines.forEach(eng => {
                 const engReport = engineReports[eng] || {};
                 const top10 = engReport.top_10 || [];
-                const engineTag = eng === 'tradingview' ? 'TV' : (eng === 'pandas_ta' ? 'PT' : 'MH');
+                const engineTag = eng === 'tradingview' ? 'TV' : 'NT';
                 top10.forEach((strat, originalRank) => {
                     allStrategies.push({
                         ...strat,
@@ -1389,7 +1390,7 @@
             const topStrategies = allStrategies.slice(0, 10);
 
             // Engine tag colors
-            const engineColors = { 'TV': '#2962FF', 'PT': '#22c55e', 'MH': '#f97316' };
+            const engineColors = { 'TV': '#2962FF', 'NT': '#22c55e' };
 
             let html = `
                 <div style="margin-bottom: 1rem; padding: 1rem; background: var(--bg-hover); border-radius: 8px;">
@@ -1399,12 +1400,11 @@
                         <strong>Timeframe:</strong> ${report.timeframe || 'N/A'} |
                         <span style="color: var(--text-muted);">Engine tags: </span>
                         <span style="background: #2962FF; color: white; padding: 0.1rem 0.3rem; border-radius: 3px; font-size: 0.7rem;">TV</span>=TradingView
-                        <span style="background: #22c55e; color: white; padding: 0.1rem 0.3rem; border-radius: 3px; font-size: 0.7rem; margin-left: 0.5rem;">PT</span>=pandas_ta
-                        <span style="background: #f97316; color: white; padding: 0.1rem 0.3rem; border-radius: 3px; font-size: 0.7rem; margin-left: 0.5rem;">MH</span>=mihakralj
+                        <span style="background: #22c55e; color: white; padding: 0.1rem 0.3rem; border-radius: 3px; font-size: 0.7rem; margin-left: 0.5rem;">NT</span>=Native (TA-Lib)
                     </p>
                 </div>
 
-                <h3 style="color: var(--accent-primary); margin-bottom: 1rem;">🎯 Top 10 Strategies (All Engines)</h3>
+                <h3 style="color: var(--accent-primary); margin-bottom: 1rem;">🎯 Top 10 Strategies</h3>
             `;
 
             topStrategies.forEach((strat, idx) => {
@@ -1773,7 +1773,7 @@
         // Engine-specific versions for comparison mode
         async function exportStrategyPineScriptWithEngine(rank, engine) {
             try {
-                const engineLabel = engine === 'mihakralj' ? 'MIHAKRALJ' : (engine === 'pandas_ta' ? 'PANDAS_TA' : 'TRADINGVIEW');
+                const engineLabel = engine === 'native' ? 'NATIVE' : 'TRADINGVIEW';
                 addLog(`Generating Pine Script for strategy #${rank} [${engineLabel}]...`);
                 const response = await fetch(`/api/unified-pinescript/${rank}?engine=${engine}`);
 
@@ -1802,7 +1802,7 @@
 
         async function downloadStrategyPineScriptWithEngine(rank, engine) {
             try {
-                const engineLabel = engine === 'mihakralj' ? 'MIHAKRALJ' : (engine === 'pandas_ta' ? 'PANDAS_TA' : 'TRADINGVIEW');
+                const engineLabel = engine === 'native' ? 'NATIVE' : 'TRADINGVIEW';
                 addLog(`Downloading Pine Script for strategy #${rank} [${engineLabel}]...`);
                 window.location.href = `/api/download-unified-pinescript/${rank}?engine=${engine}`;
             } catch (error) {
@@ -1812,7 +1812,7 @@
 
         async function openStrategyInTradingViewWithEngine(rank, engine) {
             try {
-                const engineLabel = engine === 'mihakralj' ? 'MIHAKRALJ' : (engine === 'pandas_ta' ? 'PANDAS_TA' : 'TRADINGVIEW');
+                const engineLabel = engine === 'native' ? 'NATIVE' : 'TRADINGVIEW';
                 addLog(`📈 Fetching TradingView link for strategy #${rank} [${engineLabel}]...`);
 
                 const response = await fetch(`/api/tradingview-link/${rank}?engine=${engine}`);
@@ -1845,7 +1845,7 @@
         async function exportStrategyPineScript(rank) {
             try {
                 const engine = getSelectedPineEngine();
-                const engineLabel = engine === 'mihakralj' ? 'MIHAKRALJ' : (engine === 'pandas_ta' ? 'PANDAS_TA' : 'TRADINGVIEW');
+                const engineLabel = engine === 'native' ? 'NATIVE' : 'TRADINGVIEW';
                 addLog(`Generating Pine Script for strategy #${rank} [${engineLabel}]...`);
                 const response = await fetch(`/api/unified-pinescript/${rank}?engine=${engine}`);
 
@@ -1871,7 +1871,7 @@
         async function downloadStrategyPineScript(rank) {
             try {
                 const engine = getSelectedPineEngine();
-                const engineLabel = engine === 'mihakralj' ? 'MIHAKRALJ' : (engine === 'pandas_ta' ? 'PANDAS_TA' : 'TRADINGVIEW');
+                const engineLabel = engine === 'native' ? 'NATIVE' : 'TRADINGVIEW';
                 addLog(`Downloading Pine Script for strategy #${rank} [${engineLabel}]...`);
                 window.location.href = `/api/download-unified-pinescript/${rank}?engine=${engine}`;
             } catch (error) {
@@ -1914,7 +1914,7 @@
         async function openStrategyInTradingView(rank) {
             try {
                 const engine = getSelectedPineEngine();
-                const engineLabel = engine === 'mihakralj' ? 'MIHAKRALJ' : (engine === 'pandas_ta' ? 'PANDAS_TA' : 'TRADINGVIEW');
+                const engineLabel = engine === 'native' ? 'NATIVE' : 'TRADINGVIEW';
                 addLog(`📈 Fetching TradingView link for strategy #${rank} [${engineLabel}]...`);
 
                 const response = await fetch(`/api/tradingview-link/${rank}?engine=${engine}`);

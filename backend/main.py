@@ -383,7 +383,7 @@ class UnifiedRequest(BaseModel):
     capital: float = 1000.0
     risk_percent: float = 2.0
     n_trials: int = 300  # Trials per optimization method
-    engine: str = "all"  # "all" to compare all engines, or specific: tradingview, pandas_ta, mihakralj
+    engine: str = "all"  # "all" to compare all engines, or specific: tradingview, native
     date_range: DateRange = None  # Optional date range for Pine Script generation
 
 
@@ -401,14 +401,14 @@ async def start_unified_optimization(request: UnifiedRequest, background_tasks: 
         capital: Starting capital
         risk_percent: Position size as % of equity
         n_trials: Number of optimization trials
-        engine: Calculation engine - "tradingview", "pandas_ta", or "mihakralj"
+        engine: Calculation engine - "tradingview" or "native"
 
     Returns profitable strategies ranked by P&L.
     """
     global unified_status
 
     # Validate engine parameter
-    valid_engines = ["tradingview", "pandas_ta", "mihakralj", "all"]
+    valid_engines = ["tradingview", "native", "all"]
     if request.engine not in valid_engines:
         raise HTTPException(status_code=400, detail=f"Invalid engine. Must be one of: {valid_engines}")
 
@@ -515,7 +515,7 @@ def run_unified_sync(capital: float, risk_percent: float, n_trials: int, engine:
 
         # Determine which engines to run
         if engine == "all":
-            engines_to_run = ["tradingview", "pandas_ta", "mihakralj"]
+            engines_to_run = ["tradingview", "native"]
         else:
             engines_to_run = [engine]
 
@@ -524,8 +524,8 @@ def run_unified_sync(capital: float, risk_percent: float, n_trials: int, engine:
 
         for idx, eng in enumerate(engines_to_run):
             engine_label = eng.upper()
-            # Short tags for display: TV, PT, MH
-            engine_tag = {"tradingview": "TV", "pandas_ta": "PT", "mihakralj": "MH"}.get(eng, eng[:2].upper())
+            # Short tags for display: TV, NT
+            engine_tag = {"tradingview": "TV", "native": "NT"}.get(eng, eng[:2].upper())
 
             # Calculate progress range for this engine (continuous 0-100 across all engines)
             progress_min = int((idx / total_engines) * 95)
@@ -553,6 +553,7 @@ def run_unified_sync(capital: float, risk_percent: float, n_trials: int, engine:
                 capital=capital,
                 position_size_pct=risk_percent,
                 engine=eng,
+                n_trials=n_trials,
                 progress_min=progress_min,
                 progress_max=progress_max
             )
@@ -1064,7 +1065,6 @@ async def get_saved_strategies(
     limit: int = 20,
     symbol: str = None,
     timeframe: str = None,
-    min_trades: int = 3,
     min_win_rate: float = 0.0
 ):
     """Get top strategies from database by composite score."""
@@ -1077,7 +1077,7 @@ async def get_saved_strategies(
             limit=limit,
             symbol=symbol,
             timeframe=timeframe,
-            min_trades=min_trades,
+            min_trades=0,
             min_win_rate=min_win_rate
         )
     except Exception as e:
@@ -1085,27 +1085,27 @@ async def get_saved_strategies(
 
 
 @app.get("/api/db/strategies/best-win-rate")
-async def get_best_by_win_rate(limit: int = 10, min_trades: int = 5):
+async def get_best_by_win_rate(limit: int = 10):
     """Get strategies with highest win rate."""
     if not HAS_DATABASE:
         raise HTTPException(status_code=503, detail="Database not available")
 
     try:
         db = get_strategy_db()
-        return db.get_best_by_win_rate(limit=limit, min_trades=min_trades)
+        return db.get_best_by_win_rate(limit=limit, min_trades=0)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/db/strategies/best-profit-factor")
-async def get_best_by_profit_factor(limit: int = 10, min_trades: int = 5):
+async def get_best_by_profit_factor(limit: int = 10):
     """Get strategies with highest profit factor."""
     if not HAS_DATABASE:
         raise HTTPException(status_code=503, detail="Database not available")
 
     try:
         db = get_strategy_db()
-        return db.get_best_by_profit_factor(limit=limit, min_trades=min_trades)
+        return db.get_best_by_profit_factor(limit=limit, min_trades=0)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
