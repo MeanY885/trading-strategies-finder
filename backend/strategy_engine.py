@@ -510,6 +510,355 @@ class StrategyResult:
         )
 
 
+# =============================================================================
+# PHASE 2: INDICATOR PARAMETER TUNING
+# =============================================================================
+
+# Default indicator parameters (used in Phase 1)
+DEFAULT_INDICATOR_PARAMS = {
+    'rsi_length': 14,
+    'stoch_k': 14,
+    'stoch_d': 3,
+    'stoch_smooth': 3,
+    'bb_length': 20,
+    'bb_mult': 2.0,
+    'atr_length': 14,
+    'sma_fast': 9,
+    'sma_slow': 18,
+    'sma_20': 20,
+    'sma_50': 50,
+    'ema_fast': 9,
+    'ema_slow': 21,
+    'macd_fast': 12,
+    'macd_slow': 26,
+    'macd_signal': 9,
+    'willr_length': 14,
+    'cci_length': 20,
+    'adx_length': 14,
+    'supertrend_factor': 3.0,
+    'supertrend_atr': 10,
+    'aroon_length': 14,
+    'mom_length': 10,
+    'roc_length': 9,
+    'keltner_length': 20,
+    'keltner_mult': 2.0,
+    'keltner_atr': 10,
+    'donchian_length': 20,
+    'ichimoku_tenkan': 9,
+    'ichimoku_kijun': 26,
+    'ichimoku_senkou': 52,
+    'uo_fast': 7,
+    'uo_mid': 14,
+    'uo_slow': 28,
+    'chop_length': 14,
+    'consecutive_bars': 3,
+}
+
+# Strategy to tunable parameters mapping
+# Each strategy maps to the indicator params it uses + their test ranges
+STRATEGY_PARAM_MAP = {
+    # === MOMENTUM ===
+    'rsi_extreme': {
+        'params': ['rsi_length'],
+        'ranges': {'rsi_length': [7, 10, 12, 14, 16, 20, 25]},
+    },
+    'rsi_cross_50': {
+        'params': ['rsi_length'],
+        'ranges': {'rsi_length': [7, 10, 12, 14, 16, 20, 25]},
+    },
+    'stoch_extreme': {
+        'params': ['stoch_k', 'stoch_d', 'stoch_smooth'],
+        'ranges': {
+            'stoch_k': [10, 14, 20],
+            'stoch_d': [3, 5, 7],
+            'stoch_smooth': [3, 5],
+        },
+    },
+    'williams_r': {
+        'params': ['willr_length'],
+        'ranges': {'willr_length': [10, 14, 20, 25]},
+    },
+    'cci_extreme': {
+        'params': ['cci_length'],
+        'ranges': {'cci_length': [14, 20, 25, 30]},
+    },
+    'momentum_zero': {
+        'params': ['mom_length'],
+        'ranges': {'mom_length': [5, 10, 14, 20]},
+    },
+    'roc_extreme': {
+        'params': ['roc_length'],
+        'ranges': {'roc_length': [5, 9, 12, 14]},
+    },
+    'uo_extreme': {
+        'params': ['uo_fast', 'uo_mid', 'uo_slow'],
+        'ranges': {
+            'uo_fast': [5, 7, 9],
+            'uo_mid': [10, 14, 18],
+            'uo_slow': [21, 28, 35],
+        },
+    },
+
+    # === MEAN REVERSION ===
+    'bb_touch': {
+        'params': ['bb_length', 'bb_mult'],
+        'ranges': {
+            'bb_length': [14, 18, 20, 25, 30],
+            'bb_mult': [1.5, 2.0, 2.5, 3.0],
+        },
+    },
+    'bb_squeeze_breakout': {
+        'params': ['bb_length', 'bb_mult'],
+        'ranges': {
+            'bb_length': [14, 18, 20, 25],
+            'bb_mult': [1.5, 2.0, 2.5],
+        },
+    },
+    'price_vs_sma': {
+        'params': ['sma_20'],
+        'ranges': {'sma_20': [10, 15, 20, 25, 30]},
+    },
+    'vwap_bounce': {
+        'params': [],  # VWAP has no length parameter
+        'ranges': {},
+    },
+
+    # === TREND ===
+    'ema_cross': {
+        'params': ['ema_fast', 'ema_slow'],
+        'ranges': {
+            'ema_fast': [5, 7, 9, 12],
+            'ema_slow': [15, 18, 21, 26, 30],
+        },
+    },
+    'sma_cross': {
+        'params': ['sma_fast', 'sma_slow'],
+        'ranges': {
+            'sma_fast': [5, 7, 9, 12],
+            'sma_slow': [14, 18, 21, 26],
+        },
+    },
+    'double_ema_cross': {
+        'params': ['ema_fast', 'ema_slow'],
+        'ranges': {
+            'ema_fast': [8, 10, 12, 14],
+            'ema_slow': [20, 24, 26, 30],
+        },
+    },
+    'triple_ema': {
+        'params': ['ema_fast', 'ema_slow', 'sma_50'],
+        'ranges': {
+            'ema_fast': [7, 9, 12],
+            'ema_slow': [18, 21, 26],
+            'sma_50': [40, 50, 60],
+        },
+    },
+    'macd_cross': {
+        'params': ['macd_fast', 'macd_slow', 'macd_signal'],
+        'ranges': {
+            'macd_fast': [8, 10, 12],
+            'macd_slow': [20, 24, 26, 30],
+            'macd_signal': [7, 9, 11],
+        },
+    },
+    'price_above_sma': {
+        'params': ['sma_20'],
+        'ranges': {'sma_20': [10, 15, 20, 25, 30]},
+    },
+    'supertrend': {
+        'params': ['supertrend_factor', 'supertrend_atr'],
+        'ranges': {
+            'supertrend_factor': [2.0, 2.5, 3.0, 3.5],
+            'supertrend_atr': [7, 10, 14, 20],
+        },
+    },
+    'adx_strong_trend': {
+        'params': ['adx_length'],
+        'ranges': {'adx_length': [10, 14, 20, 25]},
+    },
+    'psar_reversal': {
+        'params': [],  # PSAR uses fixed params
+        'ranges': {},
+    },
+    'aroon_cross': {
+        'params': ['aroon_length'],
+        'ranges': {'aroon_length': [10, 14, 20, 25]},
+    },
+    'donchian_breakout': {
+        'params': ['donchian_length'],
+        'ranges': {'donchian_length': [10, 15, 20, 25, 30]},
+    },
+    'ichimoku_cross': {
+        'params': ['ichimoku_tenkan', 'ichimoku_kijun'],
+        'ranges': {
+            'ichimoku_tenkan': [7, 9, 12],
+            'ichimoku_kijun': [20, 26, 30],
+        },
+    },
+    'ichimoku_cloud': {
+        'params': ['ichimoku_tenkan', 'ichimoku_kijun', 'ichimoku_senkou'],
+        'ranges': {
+            'ichimoku_tenkan': [7, 9, 12],
+            'ichimoku_kijun': [20, 26, 30],
+            'ichimoku_senkou': [44, 52, 60],
+        },
+    },
+
+    # === PATTERN ===
+    'consecutive_candles': {
+        'params': ['consecutive_bars'],
+        'ranges': {'consecutive_bars': [2, 3, 4, 5]},
+    },
+    'big_candle': {
+        'params': ['atr_length'],
+        'ranges': {'atr_length': [10, 14, 20]},
+    },
+    'doji_reversal': {
+        'params': [],  # Pattern-based, no length
+        'ranges': {},
+    },
+    'engulfing': {
+        'params': [],  # Pattern-based, no length
+        'ranges': {},
+    },
+    'inside_bar': {
+        'params': [],  # Pattern-based, no length
+        'ranges': {},
+    },
+    'outside_bar': {
+        'params': [],  # Pattern-based, no length
+        'ranges': {},
+    },
+
+    # === VOLATILITY ===
+    'atr_breakout': {
+        'params': ['atr_length'],
+        'ranges': {'atr_length': [10, 14, 20, 25]},
+    },
+    'low_volatility_breakout': {
+        'params': ['atr_length'],
+        'ranges': {'atr_length': [10, 14, 20]},
+    },
+    'keltner_breakout': {
+        'params': ['keltner_length', 'keltner_mult', 'keltner_atr'],
+        'ranges': {
+            'keltner_length': [15, 20, 25],
+            'keltner_mult': [1.5, 2.0, 2.5],
+            'keltner_atr': [7, 10, 14],
+        },
+    },
+    'chop_trend': {
+        'params': ['chop_length'],
+        'ranges': {'chop_length': [10, 14, 20]},
+    },
+
+    # === PRICE ACTION ===
+    'higher_low': {
+        'params': [],  # Pure price action
+        'ranges': {},
+    },
+    'support_resistance': {
+        'params': ['sma_20'],  # Uses 20-bar lookback
+        'ranges': {'sma_20': [10, 15, 20, 25, 30]},
+    },
+
+    # === BASELINE ===
+    'always': {
+        'params': [],  # No indicators
+        'ranges': {},
+    },
+
+    # === DIVERGENCE ===
+    'rsi_divergence': {
+        'params': ['rsi_length'],
+        'ranges': {'rsi_length': [10, 14, 20, 25]},
+    },
+}
+
+
+@dataclass
+class TunedResult:
+    """Result of Phase 2 indicator tuning for a strategy."""
+    # Original Phase 1 result
+    original_result: StrategyResult
+
+    # Tuned parameters
+    tuned_params: Dict  # {param_name: tuned_value}
+    default_params: Dict  # {param_name: default_value}
+
+    # Before/after metrics
+    before_score: float
+    after_score: float
+    before_win_rate: float
+    after_win_rate: float
+    before_profit_factor: float
+    after_profit_factor: float
+    before_pnl_percent: float
+    after_pnl_percent: float
+
+    # Improvement metrics
+    score_improvement: float  # Percentage improvement in composite score
+    win_rate_improvement: float
+    profit_factor_improvement: float
+    pnl_improvement: float
+
+    # The tuned backtest result
+    tuned_result: StrategyResult = None
+
+    # Was tuning beneficial?
+    is_improved: bool = False
+
+    def __post_init__(self):
+        # Calculate improvements
+        if self.before_score > 0:
+            self.score_improvement = ((self.after_score - self.before_score) / self.before_score) * 100
+        else:
+            self.score_improvement = 0
+
+        self.win_rate_improvement = self.after_win_rate - self.before_win_rate
+
+        if self.before_profit_factor > 0:
+            self.profit_factor_improvement = ((self.after_profit_factor - self.before_profit_factor) / self.before_profit_factor) * 100
+        else:
+            self.profit_factor_improvement = 0
+
+        self.pnl_improvement = self.after_pnl_percent - self.before_pnl_percent
+
+        # Tuning is considered beneficial if score improved
+        self.is_improved = self.after_score > self.before_score
+
+    def to_dict(self) -> Dict:
+        """Convert to dictionary for JSON serialization."""
+        return {
+            'strategy_name': self.original_result.strategy_name,
+            'entry_rule': self.original_result.entry_rule,
+            'direction': self.original_result.direction,
+            'tp_percent': self.original_result.tp_percent,
+            'sl_percent': self.original_result.sl_percent,
+            'tuned_params': self.tuned_params,
+            'default_params': self.default_params,
+            'before': {
+                'score': round(self.before_score, 2),
+                'win_rate': round(self.before_win_rate, 2),
+                'profit_factor': round(self.before_profit_factor, 2),
+                'pnl_percent': round(self.before_pnl_percent, 2),
+            },
+            'after': {
+                'score': round(self.after_score, 2),
+                'win_rate': round(self.after_win_rate, 2),
+                'profit_factor': round(self.after_profit_factor, 2),
+                'pnl_percent': round(self.after_pnl_percent, 2),
+            },
+            'improvements': {
+                'score': round(self.score_improvement, 2),
+                'win_rate': round(self.win_rate_improvement, 2),
+                'profit_factor': round(self.profit_factor_improvement, 2),
+                'pnl': round(self.pnl_improvement, 2),
+            },
+            'is_improved': self.is_improved,
+        }
+
+
 class StrategyEngine:
     """
     The main strategy finding engine.
@@ -2035,6 +2384,441 @@ class StrategyEngine:
         results.sort(key=lambda x: x.total_pnl, reverse=True)
         return results
 
+    # =========================================================================
+    # PHASE 2: INDICATOR PARAMETER TUNING
+    # =========================================================================
+
+    def _recalculate_indicators_for_tuning(self, df: pd.DataFrame, params: Dict) -> pd.DataFrame:
+        """
+        Recalculate specific indicators with custom parameters.
+        Only recalculates what's needed based on params provided.
+        """
+        engine = self.calc_engine
+
+        # Use MultiEngineCalculator if available
+        if HAS_MULTI_ENGINE and engine in ['tradingview', 'native']:
+            calc = MultiEngineCalculator(df)
+
+            # RSI
+            if 'rsi_length' in params:
+                length = params['rsi_length']
+                if engine == 'tradingview':
+                    df['rsi'] = calc.rsi_tradingview(length)
+                else:
+                    df['rsi'] = calc.rsi_native(length)
+
+            # Stochastic
+            if any(k in params for k in ['stoch_k', 'stoch_d', 'stoch_smooth']):
+                k = params.get('stoch_k', DEFAULT_INDICATOR_PARAMS['stoch_k'])
+                d = params.get('stoch_d', DEFAULT_INDICATOR_PARAMS['stoch_d'])
+                smooth = params.get('stoch_smooth', DEFAULT_INDICATOR_PARAMS['stoch_smooth'])
+                if engine == 'tradingview':
+                    stoch_k, stoch_d = calc.stoch_tradingview(k, d, smooth)
+                else:
+                    stoch_k, stoch_d = calc.stoch_native(k, d, smooth)
+                df['stoch_k'] = stoch_k
+                df['stoch_d'] = stoch_d
+
+            # Bollinger Bands
+            if any(k in params for k in ['bb_length', 'bb_mult']):
+                length = params.get('bb_length', DEFAULT_INDICATOR_PARAMS['bb_length'])
+                mult = params.get('bb_mult', DEFAULT_INDICATOR_PARAMS['bb_mult'])
+                if engine == 'tradingview':
+                    bb_mid, bb_upper, bb_lower = calc.bbands_tradingview(length, mult)
+                else:
+                    bb_mid, bb_upper, bb_lower = calc.bbands_native(length, mult)
+                df['bb_upper'] = bb_upper
+                df['bb_lower'] = bb_lower
+                df['bb_mid'] = bb_mid
+                df['bb_width'] = (df['bb_upper'] - df['bb_lower']) / df['bb_mid']
+
+            # ATR
+            if 'atr_length' in params:
+                length = params['atr_length']
+                if engine == 'tradingview':
+                    df['atr'] = calc.atr_tradingview(length)
+                else:
+                    df['atr'] = calc.atr_native(length)
+
+            # EMA
+            if 'ema_fast' in params or 'ema_slow' in params:
+                fast = params.get('ema_fast', DEFAULT_INDICATOR_PARAMS['ema_fast'])
+                slow = params.get('ema_slow', DEFAULT_INDICATOR_PARAMS['ema_slow'])
+                if engine == 'tradingview':
+                    df['ema_9'] = calc.ema_tradingview(fast)
+                    df['ema_21'] = calc.ema_tradingview(slow)
+                else:
+                    df['ema_9'] = calc.ema_native(fast)
+                    df['ema_21'] = calc.ema_native(slow)
+
+            # SMA
+            if 'sma_20' in params:
+                length = params['sma_20']
+                if engine == 'tradingview':
+                    df['sma_20'] = calc.sma_tradingview(length)
+                else:
+                    df['sma_20'] = calc.sma_native(length)
+
+            if 'sma_50' in params:
+                length = params['sma_50']
+                if engine == 'tradingview':
+                    df['sma_50'] = calc.sma_tradingview(length)
+                else:
+                    df['sma_50'] = calc.sma_native(length)
+
+            # MACD
+            if any(k in params for k in ['macd_fast', 'macd_slow', 'macd_signal']):
+                fast = params.get('macd_fast', DEFAULT_INDICATOR_PARAMS['macd_fast'])
+                slow = params.get('macd_slow', DEFAULT_INDICATOR_PARAMS['macd_slow'])
+                signal = params.get('macd_signal', DEFAULT_INDICATOR_PARAMS['macd_signal'])
+                if engine == 'tradingview':
+                    macd_line, signal_line, histogram = calc.macd_tradingview(fast, slow, signal)
+                else:
+                    macd_line, signal_line, histogram = calc.macd_native(fast, slow, signal)
+                df['macd'] = macd_line
+                df['macd_signal'] = signal_line
+                df['macd_hist'] = histogram
+
+            # Williams %R
+            if 'willr_length' in params:
+                length = params['willr_length']
+                if engine == 'tradingview':
+                    df['willr'] = calc.willr_tradingview(length)
+                else:
+                    df['willr'] = calc.willr_native(length)
+
+            # CCI
+            if 'cci_length' in params:
+                length = params['cci_length']
+                if engine == 'tradingview':
+                    df['cci'] = calc.cci_tradingview(length)
+                else:
+                    df['cci'] = calc.cci_native(length)
+
+            # ADX
+            if 'adx_length' in params:
+                length = params['adx_length']
+                if engine == 'tradingview':
+                    adx, di_plus, di_minus = calc.adx_tradingview(length)
+                else:
+                    adx, di_plus, di_minus = calc.adx_native(length)
+                df['adx'] = adx
+                df['di_plus'] = di_plus
+                df['di_minus'] = di_minus
+
+            # Supertrend
+            if any(k in params for k in ['supertrend_factor', 'supertrend_atr']):
+                factor = params.get('supertrend_factor', DEFAULT_INDICATOR_PARAMS['supertrend_factor'])
+                atr_len = params.get('supertrend_atr', DEFAULT_INDICATOR_PARAMS['supertrend_atr'])
+                if engine == 'tradingview':
+                    supertrend, supertrend_dir = calc.supertrend_tradingview(factor, atr_len)
+                else:
+                    supertrend, supertrend_dir = calc.supertrend_native(factor, atr_len)
+                df['supertrend'] = supertrend
+                df['supertrend_dir'] = supertrend_dir
+
+            # Aroon
+            if 'aroon_length' in params:
+                length = params['aroon_length']
+                if engine == 'tradingview':
+                    aroon_up, aroon_down, aroon_osc = calc.aroon_tradingview(length)
+                    df['aroon_up'] = aroon_up
+                    df['aroon_down'] = aroon_down
+                    df['aroon_osc'] = aroon_osc
+                else:
+                    # Fall back to pandas_ta for native
+                    aroon = ta.aroon(df['high'], df['low'], length=length)
+                    aroon_up_col = [c for c in aroon.columns if 'AROONU' in c][0]
+                    aroon_down_col = [c for c in aroon.columns if 'AROOND' in c][0]
+                    aroon_osc_col = [c for c in aroon.columns if 'AROONOSC' in c][0]
+                    df['aroon_up'] = aroon[aroon_up_col]
+                    df['aroon_down'] = aroon[aroon_down_col]
+                    df['aroon_osc'] = aroon[aroon_osc_col]
+
+            # Momentum
+            if 'mom_length' in params:
+                length = params['mom_length']
+                if engine == 'tradingview':
+                    df['mom'] = calc.mom_tradingview(length)
+                else:
+                    df['mom'] = calc.mom_native(length)
+
+            # ROC
+            if 'roc_length' in params:
+                length = params['roc_length']
+                if engine == 'tradingview':
+                    df['roc'] = calc.roc_tradingview(length)
+                else:
+                    df['roc'] = calc.roc_native(length)
+
+            # Keltner Channels
+            if any(k in params for k in ['keltner_length', 'keltner_mult', 'keltner_atr']):
+                length = params.get('keltner_length', DEFAULT_INDICATOR_PARAMS['keltner_length'])
+                mult = params.get('keltner_mult', DEFAULT_INDICATOR_PARAMS['keltner_mult'])
+                atr_len = params.get('keltner_atr', DEFAULT_INDICATOR_PARAMS['keltner_atr'])
+                if engine == 'tradingview':
+                    kc_mid, kc_upper, kc_lower = calc.keltner_tradingview(length, mult, atr_len)
+                    df['kc_mid'] = kc_mid
+                    df['kc_upper'] = kc_upper
+                    df['kc_lower'] = kc_lower
+
+            # Donchian Channels
+            if 'donchian_length' in params:
+                length = params['donchian_length']
+                if engine == 'tradingview':
+                    dc_mid, dc_upper, dc_lower = calc.donchian_tradingview(length)
+                    df['dc_mid'] = dc_mid
+                    df['dc_upper'] = dc_upper
+                    df['dc_lower'] = dc_lower
+
+            # Ichimoku
+            if any(k in params for k in ['ichimoku_tenkan', 'ichimoku_kijun', 'ichimoku_senkou']):
+                tenkan = params.get('ichimoku_tenkan', DEFAULT_INDICATOR_PARAMS['ichimoku_tenkan'])
+                kijun = params.get('ichimoku_kijun', DEFAULT_INDICATOR_PARAMS['ichimoku_kijun'])
+                senkou = params.get('ichimoku_senkou', DEFAULT_INDICATOR_PARAMS['ichimoku_senkou'])
+                if engine == 'tradingview':
+                    ichimoku = calc.ichimoku_tradingview(tenkan, kijun, senkou)
+                    df['tenkan'] = ichimoku['tenkan']
+                    df['kijun'] = ichimoku['kijun']
+                    df['senkou_a'] = ichimoku['senkou_a']
+                    df['senkou_b'] = ichimoku['senkou_b']
+
+            # Ultimate Oscillator
+            if any(k in params for k in ['uo_fast', 'uo_mid', 'uo_slow']):
+                fast = params.get('uo_fast', DEFAULT_INDICATOR_PARAMS['uo_fast'])
+                mid = params.get('uo_mid', DEFAULT_INDICATOR_PARAMS['uo_mid'])
+                slow = params.get('uo_slow', DEFAULT_INDICATOR_PARAMS['uo_slow'])
+                if engine == 'tradingview':
+                    df['uo'] = calc.uo_tradingview(fast, mid, slow)
+
+            # Choppiness
+            if 'chop_length' in params:
+                length = params['chop_length']
+                if engine == 'tradingview':
+                    df['chop'] = calc.chop_tradingview(length)
+
+        else:
+            # Fallback to pandas_ta
+            if 'rsi_length' in params:
+                df['rsi'] = ta.rsi(df['close'], length=params['rsi_length'])
+
+            if any(k in params for k in ['stoch_k', 'stoch_d', 'stoch_smooth']):
+                k = params.get('stoch_k', DEFAULT_INDICATOR_PARAMS['stoch_k'])
+                d = params.get('stoch_d', DEFAULT_INDICATOR_PARAMS['stoch_d'])
+                smooth = params.get('stoch_smooth', DEFAULT_INDICATOR_PARAMS['stoch_smooth'])
+                stoch = ta.stoch(df['high'], df['low'], df['close'], k=k, d=d, smooth_k=smooth)
+                stoch_k_col = [c for c in stoch.columns if c.startswith('STOCHk_')][0]
+                stoch_d_col = [c for c in stoch.columns if c.startswith('STOCHd_')][0]
+                df['stoch_k'] = stoch[stoch_k_col]
+                df['stoch_d'] = stoch[stoch_d_col]
+
+            if any(k in params for k in ['bb_length', 'bb_mult']):
+                length = params.get('bb_length', DEFAULT_INDICATOR_PARAMS['bb_length'])
+                mult = params.get('bb_mult', DEFAULT_INDICATOR_PARAMS['bb_mult'])
+                bb = ta.bbands(df['close'], length=length, std=mult)
+                bb_upper_col = [c for c in bb.columns if c.startswith('BBU_')][0]
+                bb_lower_col = [c for c in bb.columns if c.startswith('BBL_')][0]
+                bb_mid_col = [c for c in bb.columns if c.startswith('BBM_')][0]
+                df['bb_upper'] = bb[bb_upper_col]
+                df['bb_lower'] = bb[bb_lower_col]
+                df['bb_mid'] = bb[bb_mid_col]
+                df['bb_width'] = (df['bb_upper'] - df['bb_lower']) / df['bb_mid']
+
+            if 'atr_length' in params:
+                df['atr'] = ta.atr(df['high'], df['low'], df['close'], length=params['atr_length'])
+
+            if 'ema_fast' in params or 'ema_slow' in params:
+                fast = params.get('ema_fast', DEFAULT_INDICATOR_PARAMS['ema_fast'])
+                slow = params.get('ema_slow', DEFAULT_INDICATOR_PARAMS['ema_slow'])
+                df['ema_9'] = ta.ema(df['close'], length=fast)
+                df['ema_21'] = ta.ema(df['close'], length=slow)
+
+            if 'sma_20' in params:
+                df['sma_20'] = ta.sma(df['close'], length=params['sma_20'])
+
+            if any(k in params for k in ['macd_fast', 'macd_slow', 'macd_signal']):
+                fast = params.get('macd_fast', DEFAULT_INDICATOR_PARAMS['macd_fast'])
+                slow = params.get('macd_slow', DEFAULT_INDICATOR_PARAMS['macd_slow'])
+                signal = params.get('macd_signal', DEFAULT_INDICATOR_PARAMS['macd_signal'])
+                macd = ta.macd(df['close'], fast=fast, slow=slow, signal=signal)
+                macd_col = [c for c in macd.columns if c.startswith('MACD_') and not c.startswith('MACDs') and not c.startswith('MACDh')][0]
+                macd_signal_col = [c for c in macd.columns if c.startswith('MACDs_')][0]
+                macd_hist_col = [c for c in macd.columns if c.startswith('MACDh_')][0]
+                df['macd'] = macd[macd_col]
+                df['macd_signal'] = macd[macd_signal_col]
+                df['macd_hist'] = macd[macd_hist_col]
+
+        return df
+
+    def _backtest_with_custom_df(self, df: pd.DataFrame, strategy: str, direction: str,
+                                  tp_percent: float, sl_percent: float,
+                                  initial_capital: float = 1000.0,
+                                  position_size_pct: float = 75.0,
+                                  commission_pct: float = 0.1) -> StrategyResult:
+        """
+        Run backtest using a custom dataframe (for tuning).
+        This is a copy of backtest() that uses the provided df instead of self.df.
+        """
+        # Temporarily swap the dataframe
+        original_df = self.df
+        self.df = df
+
+        # Run backtest
+        result = self.backtest(strategy, direction, tp_percent, sl_percent,
+                               initial_capital, position_size_pct, commission_pct)
+
+        # Restore original
+        self.df = original_df
+
+        return result
+
+    def tune_single_strategy(self, strategy_result: StrategyResult,
+                             streaming_callback: Callable = None) -> TunedResult:
+        """
+        Phase 2: Tune indicator parameters for a single winning strategy.
+
+        Takes a Phase 1 winner and optimizes its indicator lengths.
+        Returns a TunedResult with before/after comparison.
+        """
+        from itertools import product
+
+        entry_rule = strategy_result.entry_rule
+        direction = strategy_result.direction
+        tp = strategy_result.tp_percent
+        sl = strategy_result.sl_percent
+
+        # Get parameter config for this strategy
+        param_config = STRATEGY_PARAM_MAP.get(entry_rule, {'params': [], 'ranges': {}})
+        param_names = param_config['params']
+        param_ranges = param_config['ranges']
+
+        # If no tunable parameters, return with no change
+        if not param_names:
+            default_params = {}
+            return TunedResult(
+                original_result=strategy_result,
+                tuned_params=default_params,
+                default_params=default_params,
+                before_score=strategy_result.composite_score,
+                after_score=strategy_result.composite_score,
+                before_win_rate=strategy_result.win_rate,
+                after_win_rate=strategy_result.win_rate,
+                before_profit_factor=strategy_result.profit_factor,
+                after_profit_factor=strategy_result.profit_factor,
+                before_pnl_percent=strategy_result.total_pnl_percent,
+                after_pnl_percent=strategy_result.total_pnl_percent,
+                tuned_result=strategy_result,
+            )
+
+        # Get default params for this strategy
+        default_params = {p: DEFAULT_INDICATOR_PARAMS[p] for p in param_names if p in DEFAULT_INDICATOR_PARAMS}
+
+        # Baseline metrics
+        baseline_score = strategy_result.composite_score
+        best_score = baseline_score
+        best_params = default_params.copy()
+        best_result = strategy_result
+
+        # Generate all parameter combinations
+        param_values = [param_ranges[p] for p in param_names]
+        combinations = list(product(*param_values))
+
+        # Test each combination
+        for combo in combinations:
+            param_dict = dict(zip(param_names, combo))
+
+            # Skip the default combination (already tested in Phase 1)
+            if param_dict == default_params:
+                continue
+
+            # Create a copy of the dataframe and recalculate indicators
+            df_copy = self.df.copy()
+            df_copy = self._recalculate_indicators_for_tuning(df_copy, param_dict)
+
+            # Run backtest with new indicators
+            result = self._backtest_with_custom_df(
+                df_copy, entry_rule, direction, tp, sl,
+                initial_capital=self.capital,
+                position_size_pct=self.position_size_pct
+            )
+
+            # Check if this is better
+            if result.composite_score > best_score:
+                best_score = result.composite_score
+                best_params = param_dict.copy()
+                best_result = result
+
+        # Create TunedResult
+        tuned_result = TunedResult(
+            original_result=strategy_result,
+            tuned_params=best_params,
+            default_params=default_params,
+            before_score=baseline_score,
+            after_score=best_score,
+            before_win_rate=strategy_result.win_rate,
+            after_win_rate=best_result.win_rate,
+            before_profit_factor=strategy_result.profit_factor,
+            after_profit_factor=best_result.profit_factor,
+            before_pnl_percent=strategy_result.total_pnl_percent,
+            after_pnl_percent=best_result.total_pnl_percent,
+            tuned_result=best_result,
+        )
+
+        return tuned_result
+
+    def tune_top_strategies(self, phase1_results: List[StrategyResult],
+                           top_n: int = 20,
+                           streaming_callback: Callable = None) -> List[TunedResult]:
+        """
+        Phase 2: Tune indicator parameters for top N winning strategies.
+
+        Args:
+            phase1_results: List of StrategyResult from Phase 1
+            top_n: Number of top strategies to tune (default 20)
+            streaming_callback: Optional callback for progress updates
+
+        Returns:
+            List of TunedResult with before/after comparisons
+        """
+        # Filter to profitable strategies and take top N by composite score
+        profitable = [r for r in phase1_results if r.total_pnl > 0]
+        profitable.sort(key=lambda x: x.composite_score, reverse=True)
+        top_strategies = profitable[:top_n]
+
+        tuned_results = []
+        total = len(top_strategies)
+
+        for i, strategy_result in enumerate(top_strategies):
+            # Update progress
+            if streaming_callback:
+                progress_pct = int((i / total) * 100)
+                streaming_callback({
+                    'type': 'tuning_progress',
+                    'current': i + 1,
+                    'total': total,
+                    'strategy': strategy_result.strategy_name,
+                    'entry_rule': strategy_result.entry_rule,
+                    'direction': strategy_result.direction,
+                    'progress': progress_pct,
+                })
+
+            # Tune this strategy
+            tuned = self.tune_single_strategy(strategy_result)
+            tuned_results.append(tuned)
+
+            # Stream the result
+            if streaming_callback:
+                streaming_callback({
+                    'type': 'tuning_result',
+                    'rank': i + 1,
+                    'tuning': tuned.to_dict(),
+                })
+
+        # Sort by tuned score
+        tuned_results.sort(key=lambda x: x.after_score, reverse=True)
+
+        return tuned_results
+
 
 def generate_pinescript(result: StrategyResult) -> str:
     """
@@ -2479,5 +3263,9 @@ def run_strategy_finder(df: pd.DataFrame,
             'has_open_position': r.has_open_position,
             'open_position': r.open_position
         })
+
+    # Include all profitable results for Phase 2 tuning
+    # (StrategyResult objects - not serialized, for internal use)
+    report['all_results'] = profitable
 
     return report

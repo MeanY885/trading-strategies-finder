@@ -497,7 +497,8 @@ mih_atr(simple int length) =>
     def generate_exact_match(self, strategy_name: str, params: Dict, metrics: Dict = None,
                               entry_rule: str = None, direction: str = None,
                               position_size_pct: float = 75.0, capital: float = 1000.0,
-                              engine: str = "tradingview", date_range: Dict = None) -> str:
+                              engine: str = "tradingview", date_range: Dict = None,
+                              indicator_params: Dict = None) -> str:
         """
         Generate EXACT-MATCH Pine Script v6 that guarantees 1:1 match with Python backtester.
 
@@ -517,10 +518,45 @@ mih_atr(simple int length) =>
             capital: Starting capital (from UI)
             engine: Calculation engine ("tradingview", "pandas_ta", or "mihakralj")
             date_range: Optional date range dict with keys: enabled, startDate, startTime, endDate, endTime
+            indicator_params: Optional dict with tuned indicator parameters (from Phase 2)
+                              e.g., {'rsi_length': 10, 'ema_fast': 7, 'ema_slow': 18}
 
         Returns:
             Complete Pine Script v6 code as string
         """
+        # Default indicator parameters (Phase 1 defaults)
+        DEFAULT_PARAMS = {
+            'rsi_length': 14,
+            'stoch_k': 14,
+            'stoch_d': 3,
+            'stoch_smooth': 3,
+            'bb_length': 20,
+            'bb_mult': 2.0,
+            'atr_length': 14,
+            'sma_fast': 9,
+            'sma_slow': 18,
+            'sma_20': 20,
+            'ema_fast': 9,
+            'ema_slow': 21,
+            'macd_fast': 12,
+            'macd_slow': 26,
+            'macd_signal': 9,
+            'willr_length': 14,
+            'cci_length': 20,
+            'supertrend_factor': 3.0,
+            'supertrend_atr': 10,
+            'adx_length': 14,
+        }
+
+        # Merge with tuned params (tuned values override defaults)
+        ind_params = DEFAULT_PARAMS.copy()
+        if indicator_params:
+            ind_params.update(indicator_params)
+
+        # Helper to get param value
+        def p(name):
+            return ind_params.get(name, DEFAULT_PARAMS.get(name))
+
         gen_date = datetime.now().strftime("%Y-%m-%d %H:%M")
 
         # Extract percentage-based TP/SL
@@ -579,33 +615,61 @@ inDateRange() => not useDateRange or (time >= fromDate and time <= toDate)
             date_range_condition = " and inDateRange()"
 
         # Strategy-specific entry conditions - MUST MATCH PYTHON EXACTLY
+        # Uses tuned indicator parameters when provided
+        rsi_len = p('rsi_length')
+        stoch_k = p('stoch_k')
+        stoch_d = p('stoch_d')
+        stoch_smooth = p('stoch_smooth')
+        bb_len = p('bb_length')
+        bb_mult = p('bb_mult')
+        ema_fast = p('ema_fast')
+        ema_slow = p('ema_slow')
+        sma_fast = p('sma_fast')
+        sma_slow = p('sma_slow')
+        sma_20 = p('sma_20')
+        macd_fast = p('macd_fast')
+        macd_slow = p('macd_slow')
+        macd_signal = p('macd_signal')
+        willr_len = p('willr_length')
+        cci_len = p('cci_length')
+        st_factor = p('supertrend_factor')
+        st_atr = p('supertrend_atr')
+        adx_len = p('adx_length')
+        atr_len = p('atr_length')
+
         entry_conditions = {
             # === MOMENTUM ===
             'rsi_extreme': f'''// RSI Strategy (TradingView built-in pattern)
 // Long: RSI crosses OVER oversold (30), Short: RSI crosses UNDER overbought (70)
-rsiValue = ta.rsi(close, 14)
+// RSI Length: {rsi_len} {"(tuned)" if indicator_params and 'rsi_length' in indicator_params else "(default)"}
+rsiValue = ta.rsi(close, {rsi_len})
 entrySignal = {"ta.crossover(rsiValue, 30)" if is_long else "ta.crossunder(rsiValue, 70)"}''',
 
             'rsi_cross_50': f'''// RSI Cross 50 Entry
-rsiValue = ta.rsi(close, 14)
+// RSI Length: {rsi_len} {"(tuned)" if indicator_params and 'rsi_length' in indicator_params else "(default)"}
+rsiValue = ta.rsi(close, {rsi_len})
 entrySignal = {"ta.crossover(rsiValue, 50)" if is_long else "ta.crossunder(rsiValue, 50)"}''',
 
             'stoch_extreme': f'''// Stochastic Slow Strategy (TradingView built-in pattern)
 // Long: K crosses OVER D while K < 20, Short: K crosses UNDER D while K > 80
-k = ta.sma(ta.stoch(close, high, low, 14), 3)
-d = ta.sma(k, 3)
+// Stoch K: {stoch_k}, D: {stoch_d}, Smooth: {stoch_smooth} {"(tuned)" if indicator_params and any(k in indicator_params for k in ['stoch_k', 'stoch_d', 'stoch_smooth']) else "(default)"}
+k = ta.sma(ta.stoch(close, high, low, {stoch_k}), {stoch_smooth})
+d = ta.sma(k, {stoch_d})
 entrySignal = {"ta.crossover(k, d) and k < 20" if is_long else "ta.crossunder(k, d) and k > 80"}''',
 
             'williams_r': f'''// Williams %R Extreme Entry (< -80 long, > -20 short)
-willrValue = ta.wpr(14)
+// Williams %R Length: {willr_len} {"(tuned)" if indicator_params and 'willr_length' in indicator_params else "(default)"}
+willrValue = ta.wpr({willr_len})
 entrySignal = {"willrValue < -80" if is_long else "willrValue > -20"}''',
 
             'cci_extreme': f'''// CCI Extreme Entry (< -100 long, > 100 short)
-cciValue = ta.cci(high, low, close, 20)
+// CCI Length: {cci_len} {"(tuned)" if indicator_params and 'cci_length' in indicator_params else "(default)"}
+cciValue = ta.cci(high, low, close, {cci_len})
 entrySignal = {"cciValue < -100" if is_long else "cciValue > 100"}''',
 
             'rsi_divergence': f'''// RSI Divergence Entry (simplified)
-rsiValue = ta.rsi(close, 14)
+// RSI Length: {rsi_len} {"(tuned)" if indicator_params and 'rsi_length' in indicator_params else "(default)"}
+rsiValue = ta.rsi(close, {rsi_len})
 lookback = 5
 priceLowerLow = low < ta.lowest(low, lookback)[1]
 rsiHigherLow = rsiValue > ta.valuewhen(priceLowerLow[1], rsiValue, 0)
@@ -616,19 +680,22 @@ entrySignal = {"priceLowerLow and rsiHigherLow and rsiValue < 40" if is_long els
             # === MEAN REVERSION ===
             'bb_touch': f'''// Bollinger Bands Strategy (TradingView built-in pattern)
 // Long: price crosses OVER lower band, Short: price crosses UNDER upper band
-[bbMiddle, bbUpper, bbLower] = ta.bb(close, 20, 2.0)
+// BB Length: {bb_len}, Mult: {bb_mult} {"(tuned)" if indicator_params and any(k in indicator_params for k in ['bb_length', 'bb_mult']) else "(default)"}
+[bbMiddle, bbUpper, bbLower] = ta.bb(close, {bb_len}, {bb_mult})
 entrySignal = {"ta.crossover(close, bbLower)" if is_long else "ta.crossunder(close, bbUpper)"}''',
 
             'bb_squeeze_breakout': f'''// BB Squeeze Breakout Entry
-[bbMiddle, bbUpper, bbLower] = ta.bb(close, 20, 2.0)
+// BB Length: {bb_len}, Mult: {bb_mult} {"(tuned)" if indicator_params and any(k in indicator_params for k in ['bb_length', 'bb_mult']) else "(default)"}
+[bbMiddle, bbUpper, bbLower] = ta.bb(close, {bb_len}, {bb_mult})
 bbWidth = (bbUpper - bbLower) / bbMiddle
-avgWidth = ta.sma(bbWidth, 20)
+avgWidth = ta.sma(bbWidth, {bb_len})
 squeezed = bbWidth[1] < avgWidth * 0.8
 expanding = bbWidth > bbWidth[1]
 entrySignal = squeezed and expanding and {"close > bbMiddle" if is_long else "close < bbMiddle"}''',
 
             'price_vs_sma': f'''// Price vs SMA Entry (1% deviation from SMA = mean reversion signal)
-sma20 = ta.sma(close, 20)
+// SMA Length: {sma_20} {"(tuned)" if indicator_params and 'sma_20' in indicator_params else "(default)"}
+sma20 = ta.sma(close, {sma_20})
 entrySignal = {"close < sma20 * 0.99" if is_long else "close > sma20 * 1.01"}''',
 
             'vwap_bounce': f'''// VWAP Bounce Entry
@@ -640,35 +707,40 @@ closedBelow = close < vwapValue
 entrySignal = {"touchedBelow and closedAbove" if is_long else "touchedAbove and closedBelow"}''',
 
             # === TREND ===
-            'ema_cross': f'''// EMA 9/21 Cross Entry
-emaFast = ta.ema(close, 9)
-emaSlow = ta.ema(close, 21)
+            'ema_cross': f'''// EMA Cross Entry
+// EMA Fast: {ema_fast}, Slow: {ema_slow} {"(tuned)" if indicator_params and any(k in indicator_params for k in ['ema_fast', 'ema_slow']) else "(default)"}
+emaFast = ta.ema(close, {ema_fast})
+emaSlow = ta.ema(close, {ema_slow})
 entrySignal = {"ta.crossover(emaFast, emaSlow)" if is_long else "ta.crossunder(emaFast, emaSlow)"}''',
 
             'sma_cross': f'''// MovingAvg2Line Cross (TradingView built-in pattern)
-// Fast SMA(9) crosses Slow SMA(18)
-mafast = ta.sma(close, 9)
-maslow = ta.sma(close, 18)
+// SMA Fast: {sma_fast}, Slow: {sma_slow} {"(tuned)" if indicator_params and any(k in indicator_params for k in ['sma_fast', 'sma_slow']) else "(default)"}
+mafast = ta.sma(close, {sma_fast})
+maslow = ta.sma(close, {sma_slow})
 entrySignal = {"ta.crossover(mafast, maslow)" if is_long else "ta.crossunder(mafast, maslow)"}''',
 
             'macd_cross': f'''// MACD Strategy (TradingView built-in pattern)
 // Long: histogram crosses OVER zero, Short: histogram crosses UNDER zero
-[macdLine, signalLine, histLine] = ta.macd(close, 12, 26, 9)
+// MACD Fast: {macd_fast}, Slow: {macd_slow}, Signal: {macd_signal} {"(tuned)" if indicator_params and any(k in indicator_params for k in ['macd_fast', 'macd_slow', 'macd_signal']) else "(default)"}
+[macdLine, signalLine, histLine] = ta.macd(close, {macd_fast}, {macd_slow}, {macd_signal})
 delta = macdLine - signalLine  // histogram
 entrySignal = {"ta.crossover(delta, 0)" if is_long else "ta.crossunder(delta, 0)"}''',
 
             'price_above_sma': f'''// Price Crosses SMA Entry
-sma20 = ta.sma(close, 20)
+// SMA Length: {sma_20} {"(tuned)" if indicator_params and 'sma_20' in indicator_params else "(default)"}
+sma20 = ta.sma(close, {sma_20})
 entrySignal = {"ta.crossover(close, sma20)" if is_long else "ta.crossunder(close, sma20)"}''',
 
             'supertrend': f'''// Supertrend Strategy (TradingView built-in pattern)
 // if ta.change(direction) < 0 -> long, if ta.change(direction) > 0 -> short
-[supertrendValue, supertrendDir] = ta.supertrend(3, 10)
+// Supertrend Factor: {st_factor}, ATR: {st_atr} {"(tuned)" if indicator_params and any(k in indicator_params for k in ['supertrend_factor', 'supertrend_atr']) else "(default)"}
+[supertrendValue, supertrendDir] = ta.supertrend({st_factor}, {st_atr})
 dirChange = ta.change(supertrendDir)
 entrySignal = {"dirChange < 0" if is_long else "dirChange > 0"}''',
 
             'adx_strong_trend': f'''// ADX Strong Trend Entry (ADX > 25)
-[diPlus, diMinus, adxValue] = ta.dmi(14, 14)
+// ADX Length: {adx_len} {"(tuned)" if indicator_params and 'adx_length' in indicator_params else "(default)"}
+[diPlus, diMinus, adxValue] = ta.dmi({adx_len}, {adx_len})
 strongTrend = adxValue > 25
 entrySignal = strongTrend and {"diPlus > diMinus" if is_long else "diMinus > diPlus"}''',
 

@@ -23,7 +23,10 @@ thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=2)
 
 from data_fetcher import BinanceDataFetcher, YFinanceDataFetcher
 from pinescript_generator import PineScriptGenerator
-from strategy_engine import run_strategy_finder, generate_pinescript, StrategyEngine
+from strategy_engine import (
+    run_strategy_finder, generate_pinescript, StrategyEngine,
+    TunedResult, STRATEGY_PARAM_MAP, DEFAULT_INDICATOR_PARAMS
+)
 from strategy_database import get_strategy_db
 HAS_DATABASE = True
 
@@ -603,6 +606,75 @@ def run_unified_sync(capital: float, risk_percent: float, n_trials: int, engine:
         # Store date_range for Pine Script generation
         if date_range:
             unified_status["report"]["date_range"] = date_range
+
+        # =====================================================================
+        # PHASE 2: INDICATOR PARAMETER TUNING
+        # =====================================================================
+        unified_status["message"] = "Phase 2: Tuning indicator parameters for top 20 strategies..."
+        unified_status["progress"] = 95
+
+        # Collect all Phase 1 results for tuning
+        all_phase1_results = []
+        for eng, report in all_reports.items():
+            if 'all_results' in report and report['all_results']:
+                all_phase1_results.extend(report['all_results'])
+
+        # Only proceed with tuning if we have results
+        tuning_results = []
+        if all_phase1_results:
+            # Create a StrategyEngine instance for tuning
+            # Use the first available engine's data
+            first_engine = engines_to_run[0]
+
+            # Create tuning callback for SSE streaming
+            def tuning_callback(data):
+                data['type'] = data.get('type', 'tuning_update')
+                publish_strategy_result(data)
+
+            try:
+                # Create engine for tuning (reuse df)
+                tuning_engine = StrategyEngine(
+                    df=df.copy(),
+                    status_callback=unified_status,
+                    streaming_callback=None,
+                    capital=capital,
+                    position_size_pct=risk_percent,
+                    calc_engine=first_engine
+                )
+
+                # Run Phase 2 tuning
+                tuning_results = tuning_engine.tune_top_strategies(
+                    phase1_results=all_phase1_results,
+                    top_n=20,
+                    streaming_callback=tuning_callback
+                )
+
+                # Convert TunedResult objects to dicts for JSON serialization
+                tuning_data = [tr.to_dict() for tr in tuning_results]
+
+                # Add tuning results to report
+                if unified_status["report"]:
+                    unified_status["report"]["tuning_results"] = tuning_data
+                    unified_status["report"]["tuning_complete"] = True
+
+                    # Count improvements
+                    improved_count = sum(1 for tr in tuning_results if tr.is_improved)
+                    unified_status["report"]["tuning_improved_count"] = improved_count
+
+                unified_status["message"] = f"Phase 2 complete: {improved_count}/{len(tuning_results)} strategies improved"
+
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                print(f"Phase 2 tuning error: {e}")
+                if unified_status["report"]:
+                    unified_status["report"]["tuning_results"] = []
+                    unified_status["report"]["tuning_complete"] = False
+                    unified_status["report"]["tuning_error"] = str(e)
+        else:
+            if unified_status["report"]:
+                unified_status["report"]["tuning_results"] = []
+                unified_status["report"]["tuning_complete"] = False
 
         unified_status["progress"] = 100
 

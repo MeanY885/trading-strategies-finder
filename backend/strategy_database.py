@@ -60,6 +60,13 @@ class StrategyDatabase:
                 tp_percent REAL,
                 sl_percent REAL,
 
+                -- Indicator parameters (Phase 2 tuning - JSON)
+                indicator_params TEXT,
+                tuning_improved INTEGER DEFAULT 0,
+                tuning_score_before REAL,
+                tuning_score_after REAL,
+                tuning_improvement_pct REAL,
+
                 -- Validation results
                 val_pnl REAL,
                 val_profit_factor REAL,
@@ -150,7 +157,9 @@ class StrategyDatabase:
     def save_strategy(self, result: Any, run_id: int = None,
                       symbol: str = None, timeframe: str = None,
                       data_source: str = None, data_start: str = None,
-                      data_end: str = None) -> int:
+                      data_end: str = None,
+                      indicator_params: Dict = None,
+                      tuning_info: Dict = None) -> int:
         """
         Save a strategy result to the database.
 
@@ -162,6 +171,8 @@ class StrategyDatabase:
             data_source: Data source (e.g., Kraken)
             data_start: Start date of data
             data_end: End date of data
+            indicator_params: Dict of tuned indicator parameters (Phase 2)
+            tuning_info: Dict with tuning results (improved, before_score, after_score, improvement_pct)
 
         Returns:
             Strategy ID in database
@@ -180,15 +191,30 @@ class StrategyDatabase:
         # Convert equity curve to JSON
         equity_curve = json.dumps(result.equity_curve) if hasattr(result, 'equity_curve') else '[]'
 
+        # Convert indicator_params to JSON
+        indicator_params_json = json.dumps(indicator_params) if indicator_params else None
+
+        # Extract tuning info
+        tuning_improved = 0
+        tuning_score_before = None
+        tuning_score_after = None
+        tuning_improvement_pct = None
+        if tuning_info:
+            tuning_improved = 1 if tuning_info.get('improved', False) else 0
+            tuning_score_before = tuning_info.get('before_score')
+            tuning_score_after = tuning_info.get('after_score')
+            tuning_improvement_pct = tuning_info.get('improvement_pct')
+
         # Use getattr with defaults for compatibility with both old and new result formats
         cursor.execute('''
             INSERT INTO strategies
             (strategy_name, strategy_category, params, total_trades, win_rate,
              profit_factor, total_pnl, max_drawdown, equity_r_squared, recovery_factor,
-             sharpe_ratio, composite_score, tp_percent, sl_percent, val_pnl,
-             val_profit_factor, val_win_rate, found_by, data_source, symbol,
+             sharpe_ratio, composite_score, tp_percent, sl_percent,
+             indicator_params, tuning_improved, tuning_score_before, tuning_score_after, tuning_improvement_pct,
+             val_pnl, val_profit_factor, val_win_rate, found_by, data_source, symbol,
              timeframe, data_start, data_end, optimization_run_id, equity_curve)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             getattr(result, 'strategy_name', 'unknown'),
             getattr(result, 'strategy_category', 'unknown'),
@@ -204,6 +230,11 @@ class StrategyDatabase:
             getattr(result, 'composite_score', getattr(result, 'profit_factor', 0) * 10),
             tp_percent,
             sl_percent,
+            indicator_params_json,
+            tuning_improved,
+            tuning_score_before,
+            tuning_score_after,
+            tuning_improvement_pct,
             getattr(result, 'val_pnl', 0),
             getattr(result, 'val_profit_factor', 0),
             getattr(result, 'val_win_rate', 0),
