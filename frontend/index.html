@@ -1203,8 +1203,11 @@
                                     <th style="padding: 0.5rem; border-bottom: 1px solid var(--border);">Win%</th>
                                     <th style="padding: 0.5rem; border-bottom: 1px solid var(--border);">PF</th>
                                     <th style="padding: 0.5rem; border-bottom: 1px solid var(--border);">Return</th>
+                                    <th style="padding: 0.5rem; border-bottom: 1px solid var(--border);" title="Max Drawdown">DD</th>
                                     <th style="padding: 0.5rem; border-bottom: 1px solid var(--border);">B&H</th>
+                                    <th style="padding: 0.5rem; border-bottom: 1px solid var(--border);" title="Consistency Score">Cons</th>
                                     <th style="padding: 0.5rem; border-bottom: 1px solid var(--border);">Score</th>
+                                    <th style="padding: 0.5rem; border-bottom: 1px solid var(--border); width: 30px;"></th>
                                 </tr>
                             </thead>
                             <tbody id="streamingTableBody"></tbody>
@@ -1267,14 +1270,55 @@
                     const score = r.composite_score || 0;
                     const vsBH = r.vs_buy_hold || 0;
                     const beatsBH = r.beats_buy_hold || false;
+                    const maxDD = r.max_drawdown_percent || 0;
+                    const consistency = r.consistency_score || 50;
+                    const periodMetrics = r.period_metrics || {};
 
                     // Engine tag colors (TV = TradingView, NT = Native/TA-Lib)
                     const engineColors = { 'TV': '#2962FF', 'NT': '#22c55e' };
                     const engineTag = r.engine_tag || 'TV';
                     const engineColor = engineColors[engineTag] || '#666';
 
+                    // DD color: green < 5%, yellow 5-15%, red > 15%
+                    const ddColor = maxDD < 5 ? 'var(--success)' : maxDD < 15 ? 'var(--warning)' : 'var(--danger)';
+
+                    // Consistency color: green >= 70, yellow >= 50, red < 50
+                    const consColor = consistency >= 70 ? 'var(--success)' : consistency >= 50 ? 'var(--warning)' : 'var(--danger)';
+
+                    // Build period metrics row
+                    const availablePeriods = Object.keys(periodMetrics);
+                    let periodRow = '';
+                    if (availablePeriods.length > 0) {
+                        const periodCards = availablePeriods.map(period => {
+                            const pm = periodMetrics[period];
+                            if (!pm || pm.trades === 0) return '';
+                            const wrColor = pm.win_rate >= 60 ? 'var(--success)' : pm.win_rate >= 50 ? 'var(--warning)' : 'var(--danger)';
+                            const pnlColor = pm.pnl >= 0 ? 'var(--success)' : 'var(--danger)';
+                            const ddPctColor = (pm.max_dd_pct || 0) < 5 ? 'var(--success)' : (pm.max_dd_pct || 0) < 15 ? 'var(--warning)' : 'var(--danger)';
+                            return `
+                                <div style="background: var(--bg-card); padding: 0.4rem 0.6rem; border-radius: 4px; min-width: 75px; text-align: center;">
+                                    <div style="color: var(--text-muted); font-weight: 600; font-size: 0.7rem;">${period.toUpperCase()}</div>
+                                    <div style="color: ${wrColor}; font-size: 0.75rem;">${pm.win_rate?.toFixed(0) || '-'}% WR</div>
+                                    <div style="color: ${pnlColor}; font-size: 0.75rem;">${pm.pnl >= 0 ? '+' : ''}£${pm.pnl?.toFixed(0) || '0'}</div>
+                                    <div style="color: ${ddPctColor}; font-size: 0.65rem;">DD: -${(pm.max_dd_pct || 0).toFixed(1)}%</div>
+                                    <div style="color: var(--text-muted); font-size: 0.65rem;">${pm.trades} trades</div>
+                                </div>`;
+                        }).filter(c => c).join('');
+
+                        if (periodCards) {
+                            periodRow = `
+                            <tr class="period-row" id="period-row-${idx}" style="display: none; background: var(--bg-secondary);">
+                                <td colspan="13" style="padding: 0.5rem 1rem;">
+                                    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; font-size: 0.75rem;">
+                                        ${periodCards}
+                                    </div>
+                                </td>
+                            </tr>`;
+                        }
+                    }
+
                     return `
-                    <tr style="border-bottom: 1px solid var(--border-subtle); ${idx === 0 ? 'background: rgba(34, 197, 94, 0.1);' : ''}">
+                    <tr style="border-bottom: 1px solid var(--border-subtle); ${idx === 0 ? 'background: rgba(34, 197, 94, 0.1);' : ''} cursor: pointer;" onclick="togglePeriodRow(${idx})">
                         <td style="padding: 0.4rem 0.5rem; color: ${idx < 3 ? 'var(--success)' : 'var(--text-muted)'};">${idx + 1}</td>
                         <td style="padding: 0.4rem 0.5rem;">
                             <span style="background: ${engineColor}; color: white; padding: 0.15rem 0.4rem; border-radius: 4px; font-size: 0.7rem; font-weight: 600;">${engineTag}</span>
@@ -1294,11 +1338,15 @@
                             <span style="color: ${returnPct >= 0 ? 'var(--success)' : 'var(--danger)'}; font-weight: 500;">${returnPct.toFixed(1)}%</span>
                             <span style="color: var(--text-muted); font-size: 0.65rem; display: block;">£${returnGBP.toFixed(0)}</span>
                         </td>
+                        <td style="padding: 0.4rem 0.5rem; color: ${ddColor};">-${maxDD.toFixed(1)}%</td>
                         <td style="padding: 0.4rem 0.5rem; color: ${(returnPct - vsBH) >= 0 ? 'var(--success)' : 'var(--danger)'}; font-weight: 500;">
                             ${(returnPct - vsBH) >= 0 ? '+' : ''}${(returnPct - vsBH).toFixed(1)}%
                         </td>
+                        <td style="padding: 0.4rem 0.5rem; color: ${consColor};">${consistency.toFixed(0)}</td>
                         <td style="padding: 0.4rem 0.5rem; color: var(--accent-primary); font-weight: 600;">${score.toFixed(0)}</td>
+                        <td style="padding: 0.4rem 0.5rem; color: var(--text-muted); font-size: 0.7rem;">${availablePeriods.length > 0 ? '+' : ''}</td>
                     </tr>
+                    ${periodRow}
                 `}).join('');
             }
 
@@ -1307,7 +1355,15 @@
             if (countEl) {
                 const profitable = streamedResults.filter(r => r.total_pnl > 0).length;
                 const beatsBH = streamedResults.filter(r => r.beats_buy_hold).length;
-                countEl.textContent = `${profitable} profitable | ${beatsBH} beat Buy & Hold (ranked by composite score)`;
+                countEl.textContent = `${profitable} profitable | ${beatsBH} beat Buy & Hold (ranked by composite score) - click row for period breakdown`;
+            }
+        }
+
+        function togglePeriodRow(idx) {
+            const periodRow = document.getElementById(`period-row-${idx}`);
+            if (periodRow) {
+                const isHidden = periodRow.style.display === 'none';
+                periodRow.style.display = isHidden ? 'table-row' : 'none';
             }
         }
         

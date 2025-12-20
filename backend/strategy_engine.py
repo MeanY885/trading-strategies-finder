@@ -58,6 +58,36 @@ class TradeResult:
     cumulative_pnl: float = 0.0 # Running total P&L £
 
 
+# Time periods for performance breakdown
+TIME_PERIODS = [
+    ('1d', 1),
+    ('3d', 3),
+    ('1w', 7),
+    ('2w', 14),
+    ('1m', 30),
+    ('3m', 90),
+    ('6m', 180),
+    ('1y', 365),
+]
+
+
+@dataclass
+class PeriodMetrics:
+    """Performance metrics for a specific time period."""
+    period_name: str        # e.g., "1d", "3d", "1w", etc.
+    period_days: int        # Days covered by this period
+    has_data: bool          # Whether the data spans this period
+    total_trades: int = 0
+    wins: int = 0
+    losses: int = 0
+    win_rate: float = None
+    total_pnl: float = 0.0
+    total_pnl_pct: float = 0.0
+    profit_factor: float = None
+    max_drawdown: float = 0.0      # Max drawdown £ in period
+    max_drawdown_pct: float = 0.0  # Max drawdown % in period
+
+
 # Auto-scaling configuration
 def get_system_resources() -> Dict:
     """Detect system resources (CPU, memory) for auto-scaling."""
@@ -201,6 +231,10 @@ class StrategyResult:
     has_open_position: bool = False
     open_position: Dict = None  # {direction, entry_price, entry_time, current_price, unrealized_pnl, unrealized_pnl_pct}
 
+    # Period-based performance metrics
+    period_metrics: Dict = None      # Dict[str, PeriodMetrics]
+    consistency_score: float = 0.0   # Performance consistency across time periods
+
     def __post_init__(self):
         if self.params is None:
             self.params = {
@@ -214,18 +248,198 @@ class StrategyResult:
         if self.trades_list is None:
             self.trades_list = []
 
-        # Calculate composite score
+        # Calculate period metrics first (needed for consistency score)
+        self.period_metrics = self._calculate_period_metrics()
+
+        # Calculate consistency score
+        self.consistency_score = self._calculate_consistency_score()
+
+        # Calculate composite score (includes consistency and max drawdown)
         self._calculate_composite_score()
+
+    def _calculate_period_metrics(self) -> Dict:
+        """
+        Calculate performance metrics for each time period.
+        Uses exit_time to assign trades to periods (looking backward from most recent trade).
+        """
+        from datetime import timedelta
+
+        if not self.trades_list:
+            return {}
+
+        # Parse all exit times
+        trades_with_times = []
+        for trade in self.trades_list:
+            exit_time_str = trade.get('exit_time', '')
+            if exit_time_str and not str(exit_time_str).startswith('bar_'):
+                try:
+                    # Handle various datetime formats
+                    exit_str = str(exit_time_str).replace(' ', 'T')
+                    if 'T' in exit_str:
+                        exit_dt = datetime.fromisoformat(exit_str.split('+')[0].split('Z')[0])
+                    else:
+                        exit_dt = datetime.strptime(exit_str, '%Y-%m-%d %H:%M:%S')
+                    trades_with_times.append({**trade, '_exit_dt': exit_dt})
+                except Exception:
+                    pass
+
+        if not trades_with_times:
+            return {}
+
+        # Find the most recent and earliest trade dates
+        most_recent = max(t['_exit_dt'] for t in trades_with_times)
+        earliest = min(t['_exit_dt'] for t in trades_with_times)
+        data_span_days = (most_recent - earliest).days
+
+        period_metrics = {}
+
+        for period_name, period_days in TIME_PERIODS:
+            # Check if data covers this period
+            has_data = data_span_days >= period_days
+
+            # Filter trades within this period (from most_recent going back)
+            cutoff = most_recent - timedelta(days=period_days)
+            period_trades = [t for t in trades_with_times if t['_exit_dt'] >= cutoff]
+
+            if not period_trades:
+                period_metrics[period_name] = PeriodMetrics(
+                    period_name=period_name,
+                    period_days=period_days,
+                    has_data=has_data
+                )
+                continue
+
+            wins = [t for t in period_trades if t.get('result') == 'WIN']
+            losses = [t for t in period_trades if t.get('result') == 'LOSS']
+            total = len(period_trades)
+
+            total_pnl = sum(t.get('pnl', 0) for t in period_trades)
+            total_pnl_pct = sum(t.get('pnl_pct', 0) for t in period_trades)
+
+            gross_profit = sum(t.get('pnl', 0) for t in wins) if wins else 0
+            gross_loss = abs(sum(t.get('pnl', 0) for t in losses)) if losses else 0.001
+            pf = gross_profit / gross_loss if gross_loss > 0.001 else (10 if gross_profit > 0 else 0)
+
+            # Calculate max drawdown for this period
+            # Sort by exit time and track equity curve
+            sorted_trades = sorted(period_trades, key=lambda x: x['_exit_dt'])
+            running_pnl = 0
+            peak_pnl = 0
+            max_dd = 0
+            max_dd_pct = 0
+
+            for t in sorted_trades:
+                running_pnl += t.get('pnl', 0)
+                if running_pnl > peak_pnl:
+                    peak_pnl = running_pnl
+                drawdown = peak_pnl - running_pnl
+                if drawdown > max_dd:
+                    max_dd = drawdown
+                    # Calculate drawdown as % of peak (or initial capital if no peak)
+                    if peak_pnl > 0:
+                        max_dd_pct = (drawdown / peak_pnl) * 100
+
+            period_metrics[period_name] = PeriodMetrics(
+                period_name=period_name,
+                period_days=period_days,
+                has_data=has_data,
+                total_trades=total,
+                wins=len(wins),
+                losses=len(losses),
+                win_rate=round(len(wins) / total * 100, 1) if total > 0 else None,
+                total_pnl=round(total_pnl, 2),
+                total_pnl_pct=round(total_pnl_pct, 2),
+                profit_factor=round(pf, 2) if total > 0 else None,
+                max_drawdown=round(max_dd, 2),
+                max_drawdown_pct=round(max_dd_pct, 2)
+            )
+
+        return period_metrics
+
+    def _calculate_consistency_score(self) -> float:
+        """
+        Calculate a score for performance consistency across time periods.
+
+        Factors:
+        - Win Rate Consistency (30%): Low standard deviation of win rates
+        - Profitability Consistency (30%): % of periods that are profitable
+        - Max Drawdown Score (25%): Lower max drawdowns = better
+        - Trade Distribution (15%): Trades spread evenly vs clustered
+        """
+        if not self.period_metrics:
+            return 50.0  # Neutral score if no period data
+
+        valid_periods = [pm for pm in self.period_metrics.values()
+                        if pm.has_data and pm.total_trades >= 3]
+
+        if len(valid_periods) < 2:
+            return 50.0  # Need at least 2 periods to measure consistency
+
+        # 1. Win Rate Consistency (low standard deviation = consistent)
+        win_rates = [pm.win_rate for pm in valid_periods if pm.win_rate is not None]
+        if len(win_rates) >= 2:
+            import statistics
+            wr_mean = statistics.mean(win_rates)
+            wr_stdev = statistics.stdev(win_rates)
+            # Lower stdev = higher score (0-25 stdev maps to 100-0)
+            wr_consistency = max(0, 100 - (wr_stdev * 4))
+        else:
+            wr_consistency = 50
+
+        # 2. Profitability Consistency (how many periods are profitable)
+        profitable_periods = sum(1 for pm in valid_periods if pm.total_pnl > 0)
+        pnl_consistency = (profitable_periods / len(valid_periods)) * 100
+
+        # 3. Max Drawdown Score (lower is better)
+        max_dds = [pm.max_drawdown_pct for pm in valid_periods if pm.max_drawdown_pct is not None]
+        if max_dds:
+            avg_dd = sum(max_dds) / len(max_dds)
+            # DD < 5%: 100, DD 5-10%: 80, DD 10-20%: 60, DD 20-30%: 40, DD > 30%: 20
+            if avg_dd < 5:
+                dd_score = 100
+            elif avg_dd < 10:
+                dd_score = 80
+            elif avg_dd < 20:
+                dd_score = 60
+            elif avg_dd < 30:
+                dd_score = 40
+            else:
+                dd_score = 20
+        else:
+            dd_score = 50
+
+        # 4. Trade Distribution (trades per period - lower variance = more consistent)
+        trade_counts = [pm.total_trades for pm in valid_periods]
+        if len(trade_counts) >= 2:
+            import statistics
+            tc_mean = statistics.mean(trade_counts)
+            tc_stdev = statistics.stdev(trade_counts)
+            tc_cv = tc_stdev / tc_mean if tc_mean > 0 else 1
+            # Lower CV = higher score
+            distribution_score = max(0, 100 - (tc_cv * 50))
+        else:
+            distribution_score = 50
+
+        # Combined consistency score
+        return round(
+            wr_consistency * 0.30 +
+            pnl_consistency * 0.30 +
+            dd_score * 0.25 +
+            distribution_score * 0.15,
+            1
+        )
 
     def _calculate_composite_score(self):
         """
         Calculate a balanced composite score.
 
         Weights:
-        - Win Rate: 35% (high win rate = reliable)
-        - Profit Factor: 25% (risk-adjusted returns)
-        - Total Return %: 25% (actual profitability)
-        - Trade Count: 15% (statistical significance)
+        - Win Rate: 25% (high win rate = reliable)
+        - Profit Factor: 15% (risk-adjusted returns)
+        - Total Return %: 15% (actual profitability)
+        - Trade Count: 10% (statistical significance)
+        - Max Drawdown: 15% (lower drawdown = better)
+        - Consistency: 20% (stable performance across periods)
         """
         # Win Rate Score (0-100): Target 60%+, penalize below 40%
         if self.win_rate >= 60:
@@ -268,12 +482,31 @@ class StrategyResult:
         else:
             trades_score = 0
 
+        # Max Drawdown Score (0-100): Lower is better
+        dd_pct = self.max_drawdown_percent if self.max_drawdown_percent else 0
+        if dd_pct < 5:
+            dd_score = 100
+        elif dd_pct < 10:
+            dd_score = 80
+        elif dd_pct < 20:
+            dd_score = 60
+        elif dd_pct < 30:
+            dd_score = 40
+        else:
+            dd_score = 20
+
+        # Consistency Score (already calculated)
+        consistency = self.consistency_score
+
         # Weighted composite
-        self.composite_score = (
-            wr_score * 0.35 +
-            pf_score * 0.25 +
-            pnl_score * 0.25 +
-            trades_score * 0.15
+        self.composite_score = round(
+            wr_score * 0.25 +
+            pf_score * 0.15 +
+            pnl_score * 0.15 +
+            trades_score * 0.10 +
+            dd_score * 0.15 +
+            consistency * 0.20,
+            1
         )
 
 
@@ -556,6 +789,23 @@ class StrategyEngine:
         """Stream result to frontend."""
         if self.streaming_callback:
             try:
+                # Serialize period metrics for JSON
+                period_metrics_dict = {}
+                if result.period_metrics:
+                    for period_name, pm in result.period_metrics.items():
+                        if pm.has_data and pm.total_trades > 0:
+                            period_metrics_dict[period_name] = {
+                                'trades': pm.total_trades,
+                                'wins': pm.wins,
+                                'losses': pm.losses,
+                                'win_rate': pm.win_rate,
+                                'pnl': pm.total_pnl,
+                                'pnl_pct': pm.total_pnl_pct,
+                                'pf': pm.profit_factor,
+                                'max_dd': pm.max_drawdown,
+                                'max_dd_pct': pm.max_drawdown_pct
+                            }
+
                 self.streaming_callback({
                     'type': 'strategy_result',
                     'strategy_name': result.strategy_name,
@@ -580,6 +830,9 @@ class StrategyEngine:
                     # Open position warning
                     'has_open_position': result.has_open_position,
                     'open_position': result.open_position,
+                    # Period-based metrics
+                    'period_metrics': period_metrics_dict,
+                    'consistency_score': result.consistency_score,
                 })
             except Exception as e:
                 print(f"Streaming error: {e}")
