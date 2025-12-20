@@ -2287,9 +2287,10 @@ class StrategyEngine:
                         if tested % update_interval == 0 or tested == total:
                             # Progress from 2% to 90% during testing phase
                             progress = int(2 + (tested / total) * 88)
-                            pct_complete = (tested / total) * 100
+                            # Calculate actual overall progress percentage for display
+                            overall_pct = self.progress_min + ((progress / 100) * (self.progress_max - self.progress_min))
                             self._update_status(
-                                f"[{combo_num}/{combo_total}] {strategy} {direction.upper()} | {tested:,}/{total:,} ({pct_complete:.1f}%) | Found: {profitable_count}",
+                                f"[{combo_num}/{combo_total}] {strategy} {direction.upper()} | {tested:,}/{total:,} ({overall_pct:.1f}%) | Found: {profitable_count}",
                                 progress
                             )
 

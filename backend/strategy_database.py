@@ -112,6 +112,26 @@ class StrategyDatabase:
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_symbol ON strategies(symbol)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_timeframe ON strategies(timeframe)')
 
+        # Migration: Add missing columns to existing databases
+        cursor.execute("PRAGMA table_info(strategies)")
+        existing_columns = {row[1] for row in cursor.fetchall()}
+
+        migration_columns = [
+            ('indicator_params', 'TEXT'),
+            ('tuning_improved', 'INTEGER DEFAULT 0'),
+            ('tuning_score_before', 'REAL'),
+            ('tuning_score_after', 'REAL'),
+            ('tuning_improvement_pct', 'REAL'),
+        ]
+
+        for col_name, col_type in migration_columns:
+            if col_name not in existing_columns:
+                try:
+                    cursor.execute(f'ALTER TABLE strategies ADD COLUMN {col_name} {col_type}')
+                    print(f"Added missing column: {col_name}")
+                except Exception as e:
+                    print(f"Column {col_name} migration skipped: {e}")
+
         conn.commit()
         conn.close()
 
