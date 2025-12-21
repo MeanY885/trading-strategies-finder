@@ -536,11 +536,57 @@ class StrategyDatabase:
 
 # Singleton instance for easy access
 _db_instance: Optional[StrategyDatabase] = None
+_migration_done: bool = False
+
+
+def _run_migration(db_path: str):
+    """Run database migration to add any missing columns."""
+    global _migration_done
+    if _migration_done:
+        return
+
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+
+    # Check if strategies table exists
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='strategies'")
+    if not cursor.fetchone():
+        conn.close()
+        return
+
+    # Get existing columns
+    cursor.execute("PRAGMA table_info(strategies)")
+    existing_columns = {row[1] for row in cursor.fetchall()}
+
+    migration_columns = [
+        ('indicator_params', 'TEXT'),
+        ('tuning_improved', 'INTEGER DEFAULT 0'),
+        ('tuning_score_before', 'REAL'),
+        ('tuning_score_after', 'REAL'),
+        ('tuning_improvement_pct', 'REAL'),
+    ]
+
+    for col_name, col_type in migration_columns:
+        if col_name not in existing_columns:
+            try:
+                cursor.execute(f'ALTER TABLE strategies ADD COLUMN {col_name} {col_type}')
+                print(f"Migration: Added column {col_name}")
+            except Exception as e:
+                print(f"Migration warning for {col_name}: {e}")
+
+    conn.commit()
+    conn.close()
+    _migration_done = True
+    print("Database migration check complete")
 
 
 def get_strategy_db(db_path: str = "data/strategies.db") -> StrategyDatabase:
     """Get or create the strategy database singleton."""
     global _db_instance
+
+    # Always run migration check first
+    _run_migration(db_path)
+
     if _db_instance is None:
         _db_instance = StrategyDatabase(db_path)
     return _db_instance
