@@ -21,13 +21,14 @@ import threading
 # Thread pool for running blocking optimization
 thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=2)
 
-from data_fetcher import BinanceDataFetcher, YFinanceDataFetcher
+from data_fetcher import BinanceDataFetcher, YFinanceDataFetcher, KrakenDataFetcher
 from pinescript_generator import PineScriptGenerator
 from strategy_engine import (
     run_strategy_finder, generate_pinescript, StrategyEngine,
     TunedResult, STRATEGY_PARAM_MAP, DEFAULT_INDICATOR_PARAMS
 )
 from strategy_database import get_strategy_db
+from exchange_rate_fetcher import preload_exchange_rates, get_exchange_fetcher, reset_exchange_fetcher
 HAS_DATABASE = True
 
 # Initialize FastAPI
@@ -52,7 +53,9 @@ data_status = {
     "start_date": None,
     "end_date": None,
     "message": "No data loaded",
-    "stats": None
+    "stats": None,
+    "progress": 0,
+    "fetching": False
 }
 
 def calculate_data_stats(df: pd.DataFrame) -> dict:
@@ -138,25 +141,29 @@ async def get_status():
 
 @app.post("/api/fetch-data")
 async def fetch_data(request: DataFetchRequest, background_tasks: BackgroundTasks):
-    """Fetch historical data from Binance or Yahoo Finance"""
+    """Fetch historical data from Binance, Kraken, or Yahoo Finance"""
     global data_status
-    
-    source_name = "Binance" if request.source == "binance" else "Yahoo Finance"
+
+    source_names = {"binance": "Binance", "kraken": "Kraken", "yfinance": "Yahoo Finance"}
+    source_name = source_names.get(request.source, request.source)
     data_status["message"] = f"Fetching {request.interval}m {request.pair} from {source_name}..."
     data_status["source"] = request.source
     data_status["pair"] = request.pair
     data_status["interval"] = request.interval
-    
+    data_status["progress"] = 0
+    data_status["fetching"] = True
+    data_status["loaded"] = False
+
     background_tasks.add_task(
-        fetch_data_task, 
-        request.source, 
-        request.pair, 
-        request.interval, 
+        fetch_data_task,
+        request.source,
+        request.pair,
+        request.interval,
         request.months
     )
-    
+
     return {
-        "status": "started", 
+        "status": "started",
         "message": f"Fetching {request.months} months of {request.interval}m {request.pair} from {source_name}"
     }
 
@@ -164,39 +171,50 @@ async def fetch_data(request: DataFetchRequest, background_tasks: BackgroundTask
 async def fetch_data_task(source: str, pair: str, interval: int, months: float):
     """Background task to fetch data"""
     global data_status
-    
-    source_name = "Binance" if source == "binance" else "Yahoo Finance"
-    
+
+    source_names = {"binance": "Binance", "kraken": "Kraken", "yfinance": "Yahoo Finance"}
+    source_name = source_names.get(source, source)
+
     def status_callback(message: str, progress: int = None):
         """Update status for frontend polling"""
-        data_status["message"] = message.replace("[YFinance] ", "").replace("[Binance] ", "")
+        # Clean up source prefixes from messages
+        clean_msg = message
+        for prefix in ["[YFinance] ", "[Binance] ", "[Kraken] "]:
+            clean_msg = clean_msg.replace(prefix, "")
+        data_status["message"] = clean_msg
         if progress is not None:
             data_status["progress"] = progress
-    
+
     try:
-        # Create fetcher with status callback
+        # Create fetcher with status callback (all sources support it)
         if source == "binance":
-            fetcher = BinanceDataFetcher()
+            fetcher = BinanceDataFetcher(status_callback=status_callback)
+        elif source == "kraken":
+            fetcher = KrakenDataFetcher(status_callback=status_callback)
         else:
             fetcher = YFinanceDataFetcher(status_callback=status_callback)
-        
+
         df = await fetcher.fetch_ohlcv(pair=pair, interval=interval, months=months)
-        
+
         if len(df) == 0:
             # Only set generic error if fetcher didn't already set a specific error
             if not data_status["message"].startswith("Error:"):
                 data_status["message"] = f"Error: No data returned for {pair}"
             data_status["loaded"] = False
+            data_status["fetching"] = False
+            data_status["progress"] = 0
             return
-        
+
         # Save to CSV
         pair_clean = pair.lower().replace("/", "").replace("-", "")
         csv_path = DATA_DIR / f"{pair_clean}_{interval}m.csv"
         df.to_csv(csv_path, index=False)
-        
+
         days = (df['time'].max() - df['time'].min()).days
-        
+
         data_status["loaded"] = True
+        data_status["fetching"] = False
+        data_status["progress"] = 100
         data_status["rows"] = len(df)
         data_status["interval"] = interval
         data_status["pair"] = pair
@@ -209,6 +227,8 @@ async def fetch_data_task(source: str, pair: str, interval: int, months: float):
     except Exception as e:
         data_status["message"] = f"Error: {str(e)}"
         data_status["loaded"] = False
+        data_status["fetching"] = False
+        data_status["progress"] = 0
         import traceback
         traceback.print_exc()
 
@@ -516,6 +536,37 @@ def run_unified_sync(capital: float, risk_percent: float, n_trials: int, engine:
 
             unified_status["message"] = f"Filtered to {len(df)} candles ({start_date} to {end_date})"
 
+        # Determine source currency from symbol (USD for USDT pairs, GBP for GBP pairs)
+        source_currency = "USD" if "USD" in symbol.upper() or "USDT" in symbol.upper() else "GBP"
+        fx_fetcher = None
+
+        # Preload exchange rates if using USD data
+        if source_currency == "USD":
+            unified_status["message"] = "Loading historical USD/GBP exchange rates..."
+            unified_status["progress"] = 5
+
+            # Reset and preload exchange rates for the data period
+            reset_exchange_fetcher()
+
+            start_date_dt = df['time'].min()
+            end_date_dt = df['time'].max()
+
+            # Run async preload in sync context
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(preload_exchange_rates(start_date_dt, end_date_dt))
+                fx_fetcher = get_exchange_fetcher()
+                if fx_fetcher.is_loaded():
+                    stats = fx_fetcher.get_cache_stats()
+                    unified_status["message"] = f"Loaded {stats['count']} exchange rates ({stats['start_date']} to {stats['end_date']})"
+                else:
+                    unified_status["message"] = "Warning: Using default exchange rate (API unavailable)"
+            except Exception as e:
+                unified_status["message"] = f"Warning: Exchange rate loading failed - {e}"
+            finally:
+                loop.close()
+
         # Determine which engines to run
         if engine == "all":
             engines_to_run = ["tradingview", "native"]
@@ -558,7 +609,9 @@ def run_unified_sync(capital: float, risk_percent: float, n_trials: int, engine:
                 engine=eng,
                 n_trials=n_trials,
                 progress_min=progress_min,
-                progress_max=progress_max
+                progress_max=progress_max,
+                source_currency=source_currency,
+                fx_fetcher=fx_fetcher
             )
 
             all_reports[eng] = report
@@ -827,7 +880,7 @@ async def get_unified_pinescript(rank: int = 1, engine: str = "tradingview"):
 
     Args:
         rank: Strategy rank (1-10)
-        engine: Calculation engine - "tradingview" (default), "pandas_ta", or "mihakralj"
+        engine: Calculation engine - "tradingview" or "native"
 
     Returns:
         Pine Script code for the specified strategy
@@ -835,15 +888,22 @@ async def get_unified_pinescript(rank: int = 1, engine: str = "tradingview"):
     if unified_status["report"] is None:
         raise HTTPException(status_code=404, detail="No optimization results. Run unified optimization first.")
 
-    top_10 = unified_status["report"].get("top_10", [])
+    report = unified_status["report"]
+
+    # Validate engine parameter
+    valid_engines = ["tradingview", "native"]
+    if engine not in valid_engines:
+        raise HTTPException(status_code=400, detail=f"Invalid engine. Must be one of: {valid_engines}")
+
+    # In comparison mode, look up from the specific engine's top_10
+    if report.get("mode") == "comparison" and report.get("engine_reports"):
+        engine_report = report["engine_reports"].get(engine, {})
+        top_10 = engine_report.get("top_10", [])
+    else:
+        top_10 = report.get("top_10", [])
 
     if rank < 1 or rank > len(top_10):
         raise HTTPException(status_code=400, detail=f"Invalid rank. Must be 1-{len(top_10)}")
-
-    # Validate engine parameter
-    valid_engines = ["tradingview", "pandas_ta", "mihakralj"]
-    if engine not in valid_engines:
-        raise HTTPException(status_code=400, detail=f"Invalid engine. Must be one of: {valid_engines}")
 
     strategy_data = top_10[rank - 1]
     strategy_name = strategy_data["strategy_name"]
@@ -853,9 +913,9 @@ async def get_unified_pinescript(rank: int = 1, engine: str = "tradingview"):
     direction = strategy_data.get("direction")
 
     # Get trading parameters from report (passed from UI)
-    position_size_pct = unified_status["report"].get("position_size_pct", 75.0)
-    capital = unified_status["report"].get("capital", 1000.0)
-    date_range = unified_status["report"].get("date_range")
+    position_size_pct = report.get("position_size_pct", 75.0)
+    capital = report.get("capital", 1000.0)
+    date_range = report.get("date_range")
 
     # Use EXACT-MATCH generator for guaranteed TradingView compatibility
     generator = PineScriptGenerator()
@@ -969,30 +1029,71 @@ async def download_trades_csv(rank: int = 1):
     if not trades_list:
         raise HTTPException(status_code=404, detail="No trades found for this strategy")
 
-    # Build CSV content (TradingView-style format)
-    csv_lines = [
-        "Trade #,Type,Entry Time,Exit Time,Entry Price,Exit Price,Position Size (GBP),Position Size (qty),Net P&L GBP,Net P&L %,Run-up GBP,Run-up %,Drawdown GBP,Drawdown %,Cumulative P&L GBP,Result"
-    ]
+    # Get currency info
+    source_currency = unified_status["report"].get("source_currency", "USD")
+    has_conversion = unified_status["report"].get("currency_conversion_enabled", False)
+
+    # Build CSV content (TradingView-style format with dual currency support)
+    if has_conversion:
+        csv_lines = [
+            "Trade #,Type,Entry Time,Exit Time,Entry Price,Exit Price,"
+            "Position Size (USD),Position Size (GBP),Position Size (qty),"
+            "Net P&L USD,Net P&L GBP,Net P&L %,"
+            "Run-up USD,Run-up %,Drawdown USD,Drawdown %,"
+            "Cumulative P&L USD,Cumulative P&L GBP,USD/GBP Rate,Result"
+        ]
+    else:
+        csv_lines = [
+            f"Trade #,Type,Entry Time,Exit Time,Entry Price,Exit Price,"
+            f"Position Size ({source_currency}),Position Size (qty),"
+            f"Net P&L {source_currency},Net P&L %,"
+            f"Run-up {source_currency},Run-up %,Drawdown {source_currency},Drawdown %,"
+            f"Cumulative P&L {source_currency},Result"
+        ]
 
     for trade in trades_list:
-        csv_lines.append(
-            f"{trade['trade_num']},"
-            f"{trade['direction'].upper()},"
-            f"{trade['entry_time']},"
-            f"{trade['exit_time']},"
-            f"{trade['entry']},"
-            f"{trade['exit']},"
-            f"{trade['position_size']},"
-            f"{trade['position_qty']},"
-            f"{trade['pnl']},"
-            f"{trade['pnl_pct']},"
-            f"{trade['run_up']},"
-            f"{trade['run_up_pct']},"
-            f"{trade['drawdown']},"
-            f"{trade['drawdown_pct']},"
-            f"{trade['cumulative_pnl']},"
-            f"{trade['result']}"
-        )
+        if has_conversion:
+            csv_lines.append(
+                f"{trade['trade_num']},"
+                f"{trade['direction'].upper()},"
+                f"{trade['entry_time']},"
+                f"{trade['exit_time']},"
+                f"{trade['entry']},"
+                f"{trade['exit']},"
+                f"{trade['position_size']},"
+                f"{trade.get('position_size_gbp', trade['position_size'])},"
+                f"{trade['position_qty']},"
+                f"{trade['pnl']},"
+                f"{trade.get('pnl_gbp', trade['pnl'])},"
+                f"{trade['pnl_pct']},"
+                f"{trade['run_up']},"
+                f"{trade['run_up_pct']},"
+                f"{trade['drawdown']},"
+                f"{trade['drawdown_pct']},"
+                f"{trade['cumulative_pnl']},"
+                f"{trade.get('cumulative_pnl_gbp', trade['cumulative_pnl'])},"
+                f"{trade.get('usd_gbp_rate', 1.0)},"
+                f"{trade['result']}"
+            )
+        else:
+            csv_lines.append(
+                f"{trade['trade_num']},"
+                f"{trade['direction'].upper()},"
+                f"{trade['entry_time']},"
+                f"{trade['exit_time']},"
+                f"{trade['entry']},"
+                f"{trade['exit']},"
+                f"{trade['position_size']},"
+                f"{trade['position_qty']},"
+                f"{trade['pnl']},"
+                f"{trade['pnl_pct']},"
+                f"{trade['run_up']},"
+                f"{trade['run_up_pct']},"
+                f"{trade['drawdown']},"
+                f"{trade['drawdown_pct']},"
+                f"{trade['cumulative_pnl']},"
+                f"{trade['result']}"
+            )
 
     csv_content = "\n".join(csv_lines)
 
@@ -1021,13 +1122,24 @@ async def get_tradingview_link(rank: int = 1, engine: str = "tradingview"):
 
     Args:
         rank: Strategy rank (1-10)
-        engine: Calculation engine - "tradingview" (default), "pandas_ta", or "mihakralj"
+        engine: Calculation engine - "tradingview" or "native"
     """
     if unified_status["report"] is None:
         raise HTTPException(status_code=404, detail="No optimization results. Run unified optimization first.")
 
     report = unified_status["report"]
-    top_10 = report.get("top_10", [])
+
+    # Validate engine parameter
+    valid_engines = ["tradingview", "native"]
+    if engine not in valid_engines:
+        raise HTTPException(status_code=400, detail=f"Invalid engine. Must be one of: {valid_engines}")
+
+    # In comparison mode, look up from the specific engine's top_10
+    if report.get("mode") == "comparison" and report.get("engine_reports"):
+        engine_report = report["engine_reports"].get(engine, {})
+        top_10 = engine_report.get("top_10", [])
+    else:
+        top_10 = report.get("top_10", [])
 
     if rank < 1 or rank > len(top_10):
         raise HTTPException(status_code=400, detail=f"Invalid rank. Must be 1-{len(top_10)}")

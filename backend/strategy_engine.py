@@ -56,6 +56,11 @@ class TradeResult:
     drawdown: float = 0.0       # Max adverse excursion £
     drawdown_pct: float = 0.0   # Max adverse excursion %
     cumulative_pnl: float = 0.0 # Running total P&L £
+    # GBP conversion fields (for USD source data)
+    pnl_gbp: float = 0.0              # P&L converted to GBP
+    position_size_gbp: float = 0.0    # Position size in GBP
+    cumulative_pnl_gbp: float = 0.0   # Running total P&L in GBP
+    usd_gbp_rate: float = 1.0         # Exchange rate used for this trade
 
 
 # Time periods for performance breakdown
@@ -69,6 +74,84 @@ TIME_PERIODS = [
     ('6m', 180),
     ('1y', 365),
 ]
+
+
+def _generate_period_buckets(earliest: datetime, latest: datetime) -> List[Tuple[str, datetime, datetime]]:
+    """
+    Generate non-overlapping time buckets that auto-scale based on data span.
+    Target: 6-12 periods max to fit UI without overlap.
+
+    Returns: [(label, start_dt, end_dt), ...]
+    """
+    from datetime import timedelta
+
+    # Calculate span in days (inclusive)
+    span_days = (latest - earliest).days
+
+    # === SCALING RULES (based on actual day difference) ===
+    if span_days <= 7:
+        # Up to 1 week: Daily (D1, D2, D3...)
+        chunk_days = 1
+        label_fn = lambda i: f'D{i+1}'
+    elif span_days <= 14:
+        # 8-14 days (~2 weeks): 2-day chunks
+        chunk_days = 2
+        label_fn = lambda i: f'D{i*2+1}-{i*2+2}'
+    elif span_days <= 21:
+        # 15-21 days (~3 weeks): 3-day chunks
+        chunk_days = 3
+        label_fn = lambda i: f'D{i*3+1}-{i*3+3}'
+    elif span_days <= 45:
+        # 22-45 days (1-1.5 months): Weekly (W1, W2, W3...)
+        chunk_days = 7
+        label_fn = lambda i: f'W{i+1}'
+    elif span_days <= 90:
+        # 46-90 days (1.5-3 months): Bi-weekly
+        chunk_days = 14
+        label_fn = lambda i: f'W{i*2+1}-{i*2+2}'
+    elif span_days <= 180:
+        # 91-180 days (3-6 months): Monthly (M1, M2...)
+        chunk_days = 30
+        label_fn = lambda i: f'M{i+1}'
+    elif span_days <= 365:
+        # 181-365 days (6-12 months): Monthly
+        chunk_days = 30
+        label_fn = lambda i: f'M{i+1}'
+    elif span_days <= 730:
+        # 1-2 years: Bi-monthly
+        chunk_days = 60
+        label_fn = lambda i: f'M{i*2+1}-{i*2+2}'
+    elif span_days <= 1095:
+        # 2-3 years: Quarterly (Q1, Q2...)
+        chunk_days = 91
+        label_fn = lambda i: f'Q{i+1}'
+    elif span_days <= 1825:
+        # 3-5 years: Semi-annual (H1, H2...)
+        chunk_days = 182
+        label_fn = lambda i: f'H{i+1}'
+    else:
+        # 5+ years: Yearly (Y1, Y2...)
+        chunk_days = 365
+        label_fn = lambda i: f'Y{i+1}'
+
+    # Generate buckets - only create buckets that overlap with data range
+    buckets = []
+    current = earliest.replace(hour=0, minute=0, second=0, microsecond=0)  # Start of day
+    latest_end = latest.replace(hour=23, minute=59, second=59, microsecond=999999)  # End of last day
+    i = 0
+
+    while current <= latest_end:
+        bucket_end = current + timedelta(days=chunk_days)
+        label = label_fn(i)
+        buckets.append((label, current, bucket_end))
+        current = bucket_end
+        i += 1
+
+        # Safety cap: max 12 buckets
+        if i >= 12:
+            break
+
+    return buckets
 
 
 @dataclass
@@ -235,6 +318,14 @@ class StrategyResult:
     period_metrics: Dict = None      # Dict[str, PeriodMetrics]
     consistency_score: float = 0.0   # Performance consistency across time periods
 
+    # GBP conversion fields (for USD source data)
+    total_pnl_gbp: float = 0.0           # Total P&L in GBP
+    max_drawdown_gbp: float = 0.0        # Max drawdown in GBP
+    avg_trade_gbp: float = 0.0           # Average trade P&L in GBP
+    equity_curve_gbp: List[float] = None # Equity curve in GBP
+    source_currency: str = "USD"         # Currency of source data
+    display_currencies: List[str] = None # Currencies to display (e.g., ["USD", "GBP"])
+
     def __post_init__(self):
         if self.params is None:
             self.params = {
@@ -247,6 +338,10 @@ class StrategyResult:
             self.equity_curve = []
         if self.trades_list is None:
             self.trades_list = []
+        if self.equity_curve_gbp is None:
+            self.equity_curve_gbp = []
+        if self.display_currencies is None:
+            self.display_currencies = ["USD", "GBP"] if self.source_currency == "USD" else [self.source_currency]
 
         # Calculate period metrics first (needed for consistency score)
         self.period_metrics = self._calculate_period_metrics()
@@ -259,55 +354,122 @@ class StrategyResult:
 
     def _calculate_period_metrics(self) -> Dict:
         """
-        Calculate performance metrics for each time period.
-        Uses exit_time to assign trades to periods (looking backward from most recent trade).
+        Calculate NON-OVERLAPPING period metrics that auto-scale based on data span.
+
+        Key changes from previous implementation:
+        1. Includes ALL trades (even those with bar_ timestamps)
+        2. Uses non-overlapping time buckets (trades sum to total)
+        3. Auto-scales periods based on data span (daily for weeks, weekly for months, etc.)
         """
         from datetime import timedelta
 
         if not self.trades_list:
             return {}
 
-        # Parse all exit times
+        # === STEP 1: Parse ALL trade exit times (including bar_ timestamps) ===
         trades_with_times = []
+        trades_with_bar_times = []  # Trades with bar_ timestamps (need estimation)
+
         for trade in self.trades_list:
             exit_time_str = trade.get('exit_time', '')
-            if exit_time_str and not str(exit_time_str).startswith('bar_'):
+
+            if not exit_time_str:
+                # No exit time at all - use trade_num for ordering
+                trades_with_bar_times.append({**trade, '_bar_idx': trade.get('trade_num', 0)})
+                continue
+
+            exit_str = str(exit_time_str)
+
+            if exit_str.startswith('bar_'):
+                # Extract bar index for later estimation
                 try:
-                    # Handle various datetime formats
-                    exit_str = str(exit_time_str).replace(' ', 'T')
+                    bar_idx = int(exit_str.split('_')[1])
+                    trades_with_bar_times.append({**trade, '_bar_idx': bar_idx})
+                except (ValueError, IndexError):
+                    trades_with_bar_times.append({**trade, '_bar_idx': trade.get('trade_num', 0)})
+            else:
+                # Parse datetime string
+                try:
+                    exit_str = exit_str.replace(' ', 'T')
                     if 'T' in exit_str:
                         exit_dt = datetime.fromisoformat(exit_str.split('+')[0].split('Z')[0])
                     else:
                         exit_dt = datetime.strptime(exit_str, '%Y-%m-%d %H:%M:%S')
                     trades_with_times.append({**trade, '_exit_dt': exit_dt})
                 except Exception:
-                    pass
+                    # Failed to parse - treat as bar_ trade
+                    trades_with_bar_times.append({**trade, '_bar_idx': trade.get('trade_num', 0)})
+
+        # === STEP 2: Estimate times for bar_ trades ===
+        if trades_with_bar_times:
+            if trades_with_times:
+                # We have some valid timestamps - estimate bar duration
+                sorted_valid = sorted(trades_with_times, key=lambda x: x['_exit_dt'])
+                earliest_valid = sorted_valid[0]['_exit_dt']
+                latest_valid = sorted_valid[-1]['_exit_dt']
+
+                # Get bar indices from valid trades to estimate duration
+                valid_with_idx = [t for t in trades_with_times if 'trade_num' in t]
+                if len(valid_with_idx) >= 2:
+                    # Estimate time per bar based on known data
+                    time_span = (latest_valid - earliest_valid).total_seconds()
+                    idx_span = max(t.get('trade_num', 0) for t in valid_with_idx) - min(t.get('trade_num', 0) for t in valid_with_idx)
+                    if idx_span > 0:
+                        seconds_per_trade = time_span / idx_span
+                    else:
+                        seconds_per_trade = 3600  # Default 1 hour
+                else:
+                    seconds_per_trade = 3600  # Default 1 hour
+
+                # Estimate times for bar_ trades
+                min_idx = min(t['_bar_idx'] for t in trades_with_bar_times)
+                for trade in trades_with_bar_times:
+                    offset_idx = trade['_bar_idx'] - min_idx
+                    estimated_dt = earliest_valid + timedelta(seconds=offset_idx * seconds_per_trade)
+                    trade['_exit_dt'] = estimated_dt
+                    trades_with_times.append(trade)
+            else:
+                # No valid timestamps at all - distribute trades evenly across a synthetic period
+                # Use trade_num as ordering
+                num_trades = len(trades_with_bar_times)
+                base_dt = datetime.now() - timedelta(days=7)  # Assume 7 days ago as base
+                for i, trade in enumerate(sorted(trades_with_bar_times, key=lambda x: x['_bar_idx'])):
+                    trade['_exit_dt'] = base_dt + timedelta(hours=i * 12)  # 12 hours apart
+                    trades_with_times.append(trade)
 
         if not trades_with_times:
             return {}
 
-        # Find the most recent and earliest trade dates
-        most_recent = max(t['_exit_dt'] for t in trades_with_times)
+        # === STEP 3: Generate dynamic non-overlapping buckets ===
         earliest = min(t['_exit_dt'] for t in trades_with_times)
-        data_span_days = (most_recent - earliest).days
+        latest = max(t['_exit_dt'] for t in trades_with_times)
 
+        buckets = _generate_period_buckets(earliest, latest)
+
+        # === STEP 4: Assign each trade to exactly ONE bucket ===
+        bucket_trades = {label: [] for label, _, _ in buckets}
+
+        for trade in trades_with_times:
+            exit_dt = trade['_exit_dt']
+            for label, bucket_start, bucket_end in buckets:
+                if bucket_start <= exit_dt < bucket_end:
+                    bucket_trades[label].append(trade)
+                    break
+            else:
+                # Trade falls outside all buckets - assign to last bucket
+                if buckets:
+                    bucket_trades[buckets[-1][0]].append(trade)
+
+        # === STEP 5: Calculate metrics for each bucket ===
         period_metrics = {}
+        data_span_days = (latest - earliest).days + 1
 
-        for period_name, period_days in TIME_PERIODS:
-            # Check if data covers this period
-            has_data = data_span_days >= period_days
-
-            # Filter trades within this period (from most_recent going back)
-            cutoff = most_recent - timedelta(days=period_days)
-            period_trades = [t for t in trades_with_times if t['_exit_dt'] >= cutoff]
+        for label, bucket_start, bucket_end in buckets:
+            period_trades = bucket_trades[label]
+            period_days = (bucket_end - bucket_start).days
 
             if not period_trades:
-                period_metrics[period_name] = PeriodMetrics(
-                    period_name=period_name,
-                    period_days=period_days,
-                    has_data=has_data
-                )
-                continue
+                continue  # Skip empty periods
 
             wins = [t for t in period_trades if t.get('result') == 'WIN']
             losses = [t for t in period_trades if t.get('result') == 'LOSS']
@@ -321,12 +483,16 @@ class StrategyResult:
             pf = gross_profit / gross_loss if gross_loss > 0.001 else (10 if gross_profit > 0 else 0)
 
             # Calculate max drawdown for this period
-            # Sort by exit time and track equity curve
+            # DD% is calculated relative to average position size (not peak PnL)
             sorted_trades = sorted(period_trades, key=lambda x: x['_exit_dt'])
             running_pnl = 0
             peak_pnl = 0
             max_dd = 0
             max_dd_pct = 0
+
+            # Get average position size for this period (for meaningful DD%)
+            position_sizes = [t.get('position_size', 0) for t in period_trades if t.get('position_size', 0) > 0]
+            avg_position_size = sum(position_sizes) / len(position_sizes) if position_sizes else 0
 
             for t in sorted_trades:
                 running_pnl += t.get('pnl', 0)
@@ -335,14 +501,16 @@ class StrategyResult:
                 drawdown = peak_pnl - running_pnl
                 if drawdown > max_dd:
                     max_dd = drawdown
-                    # Calculate drawdown as % of peak (or initial capital if no peak)
-                    if peak_pnl > 0:
+                    # Calculate DD% relative to position size (more meaningful)
+                    if avg_position_size > 0:
+                        max_dd_pct = (drawdown / avg_position_size) * 100
+                    elif peak_pnl > 0:
                         max_dd_pct = (drawdown / peak_pnl) * 100
 
-            period_metrics[period_name] = PeriodMetrics(
-                period_name=period_name,
+            period_metrics[label] = PeriodMetrics(
+                period_name=label,
                 period_days=period_days,
-                has_data=has_data,
+                has_data=True,
                 total_trades=total,
                 wins=len(wins),
                 losses=len(losses),
@@ -1089,7 +1257,9 @@ class StrategyEngine:
                  position_size_pct: float = 75.0,
                  calc_engine: str = "tradingview",
                  progress_min: int = 0,
-                 progress_max: int = 100):
+                 progress_max: int = 100,
+                 source_currency: str = "USD",
+                 fx_fetcher=None):
         self.df = df.copy()
         self.status = status_callback or {}
         self.streaming_callback = streaming_callback
@@ -1101,6 +1271,10 @@ class StrategyEngine:
 
         # Store calculation engine for indicator calculations
         self.calc_engine = calc_engine
+
+        # Currency conversion parameters
+        self.source_currency = source_currency
+        self.fx_fetcher = fx_fetcher
 
         # Progress range for multi-engine mode (e.g., 0-33, 33-66, 66-100)
         self.progress_min = progress_min
@@ -1967,7 +2141,9 @@ class StrategyEngine:
                  tp_percent: float, sl_percent: float,
                  initial_capital: float = 1000.0,
                  position_size_pct: float = 75.0,
-                 commission_pct: float = 0.1) -> StrategyResult:
+                 commission_pct: float = 0.1,
+                 source_currency: str = "USD",
+                 fx_fetcher=None) -> StrategyResult:
         """
         Run backtest with PROPER position sizing to match TradingView.
 
@@ -1982,6 +2158,8 @@ class StrategyEngine:
             initial_capital: Starting capital (default £1000)
             position_size_pct: Position size as % of equity (default 75%)
             commission_pct: Commission per trade (default 0.1%)
+            source_currency: Currency of source data ("USD" for BTCUSDT, "GBP" for BTCGBP)
+            fx_fetcher: Exchange rate fetcher instance (optional, for USD->GBP conversion)
         """
         df = self.df
         signals = self._get_signals(strategy, direction)
@@ -1992,6 +2170,12 @@ class StrategyEngine:
         equity_curve = [initial_capital]
         cumulative_pnl = 0.0
         trade_num = 0
+
+        # GBP tracking (for USD source data conversion)
+        needs_conversion = source_currency == "USD" and fx_fetcher is not None
+        equity_gbp = initial_capital  # Start same, will diverge with exchange rate
+        equity_curve_gbp = [initial_capital]
+        cumulative_pnl_gbp = 0.0
 
         for i in range(50, len(df)):
             row = df.iloc[i]
@@ -2042,15 +2226,27 @@ class StrategyEngine:
                         cumulative_pnl += pnl
                         trade_num += 1
                         exit_time = str(row['time']) if 'time' in row else f"bar_{i}"
+
+                        # GBP conversion
+                        exit_dt = pd.to_datetime(row['time']) if 'time' in row else None
+                        usd_gbp_rate = fx_fetcher.get_rate_for_date(exit_dt) if needs_conversion else 1.0
+                        pnl_gbp = pnl * usd_gbp_rate if needs_conversion else pnl
+                        pos_size_gbp = pos_size * usd_gbp_rate if needs_conversion else pos_size
+                        equity_gbp += pnl_gbp
+                        cumulative_pnl_gbp += pnl_gbp
+
                         trades.append(TradeResult(
                             'long', entry, sl_price, pnl, loss_pct, 'sl',
                             trade_num=trade_num, entry_time=entry_time, exit_time=exit_time,
                             position_size=pos_size, position_qty=pos_qty,
                             run_up=run_up, run_up_pct=run_up_pct,
                             drawdown=dd, drawdown_pct=dd_pct,
-                            cumulative_pnl=cumulative_pnl
+                            cumulative_pnl=cumulative_pnl,
+                            pnl_gbp=pnl_gbp, position_size_gbp=pos_size_gbp,
+                            cumulative_pnl_gbp=cumulative_pnl_gbp, usd_gbp_rate=usd_gbp_rate
                         ))
                         equity_curve.append(equity)
+                        equity_curve_gbp.append(equity_gbp)
                         position = None
                     elif row['high'] >= tp_price:
                         gain_pct = tp_percent
@@ -2060,15 +2256,27 @@ class StrategyEngine:
                         cumulative_pnl += pnl
                         trade_num += 1
                         exit_time = str(row['time']) if 'time' in row else f"bar_{i}"
+
+                        # GBP conversion
+                        exit_dt = pd.to_datetime(row['time']) if 'time' in row else None
+                        usd_gbp_rate = fx_fetcher.get_rate_for_date(exit_dt) if needs_conversion else 1.0
+                        pnl_gbp = pnl * usd_gbp_rate if needs_conversion else pnl
+                        pos_size_gbp = pos_size * usd_gbp_rate if needs_conversion else pos_size
+                        equity_gbp += pnl_gbp
+                        cumulative_pnl_gbp += pnl_gbp
+
                         trades.append(TradeResult(
                             'long', entry, tp_price, pnl, gain_pct, 'tp',
                             trade_num=trade_num, entry_time=entry_time, exit_time=exit_time,
                             position_size=pos_size, position_qty=pos_qty,
                             run_up=run_up, run_up_pct=run_up_pct,
                             drawdown=dd, drawdown_pct=dd_pct,
-                            cumulative_pnl=cumulative_pnl
+                            cumulative_pnl=cumulative_pnl,
+                            pnl_gbp=pnl_gbp, position_size_gbp=pos_size_gbp,
+                            cumulative_pnl_gbp=cumulative_pnl_gbp, usd_gbp_rate=usd_gbp_rate
                         ))
                         equity_curve.append(equity)
+                        equity_curve_gbp.append(equity_gbp)
                         position = None
 
                 else:  # Short
@@ -2089,15 +2297,27 @@ class StrategyEngine:
                         cumulative_pnl += pnl
                         trade_num += 1
                         exit_time = str(row['time']) if 'time' in row else f"bar_{i}"
+
+                        # GBP conversion
+                        exit_dt = pd.to_datetime(row['time']) if 'time' in row else None
+                        usd_gbp_rate = fx_fetcher.get_rate_for_date(exit_dt) if needs_conversion else 1.0
+                        pnl_gbp = pnl * usd_gbp_rate if needs_conversion else pnl
+                        pos_size_gbp = pos_size * usd_gbp_rate if needs_conversion else pos_size
+                        equity_gbp += pnl_gbp
+                        cumulative_pnl_gbp += pnl_gbp
+
                         trades.append(TradeResult(
                             'short', entry, sl_price, pnl, loss_pct, 'sl',
                             trade_num=trade_num, entry_time=entry_time, exit_time=exit_time,
                             position_size=pos_size, position_qty=pos_qty,
                             run_up=run_up, run_up_pct=run_up_pct,
                             drawdown=dd, drawdown_pct=dd_pct,
-                            cumulative_pnl=cumulative_pnl
+                            cumulative_pnl=cumulative_pnl,
+                            pnl_gbp=pnl_gbp, position_size_gbp=pos_size_gbp,
+                            cumulative_pnl_gbp=cumulative_pnl_gbp, usd_gbp_rate=usd_gbp_rate
                         ))
                         equity_curve.append(equity)
+                        equity_curve_gbp.append(equity_gbp)
                         position = None
                     elif row['low'] <= tp_price:
                         gain_pct = tp_percent
@@ -2107,15 +2327,27 @@ class StrategyEngine:
                         cumulative_pnl += pnl
                         trade_num += 1
                         exit_time = str(row['time']) if 'time' in row else f"bar_{i}"
+
+                        # GBP conversion
+                        exit_dt = pd.to_datetime(row['time']) if 'time' in row else None
+                        usd_gbp_rate = fx_fetcher.get_rate_for_date(exit_dt) if needs_conversion else 1.0
+                        pnl_gbp = pnl * usd_gbp_rate if needs_conversion else pnl
+                        pos_size_gbp = pos_size * usd_gbp_rate if needs_conversion else pos_size
+                        equity_gbp += pnl_gbp
+                        cumulative_pnl_gbp += pnl_gbp
+
                         trades.append(TradeResult(
                             'short', entry, tp_price, pnl, gain_pct, 'tp',
                             trade_num=trade_num, entry_time=entry_time, exit_time=exit_time,
                             position_size=pos_size, position_qty=pos_qty,
                             run_up=run_up, run_up_pct=run_up_pct,
                             drawdown=dd, drawdown_pct=dd_pct,
-                            cumulative_pnl=cumulative_pnl
+                            cumulative_pnl=cumulative_pnl,
+                            pnl_gbp=pnl_gbp, position_size_gbp=pos_size_gbp,
+                            cumulative_pnl_gbp=cumulative_pnl_gbp, usd_gbp_rate=usd_gbp_rate
                         ))
                         equity_curve.append(equity)
+                        equity_curve_gbp.append(equity_gbp)
                         position = None
 
             # Check entries (only if no position and equity > 0)
@@ -2151,7 +2383,12 @@ class StrategyEngine:
                 avg_trade=0, avg_trade_percent=0,
                 buy_hold_return=self.buy_hold_return,
                 vs_buy_hold=-self.buy_hold_return,
-                beats_buy_hold=False
+                beats_buy_hold=False,
+                # GBP fields (zeros for empty trades)
+                total_pnl_gbp=0, max_drawdown_gbp=0, avg_trade_gbp=0,
+                equity_curve_gbp=equity_curve_gbp,
+                source_currency=source_currency,
+                display_currencies=["USD", "GBP"] if needs_conversion else [source_currency]
             )
 
         wins = [t for t in trades if t.exit_reason == 'tp']
@@ -2179,14 +2416,18 @@ class StrategyEngine:
             'entry': round(t.entry_price, 2),
             'exit': round(t.exit_price, 2),
             'position_size': round(t.position_size, 2),
+            'position_size_gbp': round(t.position_size_gbp, 2),
             'position_qty': round(t.position_qty, 5),
             'pnl': round(t.pnl, 2),
+            'pnl_gbp': round(t.pnl_gbp, 2),
             'pnl_pct': round(t.pnl_percent, 2),
             'run_up': round(t.run_up, 2),
             'run_up_pct': round(t.run_up_pct, 2),
             'drawdown': round(t.drawdown, 2),
             'drawdown_pct': round(t.drawdown_pct, 2),
             'cumulative_pnl': round(t.cumulative_pnl, 2),
+            'cumulative_pnl_gbp': round(t.cumulative_pnl_gbp, 2),
+            'usd_gbp_rate': round(t.usd_gbp_rate, 4),
             'result': 'WIN' if t.exit_reason == 'tp' else 'LOSS'
         } for t in trades]
 
@@ -2221,6 +2462,19 @@ class StrategyEngine:
         # Calculate vs Buy & Hold
         vs_bh = round(total_pnl_percent - self.buy_hold_return, 2)
 
+        # Calculate GBP-converted summary metrics
+        total_pnl_gbp = sum(t.pnl_gbp for t in trades) if trades else 0.0
+        avg_trade_gbp = total_pnl_gbp / len(trades) if trades else 0.0
+
+        # Max drawdown in GBP
+        if equity_curve_gbp and len(equity_curve_gbp) > 1:
+            equity_arr_gbp = np.array(equity_curve_gbp)
+            peak_gbp = np.maximum.accumulate(equity_arr_gbp)
+            drawdown_gbp = peak_gbp - equity_arr_gbp
+            max_dd_gbp = drawdown_gbp.max()
+        else:
+            max_dd_gbp = 0.0
+
         return StrategyResult(
             strategy_name=f"{strategy}_{direction}",
             strategy_category=self.ENTRY_STRATEGIES.get(strategy, {}).get('category', 'Unknown'),
@@ -2245,7 +2499,14 @@ class StrategyEngine:
             equity_curve=equity_curve,
             trades_list=trades_list,
             has_open_position=has_open,
-            open_position=open_position_data
+            open_position=open_position_data,
+            # GBP conversion fields
+            total_pnl_gbp=round(total_pnl_gbp, 2),
+            max_drawdown_gbp=round(max_dd_gbp, 2),
+            avg_trade_gbp=round(avg_trade_gbp, 2),
+            equity_curve_gbp=equity_curve_gbp,
+            source_currency=source_currency,
+            display_currencies=["USD", "GBP"] if needs_conversion else [source_currency]
         )
 
     def find_strategies(self, min_trades: int = 3,
@@ -2323,7 +2584,9 @@ class StrategyEngine:
                     for sl in sl_range:
                         result = self.backtest(strategy, direction, tp, sl,
                                                initial_capital=self.capital,
-                                               position_size_pct=self.position_size_pct)
+                                               position_size_pct=self.position_size_pct,
+                                               source_currency=self.source_currency,
+                                               fx_fetcher=self.fx_fetcher)
                         tested += 1
 
                         # Update progress more frequently
@@ -2421,7 +2684,9 @@ class StrategyEngine:
                     tp = max(0.1, base_tp + tp_adj)
                     sl = max(0.1, base_sl + sl_adj)
 
-                    result = self.backtest(entry_rule, direction, tp, sl)
+                    result = self.backtest(entry_rule, direction, tp, sl,
+                                           source_currency=self.source_currency,
+                                           fx_fetcher=self.fx_fetcher)
                     if result.total_trades >= 3:
                         results.append(result)
 
@@ -2765,7 +3030,9 @@ class StrategyEngine:
 
         # Run backtest
         result = self.backtest(strategy, direction, tp_percent, sl_percent,
-                               initial_capital, position_size_pct, commission_pct)
+                               initial_capital, position_size_pct, commission_pct,
+                               source_currency=self.source_currency,
+                               fx_fetcher=self.fx_fetcher)
 
         # Restore original
         self.df = original_df
@@ -3328,7 +3595,9 @@ def run_strategy_finder(df: pd.DataFrame,
                         engine: str = "tradingview",
                         n_trials: int = 300,
                         progress_min: int = 0,
-                        progress_max: int = 100) -> Dict:
+                        progress_max: int = 100,
+                        source_currency: str = "USD",
+                        fx_fetcher=None) -> Dict:
     """Main entry point for the strategy engine.
 
     Args:
@@ -3339,12 +3608,15 @@ def run_strategy_finder(df: pd.DataFrame,
         position_size_pct: Position size as % of equity (from UI "Position Size %")
         engine: Calculation engine - "tradingview" or "native"
         n_trials: Controls TP/SL granularity (100=1%, 300=0.33%, 500=0.2% increments)
+        source_currency: Currency of source data ("USD" for BTCUSDT, "GBP" for BTCGBP)
+        fx_fetcher: Exchange rate fetcher instance for USD->GBP conversion
     """
 
     strategy_engine = StrategyEngine(df, status, streaming_callback,
                                      capital=capital, position_size_pct=position_size_pct,
                                      calc_engine=engine,
-                                     progress_min=progress_min, progress_max=progress_max)
+                                     progress_min=progress_min, progress_max=progress_max,
+                                     source_currency=source_currency, fx_fetcher=fx_fetcher)
 
     # First, check for previous winners
     winners = strategy_engine.get_saved_winners(symbol=symbol, limit=10)
@@ -3381,6 +3653,10 @@ def run_strategy_finder(df: pd.DataFrame,
         # Trading parameters (for Pine Script generation)
         'capital': capital,
         'position_size_pct': position_size_pct,
+        # Currency conversion info
+        'source_currency': source_currency,
+        'display_currencies': ["USD", "GBP"] if source_currency == "USD" and fx_fetcher else [source_currency],
+        'currency_conversion_enabled': source_currency == "USD" and fx_fetcher is not None,
         'top_10': []
     }
 
@@ -3408,8 +3684,15 @@ def run_strategy_finder(df: pd.DataFrame,
                 'buy_hold_return': r.buy_hold_return,
                 'vs_buy_hold': r.vs_buy_hold,
                 'beats_buy_hold': r.beats_buy_hold,
+                # GBP conversion metrics
+                'total_pnl_gbp': round(r.total_pnl_gbp, 2) if r.total_pnl_gbp is not None else 0,
+                'max_drawdown_gbp': round(r.max_drawdown_gbp, 2) if r.max_drawdown_gbp is not None else 0,
+                'avg_trade_gbp': round(r.avg_trade_gbp, 2) if r.avg_trade_gbp is not None else 0,
+                'source_currency': r.source_currency,
+                'display_currencies': r.display_currencies or [source_currency],
             },
             'equity_curve': r.equity_curve if r.equity_curve else [],
+            'equity_curve_gbp': r.equity_curve_gbp if r.equity_curve_gbp else [],
             'trades_list': r.trades_list if r.trades_list else [],  # All trades for CSV export
             # Open position warning (shows if backtest ended with unclosed trade)
             'has_open_position': r.has_open_position,

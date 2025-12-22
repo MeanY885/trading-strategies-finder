@@ -436,42 +436,33 @@
                 <div class="input-group" style="margin-top: 1rem;">
                     <label>Data Source</label>
                     <select id="sourceSelect" onchange="updatePairOptions()">
-                        <option value="yfinance" selected>Yahoo Finance</option>
-                        <option value="binance">Binance</option>
+                        <option value="binance" selected>Binance (USDT pairs)</option>
+                        <option value="kraken">Kraken (GBP pairs)</option>
                     </select>
                 </div>
                 
                 <div class="input-group">
                     <label>Trading Pair</label>
                     <select id="pairSelect">
-                        <option value="BTC-GBP" selected>BTC/GBP</option>
-                        <option value="ETH-GBP">ETH/GBP</option>
-                        <option value="BTC-EUR">BTC/EUR</option>
-                        <option value="ETH-EUR">ETH/EUR</option>
-                        <option value="BTC-USD">BTC/USD</option>
+                        <!-- Options populated by JavaScript based on source -->
                     </select>
                 </div>
                 
                 <div class="input-group">
                     <label>Historical Period</label>
                     <select id="monthsSelect">
-                        <option value="0.03">1 day</option>
-                        <option value="0.25">1 week</option>
-                        <option value="1">1 month</option>
-                        <option value="3" selected>3 months</option>
-                        <option value="6">6 months</option>
-                        <option value="12">12 months</option>
-                        <option value="24">24 months</option>
+                        <!-- Options will be populated by JavaScript based on source/interval -->
+                        <option value="1" selected>1 month</option>
+                        <option value="2">2 months (max)</option>
                     </select>
                 </div>
                 
                 <div class="input-group">
                     <label>Timeframe</label>
-                    <select id="intervalSelect">
+                    <select id="intervalSelect" onchange="updatePeriodOptions()">
                         <option value="15" selected>15 minutes</option>
                         <option value="30">30 minutes</option>
                         <option value="60">1 hour</option>
-                        <option value="240">4 hours</option>
                     </select>
                 </div>
                 
@@ -770,15 +761,34 @@
                     updateDataStats(status.stats);
                 }
 
-            } else if (status.message && status.message.includes('Fetching')) {
-                // Data is being fetched - show loading progress
+            } else if (status.fetching || (status.message && (status.message.includes('Fetching') || status.message.includes('Connecting') || status.message.includes('Downloading')))) {
+                // Data is being fetched - show loading progress with REAL backend progress
                 container.innerHTML = `<span class="status-badge warning">📥 ${status.message}</span>`;
                 loadingProgress.style.display = 'block';
 
-                // Simulate progress (actual progress isn't tracked by backend for data fetch)
-                animateDataLoading(status.message);
+                // Use real backend progress instead of simulated
+                const fill = document.getElementById('dataProgressFill');
+                const msgEl = document.getElementById('dataProgressMessage');
+                const pctEl = document.getElementById('dataProgressPercent');
+
+                const progress = status.progress || 0;
+                fill.style.width = `${progress}%`;
+                msgEl.textContent = status.message;
+                pctEl.textContent = `${progress}%`;
+
+                // Stop any fake animation that might be running
+                stopDataLoadingAnimation();
 
                 // Keep overlay visible
+                if (unifiedOverlay) unifiedOverlay.style.display = 'flex';
+
+            } else if (status.message && status.message.startsWith('Error:')) {
+                // Error occurred during fetch
+                container.innerHTML = `<span class="status-badge danger">❌ ${status.message}</span>`;
+                loadingProgress.style.display = 'none';
+                stopDataLoadingAnimation();
+
+                // Show overlay
                 if (unifiedOverlay) unifiedOverlay.style.display = 'flex';
 
             } else {
@@ -830,6 +840,47 @@
             const month = String(date.getMonth() + 1).padStart(2, '0');
             const year = String(date.getFullYear()).slice(-2);
             return `${day}/${month}/${year}`;
+        }
+
+        // Format currency with symbol based on currency type
+        function formatCurrency(amount, currency = 'USD', decimals = 0) {
+            const symbols = { 'USD': '$', 'GBP': '£', 'EUR': '€', 'USDT': '$' };
+            const symbol = symbols[currency] || currency;
+            const num = Number(amount) || 0;
+
+            if (Math.abs(num) >= 1000) {
+                return symbol + num.toLocaleString('en-GB', {
+                    minimumFractionDigits: 0,
+                    maximumFractionDigits: 0
+                });
+            }
+            return symbol + num.toLocaleString('en-GB', {
+                minimumFractionDigits: decimals,
+                maximumFractionDigits: decimals
+            });
+        }
+
+        // Format dual currency display (USD | GBP)
+        function formatDualCurrency(usdAmount, gbpAmount, showBoth = true) {
+            if (!showBoth || gbpAmount === undefined || gbpAmount === null) {
+                return formatCurrency(usdAmount, 'USD');
+            }
+            return `${formatCurrency(usdAmount, 'USD')} | ${formatCurrency(gbpAmount, 'GBP')}`;
+        }
+
+        // Get currency display based on report settings
+        function getCurrencyDisplay(metrics, report) {
+            const hasConversion = report?.currency_conversion_enabled ||
+                                  (metrics?.display_currencies?.length > 1);
+            const sourceCurrency = report?.source_currency || metrics?.source_currency || 'USD';
+
+            return {
+                hasConversion,
+                sourceCurrency,
+                formatPnl: (usd, gbp) => hasConversion
+                    ? formatDualCurrency(usd, gbp)
+                    : formatCurrency(usd, sourceCurrency)
+            };
         }
 
         // Update backtest date range inputs from loaded data
@@ -1020,32 +1071,128 @@
             });
         });
 
-        // Data source pair options
+        // Data source pair options - comprehensive list
         const PAIR_OPTIONS = {
-            yfinance: [
-                { value: 'BTC-GBP', label: 'BTC/GBP' },
-                { value: 'ETH-GBP', label: 'ETH/GBP' },
-                { value: 'BTC-EUR', label: 'BTC/EUR' },
-                { value: 'ETH-EUR', label: 'ETH/EUR' },
-                { value: 'BTC-USD', label: 'BTC/USD' },
-            ],
             binance: [
                 { value: 'BTCUSDT', label: 'BTC/USDT' },
                 { value: 'ETHUSDT', label: 'ETH/USDT' },
-                { value: 'SOLUSDT', label: 'SOL/USDT' },
                 { value: 'BNBUSDT', label: 'BNB/USDT' },
                 { value: 'XRPUSDT', label: 'XRP/USDT' },
-            ]
+                { value: 'DOGEUSDT', label: 'DOGE/USDT' },
+                { value: 'SOLUSDT', label: 'SOL/USDT' },
+                { value: 'TRXUSDT', label: 'TRX/USDT' },
+                { value: 'ADAUSDT', label: 'ADA/USDT' },
+            ],
+            kraken: [
+                { value: 'BTCGBP', label: 'BTC/GBP' },
+                { value: 'ETHGBP', label: 'ETH/GBP' },
+                { value: 'XRPGBP', label: 'XRP/GBP' },
+                { value: 'ADAGBP', label: 'ADA/GBP' },
+                { value: 'SOLGBP', label: 'SOL/GBP' },
+                { value: 'DOGEGBP', label: 'DOGE/GBP' },
+            ],
         };
-        
+
+        // Source-specific interval options
+        // Binance: 1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 8h, 12h, 1d
+        // Kraken: 1m, 5m, 15m, 30m, 1h, 4h, 1d
+        const INTERVAL_OPTIONS = {
+            binance: [
+                { value: '1', label: '1 minute' },
+                { value: '3', label: '3 minutes' },
+                { value: '5', label: '5 minutes' },
+                { value: '15', label: '15 minutes' },
+                { value: '30', label: '30 minutes' },
+                { value: '60', label: '1 hour' },
+                { value: '120', label: '2 hours' },
+                { value: '240', label: '4 hours' },
+                { value: '1440', label: '1 day' },
+            ],
+            kraken: [
+                { value: '1', label: '1 minute' },
+                { value: '5', label: '5 minutes' },
+                { value: '15', label: '15 minutes' },
+                { value: '30', label: '30 minutes' },
+                { value: '60', label: '1 hour' },
+                { value: '240', label: '4 hours' },
+                { value: '1440', label: '1 day' },
+            ],
+        };
+
+        // Source-specific period options (Kraken has good historical data)
+        const PERIOD_OPTIONS = {
+            binance: {
+                default: [
+                    { value: '0.25', label: '1 week' },
+                    { value: '1', label: '1 month' },
+                    { value: '3', label: '3 months' },
+                    { value: '6', label: '6 months' },
+                    { value: '12', label: '12 months' },
+                    { value: '24', label: '24 months' },
+                ]
+            },
+            kraken: {
+                default: [
+                    { value: '0.25', label: '1 week' },
+                    { value: '1', label: '1 month' },
+                    { value: '3', label: '3 months' },
+                    { value: '6', label: '6 months' },
+                    { value: '12', label: '12 months' },
+                ]
+            }
+        };
+
         function updatePairOptions() {
             const source = document.getElementById('sourceSelect').value;
             const pairSelect = document.getElementById('pairSelect');
-            
+
             // Update pairs based on source
-            pairSelect.innerHTML = PAIR_OPTIONS[source].map(p => 
+            pairSelect.innerHTML = PAIR_OPTIONS[source].map(p =>
                 `<option value="${p.value}">${p.label}</option>`
             ).join('');
+
+            // Also update intervals and periods for this source
+            updateIntervalOptions();
+        }
+
+        function updateIntervalOptions() {
+            const source = document.getElementById('sourceSelect').value;
+            const intervalSelect = document.getElementById('intervalSelect');
+            const currentInterval = intervalSelect.value;
+
+            // Update intervals based on source
+            const intervals = INTERVAL_OPTIONS[source] || INTERVAL_OPTIONS.binance;
+            intervalSelect.innerHTML = intervals.map(i =>
+                `<option value="${i.value}">${i.label}</option>`
+            ).join('');
+
+            // Try to keep current selection if still valid
+            if (intervals.some(i => i.value === currentInterval)) {
+                intervalSelect.value = currentInterval;
+            }
+
+            // Update period options for the selected interval
+            updatePeriodOptions();
+        }
+
+        function updatePeriodOptions() {
+            const source = document.getElementById('sourceSelect').value;
+            const interval = document.getElementById('intervalSelect').value;
+            const monthsSelect = document.getElementById('monthsSelect');
+            const currentMonths = monthsSelect.value;
+
+            // Get period options for this source (use default for all intervals)
+            const sourceOptions = PERIOD_OPTIONS[source] || PERIOD_OPTIONS.binance;
+            const periods = sourceOptions.default || sourceOptions[interval] || sourceOptions['60'];
+
+            monthsSelect.innerHTML = periods.map(p =>
+                `<option value="${p.value}">${p.label}</option>`
+            ).join('');
+
+            // Try to keep current selection if still valid
+            if (periods.some(p => p.value === currentMonths)) {
+                monthsSelect.value = currentMonths;
+            }
         }
         
         // API Functions
@@ -1057,29 +1204,23 @@
             const btn = document.getElementById('fetchDataBtn');
             const loadingProgress = document.getElementById('dataLoadingProgress');
             
-            const sourceName = source === 'binance' ? 'Binance' : 'Yahoo Finance';
+            const sourceNames = { binance: 'Binance', kraken: 'Kraken', yfinance: 'Yahoo Finance' };
+            const sourceName = sourceNames[source] || source;
             
             // Show loading UI
             btn.disabled = true;
             btn.innerHTML = `<div class="spinner"></div> Fetching...`;
             document.getElementById('uploadCsvBtn').disabled = true;
             
-            // Show and reset progress
+            // Show and reset progress (backend will provide real progress)
             loadingProgress.style.display = 'block';
             document.getElementById('dataProgressFill').style.width = '0%';
             document.getElementById('dataProgressMessage').textContent = `Connecting to ${sourceName}...`;
             document.getElementById('dataProgressPercent').textContent = '0%';
-            
-            // Start animation
-            if (dataLoadingAnimation) clearInterval(dataLoadingAnimation);
-            let progress = 0;
-            dataLoadingAnimation = setInterval(() => {
-                progress += Math.random() * 3;
-                if (progress > 85) progress = 85;
-                document.getElementById('dataProgressFill').style.width = `${progress}%`;
-                document.getElementById('dataProgressPercent').textContent = `${Math.round(progress)}%`;
-            }, 500);
-            
+
+            // Stop any existing fake animation - backend will provide real progress
+            stopDataLoadingAnimation();
+
             addLog(`Fetching ${months} months of ${interval}m ${pair} from ${sourceName}...`);
             
             try {
@@ -1325,11 +1466,11 @@
                                 const pm = periodMetrics[p];
                                 const wrColor = pm.win_rate >= 60 ? 'var(--success)' : pm.win_rate >= 50 ? 'var(--warning)' : 'var(--danger)';
                                 const pnlColor = pm.pnl >= 0 ? 'var(--success)' : 'var(--danger)';
-                                const ddColor = (pm.max_dd_pct || 0) < 5 ? 'var(--success)' : (pm.max_dd_pct || 0) < 15 ? 'var(--warning)' : 'var(--danger)';
+                                const ddVal = pm.max_dd_pct || 0;
                                 return `<div style="display: inline-block; text-align: center; margin-right: 1.5rem;">
                                     <div style="color: var(--text-muted); font-weight: 600; font-size: 0.7rem; margin-bottom: 0.15rem;">${p.toUpperCase()}</div>
                                     <div style="font-size: 0.75rem;"><span style="color: ${wrColor};">${pm.win_rate?.toFixed(0) || '-'}%</span> <span style="color: ${pnlColor};">${pm.pnl >= 0 ? '+' : ''}£${pm.pnl?.toFixed(0) || '0'}</span></div>
-                                    <div style="font-size: 0.65rem;"><span style="color: ${ddColor};">DD ${(pm.max_dd_pct || 0).toFixed(1)}%</span> <span style="color: var(--text-muted);">${pm.trades} trades</span></div>
+                                    <div style="font-size: 0.65rem;"><span style="color: var(--danger);">${ddVal > 0 ? '-' : ''}${ddVal.toFixed(1)}%</span> <span style="color: var(--text-muted);">${pm.trades} trades</span></div>
                                 </div>`;
                             }).join('');
 
@@ -1634,8 +1775,12 @@
                 });
             });
 
-            // Sort by composite score
-            allStrategies.sort((a, b) => (b.composite_score || 0) - (a.composite_score || 0));
+            // Sort by composite score (check both top-level and metrics)
+            allStrategies.sort((a, b) => {
+                const scoreA = a.metrics?.composite_score || a.composite_score || 0;
+                const scoreB = b.metrics?.composite_score || b.composite_score || 0;
+                return scoreB - scoreA;
+            });
 
             // Take top 10 overall
             const topStrategies = allStrategies.slice(0, 10);
@@ -1675,7 +1820,7 @@
                             </div>
                             <span style="text-align: right;">
                                 <span style="color: ${(m.total_pnl || 0) >= 0 ? 'var(--success)' : 'var(--danger)'}; font-weight: bold; font-size: 1.1rem;">${(strat.total_pnl_percent || m.total_pnl_percent || 0).toFixed(1)}%</span>
-                                <span style="color: var(--text-muted); font-size: 0.75rem; display: block;">£${(m.total_pnl || 0).toFixed(0)}</span>
+                                <span style="color: var(--text-muted); font-size: 0.75rem; display: block;">${m.total_pnl_gbp !== undefined && m.total_pnl_gbp !== m.total_pnl ? formatDualCurrency(m.total_pnl, m.total_pnl_gbp) : formatCurrency(m.total_pnl || 0, m.source_currency || 'GBP')}</span>
                             </span>
                         </div>
                         <div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 1rem; font-size: 0.85rem; margin-bottom: 0.75rem;">
@@ -1697,7 +1842,7 @@
                             </div>
                             <div>
                                 <span style="color: var(--text-muted);">Score:</span><br>
-                                <span style="color: var(--accent-primary); font-weight: 600;">${(strat.composite_score || 0).toFixed(0)}</span>
+                                <span style="color: var(--accent-primary); font-weight: 600;">${(m.composite_score || strat.composite_score || 0).toFixed(0)}</span>
                             </div>
                         </div>
                         ${renderTuningSectionForCard(strat)}
@@ -1709,7 +1854,7 @@
                                 ⬇️ Download
                             </button>
                             <button onclick="openStrategyInTradingViewWithEngine(${strat.original_rank}, '${engine}')" class="btn" style="font-size: 0.8rem; padding: 0.4rem 0.8rem; background: linear-gradient(135deg, #2962FF, #00BCD4);">
-                                📈 TradingView
+                                📈 View in TradingView
                             </button>
                         </div>
                     </div>
@@ -1764,14 +1909,14 @@
                                 ${metrics.total_pnl >= 0 ? '+' : ''}${(metrics.total_pnl_percent || 0).toFixed(1)}%
                             </div>
                             <div style="font-size: 0.8rem; color: var(--text-muted);">
-                                £${metrics.total_pnl?.toFixed(0) || '0'} | ${metrics.total_trades || 0} trades
+                                ${metrics.total_pnl_gbp !== undefined && metrics.total_pnl_gbp !== metrics.total_pnl ? formatDualCurrency(metrics.total_pnl, metrics.total_pnl_gbp) : formatCurrency(metrics.total_pnl || 0, metrics.source_currency || 'GBP')} | ${metrics.total_trades || 0} trades
                             </div>
                         </div>
                     </div>
                     <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.75rem; font-size: 0.85rem; padding: 0.75rem; background: var(--bg-primary); border-radius: 8px;">
                         <div><span style="color: var(--text-muted);">P.Factor:</span> <strong>${metrics.profit_factor?.toFixed(2) || 'N/A'}</strong></div>
-                        <div><span style="color: var(--text-muted);">Avg Trade:</span> <strong>£${metrics.avg_trade?.toFixed(2) || '0'}</strong></div>
-                        <div><span style="color: var(--text-muted);">Max DD:</span> <strong style="color: var(--danger);">£${metrics.max_drawdown?.toFixed(0) || '0'}</strong></div>
+                        <div><span style="color: var(--text-muted);">Avg Trade:</span> <strong>${metrics.avg_trade_gbp !== undefined && metrics.avg_trade_gbp !== metrics.avg_trade ? formatDualCurrency(metrics.avg_trade, metrics.avg_trade_gbp) : formatCurrency(metrics.avg_trade || 0, metrics.source_currency || 'GBP')}</strong></div>
+                        <div><span style="color: var(--text-muted);">Max DD:</span> <strong style="color: var(--danger);">${metrics.max_drawdown_gbp !== undefined && metrics.max_drawdown_gbp !== metrics.max_drawdown ? formatDualCurrency(metrics.max_drawdown, metrics.max_drawdown_gbp) : formatCurrency(metrics.max_drawdown || 0, metrics.source_currency || 'GBP')}</strong></div>
                         <div><span style="color: var(--text-muted);">Score:</span> <strong style="color: var(--accent-primary);">${metrics.composite_score?.toFixed(1) || 'N/A'}</strong></div>
                     </div>
                     ${renderTuningSectionForCard(strat)}
@@ -1783,7 +1928,7 @@
                             ⬇️ Download .pine
                         </button>
                         <button onclick="openStrategyInTradingViewWithEngine(${idx + 1}, '${engine}')" class="btn" style="font-size: 0.8rem; padding: 0.4rem 0.8rem; background: linear-gradient(135deg, #2962FF, #00BCD4);">
-                            📈 TradingView
+                            📈 View in TradingView
                         </button>
                     </div>
                 </div>
@@ -1893,7 +2038,7 @@
                             <div style="text-align: center; padding: 0.6rem; background: var(--bg-card); border-radius: 6px;">
                                 <div style="color: var(--text-muted); font-size: 0.7rem;">Return</div>
                                 <div style="color: ${(metrics.total_pnl_percent || 0) >= 0 ? 'var(--success)' : 'var(--danger)'}; font-weight: 600; font-size: 1.1rem;">${(metrics.total_pnl_percent || 0).toFixed(1)}%</div>
-                                <div style="color: var(--text-muted); font-size: 0.65rem;">£${(metrics.total_pnl || 0).toFixed(0)}</div>
+                                <div style="color: var(--text-muted); font-size: 0.65rem;">${metrics.total_pnl_gbp !== undefined && metrics.total_pnl_gbp !== metrics.total_pnl ? formatDualCurrency(metrics.total_pnl, metrics.total_pnl_gbp) : formatCurrency(metrics.total_pnl || 0, metrics.source_currency || 'GBP')}</div>
                             </div>
                             <div style="text-align: center; padding: 0.6rem; background: var(--bg-card); border-radius: 6px;">
                                 <div style="color: var(--text-muted); font-size: 0.7rem;">B&H</div>
@@ -1951,7 +2096,7 @@
                                 📊 Trades CSV
                             </button>
                             <button onclick="openStrategyInTradingView(${idx + 1})" class="btn" style="font-size: 0.8rem; padding: 0.4rem 0.8rem; background: linear-gradient(135deg, #2962FF, #00BCD4);">
-                                📈 TradingView
+                                📈 View in TradingView
                             </button>
                         </div>
                     </div>
@@ -2519,6 +2664,10 @@
         document.addEventListener('DOMContentLoaded', async () => {
             addLog('System initialized');
             startPolling();
+
+            // Initialize source-specific options (pairs, intervals, periods)
+            // Yahoo Finance is the default source
+            updatePairOptions();
 
             // Also do an immediate fetch to populate date range on first load
             try {

@@ -23,20 +23,26 @@ class BinanceDataFetcher(DataFetcher):
     """
     Fetches historical OHLCV data from Binance public API.
     No API key required. Supports years of historical data.
-    
+
     Best for: USDT pairs (BTCUSDT, ETHUSDT, etc.)
     """
-    
+
     BASE_URL = "https://api.binance.com/api/v3"
-    
+
     INTERVAL_MAP = {
         1: "1m", 3: "3m", 5: "5m", 15: "15m", 30: "30m",
         60: "1h", 120: "2h", 240: "4h", 360: "6h",
         480: "8h", 720: "12h", 1440: "1d",
     }
-    
-    def __init__(self):
+
+    def __init__(self, status_callback=None):
         self.session = None
+        self.status_callback = status_callback
+
+    def _update_status(self, message: str, progress: int = None):
+        print(message)
+        if self.status_callback:
+            self.status_callback(message, progress)
     
     async def _get_session(self):
         if self.session is None:
@@ -56,23 +62,29 @@ class BinanceDataFetcher(DataFetcher):
     ) -> pd.DataFrame:
         """Fetch OHLCV data from Binance"""
         session = await self._get_session()
-        
+
         binance_interval = self._get_binance_interval(interval)
         symbol = pair.upper().replace("/", "").replace("-", "")
-        
+
         end_time = datetime.utcnow()
         start_time = end_time - timedelta(days=months * 30)
-        
+
         end_ts = int(end_time.timestamp() * 1000)
         start_ts = int(start_time.timestamp() * 1000)
-        
-        print(f"[Binance] Fetching {months} months of {interval}m {symbol} data...")
-        print(f"[Binance] Range: {start_time.strftime('%Y-%m-%d')} → {end_time.strftime('%Y-%m-%d')}")
-        
+
+        self._update_status(f"[Binance] Connecting to Binance API...", 10)
+        self._update_status(f"[Binance] Fetching {months} months of {interval}m {symbol} data...", 20)
+
         all_data = []
         current_start = start_ts
         request_count = 0
-        
+
+        # Estimate total requests needed for progress calculation
+        total_ms = end_ts - start_ts
+        candles_per_request = 1000
+        ms_per_candle = interval * 60 * 1000
+        estimated_requests = max(1, total_ms // (candles_per_request * ms_per_candle))
+
         while current_start < end_ts and request_count < 500:
             params = {
                 "symbol": symbol,
@@ -81,18 +93,18 @@ class BinanceDataFetcher(DataFetcher):
                 "endTime": end_ts,
                 "limit": 1000
             }
-            
+
             try:
                 async with session.get(f"{self.BASE_URL}/klines", params=params) as response:
                     if response.status != 200:
                         error = await response.text()
-                        print(f"[Binance] Error: {response.status} - {error}")
+                        self._update_status(f"[Binance] Error: {response.status} - {error}", 0)
                         break
-                    
+
                     klines = await response.json()
                     if not klines:
                         break
-                    
+
                     for k in klines:
                         all_data.append({
                             "time": datetime.utcfromtimestamp(k[0] / 1000),
@@ -102,34 +114,36 @@ class BinanceDataFetcher(DataFetcher):
                             "close": float(k[4]),
                             "volume": float(k[5])
                         })
-                    
+
                     current_start = klines[-1][0] + 1
-                    
-                    if request_count % 10 == 0:
-                        print(f"[Binance] Progress: {len(all_data)} candles...")
-                    
+
+                    # Update progress every 5 requests
+                    if request_count % 5 == 0:
+                        progress = min(90, 20 + int((request_count / max(1, estimated_requests)) * 70))
+                        self._update_status(f"[Binance] Downloading... {len(all_data):,} candles", progress)
+
                     if len(klines) < 1000:
                         break
-                    
+
                     request_count += 1
                     await asyncio.sleep(0.1)
-                    
+
             except Exception as e:
-                print(f"[Binance] Error: {e}")
+                self._update_status(f"[Binance] Error: {e}", 0)
                 break
-        
+
         await self.close()
-        
+
         if not all_data:
-            print("[Binance] Warning: No data fetched")
+            self._update_status("[Binance] Warning: No data fetched", 0)
             return pd.DataFrame(columns=["time", "open", "high", "low", "close", "volume"])
-        
+
         df = pd.DataFrame(all_data)
         df = df.sort_values("time").drop_duplicates(subset=["time"]).reset_index(drop=True)
-        
+
         days = (df['time'].max() - df['time'].min()).days
-        print(f"[Binance] ✓ Fetched {len(df)} candles ({days} days)")
-        
+        self._update_status(f"[Binance] ✓ Fetched {len(df):,} candles ({days} days)", 100)
+
         return df
     
     def _get_binance_interval(self, minutes: int) -> str:
@@ -327,15 +341,195 @@ class YFinanceDataFetcher(DataFetcher):
         return "1h"
 
 
-def get_fetcher(source: str = "binance") -> DataFetcher:
+class KrakenDataFetcher(DataFetcher):
+    """
+    Fetches historical OHLCV data from Kraken public API.
+    No API key required. Best for GBP pairs.
+
+    Kraken intervals: 1, 5, 15, 30, 60, 240, 1440, 10080, 21600 (minutes)
+    """
+
+    BASE_URL = "https://api.kraken.com/0/public"
+
+    # Kraken supported intervals (in minutes)
+    INTERVAL_MAP = {
+        1: 1, 5: 5, 15: 15, 30: 30,
+        60: 60, 240: 240, 1440: 1440,
+    }
+
+    # Map common pair names to Kraken format
+    # Kraken uses XBT instead of BTC
+    PAIR_MAP = {
+        'BTCGBP': 'XBTGBP', 'BTC-GBP': 'XBTGBP', 'BTC/GBP': 'XBTGBP',
+        'ETHGBP': 'ETHGBP', 'ETH-GBP': 'ETHGBP', 'ETH/GBP': 'ETHGBP',
+        'XRPGBP': 'XRPGBP', 'XRP-GBP': 'XRPGBP', 'XRP/GBP': 'XRPGBP',
+        'ADAGBP': 'ADAGBP', 'ADA-GBP': 'ADAGBP', 'ADA/GBP': 'ADAGBP',
+        'SOLGBP': 'SOLGBP', 'SOL-GBP': 'SOLGBP', 'SOL/GBP': 'SOLGBP',
+        'DOGEGBP': 'XDGGBP', 'DOGE-GBP': 'XDGGBP', 'DOGE/GBP': 'XDGGBP',  # Kraken uses XDG for DOGE
+        'TRXGBP': 'TRXGBP', 'TRX-GBP': 'TRXGBP', 'TRX/GBP': 'TRXGBP',
+        'BNBGBP': 'BNBGBP', 'BNB-GBP': 'BNBGBP', 'BNB/GBP': 'BNBGBP',
+        # EUR pairs as backup
+        'BTCEUR': 'XBTEUR', 'BTC-EUR': 'XBTEUR',
+        'ETHEUR': 'ETHEUR', 'ETH-EUR': 'ETHEUR',
+    }
+
+    def __init__(self, status_callback=None):
+        self.session = None
+        self.status_callback = status_callback
+
+    def _update_status(self, message: str, progress: int = None):
+        print(message)
+        if self.status_callback:
+            self.status_callback(message, progress)
+
+    async def _get_session(self):
+        if self.session is None:
+            self.session = aiohttp.ClientSession()
+        return self.session
+
+    async def close(self):
+        if self.session:
+            await self.session.close()
+            self.session = None
+
+    def _get_kraken_pair(self, pair: str) -> str:
+        """Convert user pair format to Kraken format"""
+        pair_upper = pair.upper().replace("/", "").replace("-", "")
+        # Check direct mapping
+        for key, value in self.PAIR_MAP.items():
+            if key.replace("-", "").replace("/", "") == pair_upper:
+                return value
+        # If no mapping, try as-is with XBT substitution
+        if pair_upper.startswith('BTC'):
+            return 'XBT' + pair_upper[3:]
+        return pair_upper
+
+    def _get_kraken_interval(self, minutes: int) -> int:
+        """Get closest supported Kraken interval"""
+        if minutes in self.INTERVAL_MAP:
+            return self.INTERVAL_MAP[minutes]
+        # Find closest supported interval
+        for m in sorted(self.INTERVAL_MAP.keys()):
+            if m >= minutes:
+                return self.INTERVAL_MAP[m]
+        return 1440  # Default to 1d
+
+    async def fetch_ohlcv(
+        self,
+        pair: str = "BTCGBP",
+        interval: int = 15,
+        months: float = 3
+    ) -> pd.DataFrame:
+        """Fetch OHLCV data from Kraken"""
+        session = await self._get_session()
+
+        kraken_pair = self._get_kraken_pair(pair)
+        kraken_interval = self._get_kraken_interval(interval)
+
+        # Calculate start time
+        end_time = datetime.utcnow()
+        start_time = end_time - timedelta(days=months * 30)
+        since = int(start_time.timestamp())
+
+        self._update_status(f"[Kraken] Connecting to Kraken API...", 10)
+        self._update_status(f"[Kraken] Fetching {months} months of {interval}m {pair} data...", 20)
+
+        all_data = []
+        request_count = 0
+        max_requests = 100  # Safety limit
+
+        while request_count < max_requests:
+            params = {
+                "pair": kraken_pair,
+                "interval": kraken_interval,
+                "since": since
+            }
+
+            try:
+                async with session.get(f"{self.BASE_URL}/OHLC", params=params) as response:
+                    if response.status != 200:
+                        error = await response.text()
+                        self._update_status(f"[Kraken] Error: {response.status} - {error}", 0)
+                        break
+
+                    data = await response.json()
+
+                    if data.get('error') and len(data['error']) > 0:
+                        self._update_status(f"[Kraken] API Error: {data['error']}", 0)
+                        break
+
+                    result = data.get('result', {})
+
+                    # Find the OHLC data (key varies by pair)
+                    ohlc_data = None
+                    for key, value in result.items():
+                        if key != 'last' and isinstance(value, list):
+                            ohlc_data = value
+                            break
+
+                    if not ohlc_data:
+                        break
+
+                    # Parse OHLC data: [time, open, high, low, close, vwap, volume, count]
+                    for candle in ohlc_data:
+                        candle_time = datetime.utcfromtimestamp(candle[0])
+                        if candle_time > end_time:
+                            continue
+                        all_data.append({
+                            "time": candle_time,
+                            "open": float(candle[1]),
+                            "high": float(candle[2]),
+                            "low": float(candle[3]),
+                            "close": float(candle[4]),
+                            "volume": float(candle[6])
+                        })
+
+                    # Update progress
+                    progress = min(90, 20 + request_count * 10)
+                    self._update_status(f"[Kraken] Downloading... {len(all_data):,} candles", progress)
+
+                    # Get 'last' timestamp for pagination
+                    last_ts = result.get('last')
+                    if not last_ts or last_ts <= since:
+                        break
+
+                    # Check if we've reached current time
+                    if len(ohlc_data) < 720:  # Kraken returns max 720 candles
+                        break
+
+                    since = last_ts
+                    request_count += 1
+                    await asyncio.sleep(0.5)  # Rate limiting
+
+            except Exception as e:
+                self._update_status(f"[Kraken] Error: {e}", 0)
+                break
+
+        await self.close()
+
+        if not all_data:
+            self._update_status(f"[Kraken] No data found for {pair}. Try a different pair or use Binance.", 0)
+            return pd.DataFrame(columns=["time", "open", "high", "low", "close", "volume"])
+
+        df = pd.DataFrame(all_data)
+        df = df.sort_values("time").drop_duplicates(subset=["time"]).reset_index(drop=True)
+
+        # Filter to requested time range
+        df = df[df['time'] >= start_time].reset_index(drop=True)
+
+        days = (df['time'].max() - df['time'].min()).days if len(df) > 0 else 0
+        self._update_status(f"[Kraken] ✓ Fetched {len(df):,} candles ({days} days)", 100)
+
+        return df
+
+
+def get_fetcher(source: str = "binance", status_callback=None) -> DataFetcher:
     """Factory function to get appropriate data fetcher"""
     if source.lower() == "yfinance":
-        return YFinanceDataFetcher()
-    return BinanceDataFetcher()
-
-
-# Default fetcher alias for backward compatibility
-KrakenDataFetcher = BinanceDataFetcher
+        return YFinanceDataFetcher(status_callback=status_callback)
+    elif source.lower() == "kraken":
+        return KrakenDataFetcher(status_callback=status_callback)
+    return BinanceDataFetcher(status_callback=status_callback)
 
 
 async def main():
@@ -347,7 +541,15 @@ async def main():
     df = await binance.fetch_ohlcv(pair="BTCUSDT", interval=15, months=1)
     print(f"Shape: {df.shape}")
     print(df.head(3))
-    
+
+    print("\n" + "=" * 50)
+    print("Testing Kraken (BTCGBP)")
+    print("=" * 50)
+    kraken = KrakenDataFetcher()
+    df = await kraken.fetch_ohlcv(pair="BTCGBP", interval=15, months=1)
+    print(f"Shape: {df.shape}")
+    print(df.head(3))
+
     print("\n" + "=" * 50)
     print("Testing YFinance (BTC-GBP)")
     print("=" * 50)
