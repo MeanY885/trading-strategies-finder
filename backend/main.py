@@ -572,7 +572,7 @@ def run_unified_sync(capital: float, risk_percent: float, n_trials: int, engine:
                 top_10 = report.get("top_10", [])
                 if top_10:
                     engine_best_pnl = top_10[0]["metrics"]["total_pnl"]
-                    if engine_best_pnl > best_pnl:
+                    if engine_best_pnl is not None and engine_best_pnl > best_pnl:
                         best_pnl = engine_best_pnl
                         best_engine = eng
 

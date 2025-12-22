@@ -720,11 +720,21 @@
             return now.toTimeString().split(' ')[0];
         }
         
-        function addLog(message) {
+        function addLog(message, type = 'normal') {
             const container = document.getElementById('logContainer');
             const entry = document.createElement('div');
             entry.className = 'log-entry';
-            entry.innerHTML = `<span class="log-time">[${formatTime()}]</span> ${message}`;
+
+            // Style based on type
+            if (type === 'detail') {
+                entry.style.color = '#888';
+                entry.style.fontSize = '0.85em';
+                entry.style.marginLeft = '20px';
+                entry.innerHTML = message;
+            } else {
+                entry.innerHTML = `<span class="log-time">[${formatTime()}]</span> ${message}`;
+            }
+
             container.appendChild(entry);
             container.scrollTop = container.scrollHeight;
         }
@@ -1236,10 +1246,23 @@
                     } else if (data.type === 'strategy_result') {
                         handleStreamedResult(data);
                     } else if (data.type === 'tuning_progress') {
-                        // Phase 2: Tuning progress update
+                        // Phase 2: Tuning progress update with detailed info
+                        const params = data.params_being_tuned || [];
+                        const numCombos = data.num_combinations || 0;
+                        const paramStr = params.length > 0 ? params.join(', ') : 'none';
+
+                        // Main progress message
                         const msg = `🔧 Tuning ${data.current}/${data.total}: ${data.strategy} (${data.direction})`;
                         document.getElementById('unifiedProgressMessage').textContent = msg;
-                        addLog(msg);
+
+                        // Detailed log with parameter info
+                        if (params.length > 0) {
+                            const detailMsg = `   └─ Testing ${numCombos} combinations: ${paramStr}`;
+                            addLog(msg);
+                            addLog(detailMsg, 'detail');
+                        } else {
+                            addLog(`${msg} - no tunable params`);
+                        }
                     } else if (data.type === 'tuning_result') {
                         // Phase 2: Individual tuning result
                         handleTuningResult(data);

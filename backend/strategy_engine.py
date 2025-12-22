@@ -798,11 +798,11 @@ class TunedResult:
     before_pnl_percent: float
     after_pnl_percent: float
 
-    # Improvement metrics
-    score_improvement: float  # Percentage improvement in composite score
-    win_rate_improvement: float
-    profit_factor_improvement: float
-    pnl_improvement: float
+    # Improvement metrics (calculated in __post_init__)
+    score_improvement: float = 0  # Percentage improvement in composite score
+    win_rate_improvement: float = 0
+    profit_factor_improvement: float = 0
+    pnl_improvement: float = 0
 
     # The tuned backtest result
     tuned_result: StrategyResult = None
@@ -1536,7 +1536,28 @@ class StrategyEngine:
         # Price changes
         df['pct_change'] = df['close'].pct_change() * 100
 
+        # Sanitize all indicator columns to prevent None comparison errors
+        self._sanitize_indicators()
+
         print(f"Indicators ready (pandas-ta). {len(df)} bars, RSI: {df['rsi'].min():.1f}-{df['rsi'].max():.1f}")
+
+    def _sanitize_indicators(self):
+        """
+        Sanitize all DataFrame columns to prevent 'None < float' comparison errors.
+        Converts all None values to NaN and ensures numeric columns are float type.
+        """
+        self._sanitize_df(self.df)
+
+    def _safe_col(self, col_name: str, default_value=np.nan) -> pd.Series:
+        """
+        Safely get a DataFrame column, converting None to NaN.
+        Returns a series filled with default_value if column doesn't exist.
+        """
+        if col_name not in self.df.columns:
+            return pd.Series(default_value, index=self.df.index)
+        series = self.df[col_name]
+        # Convert None to NaN and ensure numeric
+        return pd.to_numeric(series, errors='coerce')
 
     def _get_signals(self, strategy: str, direction: str) -> pd.Series:
         """Get entry signals for a strategy. Simple and direct."""
@@ -1545,6 +1566,12 @@ class StrategyEngine:
         # Helper to ensure boolean series with no NaN values
         def safe_bool(series):
             return series.fillna(False).astype(bool)
+
+        # Helper to safely get a column with NaN instead of None
+        def safe_col(col_name):
+            if col_name not in df.columns:
+                return pd.Series(np.nan, index=df.index)
+            return pd.to_numeric(df[col_name], errors='coerce')
 
         if strategy == 'always':
             return pd.Series(True, index=df.index)
@@ -1609,16 +1636,19 @@ class StrategyEngine:
                 return safe_bool((df['ema_9'] < df['ema_21']) & (df['ema_9'].shift(1) >= df['ema_21'].shift(1)))
 
         elif strategy == 'sma_cross':
-            # TradingView MovingAvg2Line Cross: SMA(9) crosses SMA(18)
-            # mafast = ta.sma(price, fastLength)  // 9
-            # maslow = ta.sma(price, slowLength)  // 18
-            # Need to calculate these SMAs if not already available
-            sma_9 = df['close'].rolling(9).mean()
-            sma_18 = df['close'].rolling(18).mean()
-            if direction == 'long':
-                return safe_bool((sma_9 > sma_18) & (sma_9.shift(1) <= sma_18.shift(1)))
+            # TradingView MovingAvg2Line Cross: SMA(fast) crosses SMA(slow)
+            # Uses sma_fast and sma_slow columns if available (for tuning), else calculate
+            if 'sma_fast' in df.columns and 'sma_slow' in df.columns:
+                sma_fast = safe_col('sma_fast')
+                sma_slow = safe_col('sma_slow')
             else:
-                return safe_bool((sma_9 < sma_18) & (sma_9.shift(1) >= sma_18.shift(1)))
+                # Default to 9/18 for initial calculation
+                sma_fast = df['close'].rolling(9).mean()
+                sma_slow = df['close'].rolling(18).mean()
+            if direction == 'long':
+                return safe_bool((sma_fast > sma_slow) & (sma_fast.shift(1) <= sma_slow.shift(1)))
+            else:
+                return safe_bool((sma_fast < sma_slow) & (sma_fast.shift(1) >= sma_slow.shift(1)))
 
         elif strategy == 'macd_cross':
             # TradingView MACD Strategy: histogram (delta) crosses zero, NOT macd crosses signal!
@@ -1641,9 +1671,16 @@ class StrategyEngine:
             # TradingView Consecutive Up/Down Strategy: EXACT MATCH
             # ups := price > price[1] ? nz(ups[1]) + 1 : 0  (counts consecutive UP closes)
             # dns := price < price[1] ? nz(dns[1]) + 1 : 0  (counts consecutive DOWN closes)
-            # if (ups >= consecutiveBarsUp) - long entry after 3 UP closes
-            # if (dns >= consecutiveBarsDown) - short entry after 3 DOWN closes
+            # if (ups >= consecutiveBarsUp) - long entry after N UP closes
+            # if (dns >= consecutiveBarsDown) - short entry after N DOWN closes
             # Note: This is consecutive CLOSES moving up/down, NOT green/red candles
+
+            # Use tuned consecutive_bars from DataFrame column if available, else default to 3
+            consecutive_bars = 3  # default
+            if 'consecutive_bars' in df.columns:
+                # Get the first non-null value (it's the same for all rows)
+                consecutive_bars = int(df['consecutive_bars'].dropna().iloc[0]) if not df['consecutive_bars'].dropna().empty else 3
+
             up_close = df['close'] > df['close'].shift(1)
             down_close = df['close'] < df['close'].shift(1)
 
@@ -1652,11 +1689,11 @@ class StrategyEngine:
             dns = down_close.astype(int).groupby((~down_close).cumsum()).cumsum()
 
             if direction == 'long':
-                # Long after 3+ consecutive up closes
-                return safe_bool(ups >= 3)
+                # Long after N+ consecutive up closes
+                return safe_bool(ups >= consecutive_bars)
             else:
-                # Short after 3+ consecutive down closes
-                return safe_bool(dns >= 3)
+                # Short after N+ consecutive down closes
+                return safe_bool(dns >= consecutive_bars)
 
         elif strategy == 'big_candle':
             big = df['range'] > df['atr'] * 2
@@ -1787,15 +1824,19 @@ class StrategyEngine:
 
         elif strategy == 'vwap_bounce':
             # Price bounces off VWAP
+            # Handle case where vwap might have None/NaN values
+            if 'vwap' not in df.columns or df['vwap'].isna().all():
+                return pd.Series(False, index=df.index)
+            vwap = df['vwap'].fillna(method='ffill').fillna(df['close'])
             if direction == 'long':
                 # Price touched below VWAP and bounced back above
-                touched_below = df['low'] < df['vwap']
-                closed_above = df['close'] > df['vwap']
+                touched_below = df['low'] < vwap
+                closed_above = df['close'] > vwap
                 return safe_bool(touched_below & closed_above)
             else:
                 # Price touched above VWAP and rejected
-                touched_above = df['high'] > df['vwap']
-                closed_below = df['close'] < df['vwap']
+                touched_above = df['high'] > vwap
+                closed_below = df['close'] < vwap
                 return safe_bool(touched_above & closed_below)
 
         elif strategy == 'rsi_divergence':
@@ -2469,6 +2510,17 @@ class StrategyEngine:
                 else:
                     df['sma_50'] = calc.sma_native(length)
 
+            # SMA fast/slow (for sma_cross strategy)
+            if 'sma_fast' in params or 'sma_slow' in params:
+                fast = params.get('sma_fast', DEFAULT_INDICATOR_PARAMS['sma_fast'])
+                slow = params.get('sma_slow', DEFAULT_INDICATOR_PARAMS['sma_slow'])
+                if engine == 'tradingview':
+                    df['sma_fast'] = calc.sma_tradingview(fast)
+                    df['sma_slow'] = calc.sma_tradingview(slow)
+                else:
+                    df['sma_fast'] = calc.sma_native(fast)
+                    df['sma_slow'] = calc.sma_native(slow)
+
             # MACD
             if any(k in params for k in ['macd_fast', 'macd_slow', 'macd_signal']):
                 fast = params.get('macd_fast', DEFAULT_INDICATOR_PARAMS['macd_fast'])
@@ -2639,6 +2691,13 @@ class StrategyEngine:
             if 'sma_20' in params:
                 df['sma_20'] = ta.sma(df['close'], length=params['sma_20'])
 
+            # SMA fast/slow (for sma_cross strategy)
+            if 'sma_fast' in params or 'sma_slow' in params:
+                fast = params.get('sma_fast', DEFAULT_INDICATOR_PARAMS['sma_fast'])
+                slow = params.get('sma_slow', DEFAULT_INDICATOR_PARAMS['sma_slow'])
+                df['sma_fast'] = ta.sma(df['close'], length=fast)
+                df['sma_slow'] = ta.sma(df['close'], length=slow)
+
             if any(k in params for k in ['macd_fast', 'macd_slow', 'macd_signal']):
                 fast = params.get('macd_fast', DEFAULT_INDICATOR_PARAMS['macd_fast'])
                 slow = params.get('macd_slow', DEFAULT_INDICATOR_PARAMS['macd_slow'])
@@ -2651,7 +2710,45 @@ class StrategyEngine:
                 df['macd_signal'] = macd[macd_signal_col]
                 df['macd_hist'] = macd[macd_hist_col]
 
+        # Store non-indicator parameters as constant columns for signal functions
+        if 'consecutive_bars' in params:
+            df['consecutive_bars'] = params['consecutive_bars']
+
+        # Sanitize all indicator columns to prevent None comparison errors
+        self._sanitize_df(df)
+
         return df
+
+    def _sanitize_df(self, df: pd.DataFrame):
+        """
+        Sanitize a DataFrame's indicator columns to prevent 'None < float' comparison errors.
+        Converts all None values to NaN and ensures numeric columns are float type.
+        """
+        # List of all indicator columns that should be numeric
+        numeric_columns = [
+            'open', 'high', 'low', 'close', 'volume',
+            'rsi', 'stoch_k', 'stoch_d', 'atr',
+            'bb_upper', 'bb_lower', 'bb_mid', 'bb_width',
+            'sma_20', 'sma_50', 'sma_fast', 'sma_slow', 'ema_9', 'ema_21',
+            'macd', 'macd_signal', 'macd_hist',
+            'willr', 'cci', 'mom', 'roc',
+            'adx', 'di_plus', 'di_minus',
+            'aroon_up', 'aroon_down', 'aroon_osc',
+            'supertrend', 'supertrend_dir',
+            'psar', 'vwap',
+            'kc_mid', 'kc_upper', 'kc_lower',
+            'dc_mid', 'dc_upper', 'dc_lower',
+            'tenkan', 'kijun', 'senkou_a', 'senkou_b',
+            'uo', 'chop',
+            'body', 'range', 'pct_change',
+            'ht_trendmode', 'ht_dcperiod',
+            'consecutive_bars'
+        ]
+
+        for col in numeric_columns:
+            if col in df.columns:
+                # Convert None to NaN and ensure float type
+                df[col] = pd.to_numeric(df[col], errors='coerce')
 
     def _backtest_with_custom_df(self, df: pd.DataFrame, strategy: str, direction: str,
                                   tp_percent: float, sl_percent: float,
@@ -2698,26 +2795,31 @@ class StrategyEngine:
         # If no tunable parameters, return with no change
         if not param_names:
             default_params = {}
+            # Handle None values by defaulting to 0
+            score = strategy_result.composite_score if strategy_result.composite_score is not None else 0
+            win_rate = strategy_result.win_rate if strategy_result.win_rate is not None else 0
+            pf = strategy_result.profit_factor if strategy_result.profit_factor is not None else 0
+            pnl_pct = strategy_result.total_pnl_percent if strategy_result.total_pnl_percent is not None else 0
             return TunedResult(
                 original_result=strategy_result,
                 tuned_params=default_params,
                 default_params=default_params,
-                before_score=strategy_result.composite_score,
-                after_score=strategy_result.composite_score,
-                before_win_rate=strategy_result.win_rate,
-                after_win_rate=strategy_result.win_rate,
-                before_profit_factor=strategy_result.profit_factor,
-                after_profit_factor=strategy_result.profit_factor,
-                before_pnl_percent=strategy_result.total_pnl_percent,
-                after_pnl_percent=strategy_result.total_pnl_percent,
+                before_score=score,
+                after_score=score,
+                before_win_rate=win_rate,
+                after_win_rate=win_rate,
+                before_profit_factor=pf,
+                after_profit_factor=pf,
+                before_pnl_percent=pnl_pct,
+                after_pnl_percent=pnl_pct,
                 tuned_result=strategy_result,
             )
 
         # Get default params for this strategy
         default_params = {p: DEFAULT_INDICATOR_PARAMS[p] for p in param_names if p in DEFAULT_INDICATOR_PARAMS}
 
-        # Baseline metrics
-        baseline_score = strategy_result.composite_score
+        # Baseline metrics (handle None by defaulting to 0)
+        baseline_score = strategy_result.composite_score if strategy_result.composite_score is not None else 0
         best_score = baseline_score
         best_params = default_params.copy()
         best_result = strategy_result
@@ -2727,12 +2829,20 @@ class StrategyEngine:
         combinations = list(product(*param_values))
 
         # Test each combination
+        tested_count = 0
+        improved_combos = []
+
+        print(f"  [Tuning] {entry_rule}_{direction}: Testing {len(combinations)} combinations for params: {param_names}")
+        print(f"  [Tuning] Default params: {default_params}, Baseline score: {baseline_score:.1f}")
+
         for combo in combinations:
             param_dict = dict(zip(param_names, combo))
 
             # Skip the default combination (already tested in Phase 1)
             if param_dict == default_params:
                 continue
+
+            tested_count += 1
 
             # Create a copy of the dataframe and recalculate indicators
             df_copy = self.df.copy()
@@ -2745,25 +2855,44 @@ class StrategyEngine:
                 position_size_pct=self.position_size_pct
             )
 
-            # Check if this is better
-            if result.composite_score > best_score:
-                best_score = result.composite_score
+            # Check if this is better (handle None by defaulting to 0)
+            result_score = result.composite_score if result.composite_score is not None else 0
+            result_pnl = result.total_pnl_percent if result.total_pnl_percent is not None else 0
+            result_trades = result.total_trades if result.total_trades is not None else 0
+
+            # Log each combination result
+            if result_score != baseline_score or result_trades > 0:
+                print(f"    {param_dict} -> Score: {result_score:.1f}, PnL: {result_pnl:.1f}%, Trades: {result_trades}")
+
+            if result_score > best_score:
+                improved_combos.append((param_dict.copy(), result_score))
+                best_score = result_score
                 best_params = param_dict.copy()
                 best_result = result
+                print(f"    *** NEW BEST: {param_dict} -> Score: {result_score:.1f} (was {baseline_score:.1f})")
 
-        # Create TunedResult
+        print(f"  [Tuning] Tested {tested_count} combos, {len(improved_combos)} improved. Best score: {best_score:.1f} (baseline: {baseline_score:.1f})")
+
+        # Create TunedResult (handle None values by defaulting to 0)
+        before_wr = strategy_result.win_rate if strategy_result.win_rate is not None else 0
+        after_wr = best_result.win_rate if best_result.win_rate is not None else 0
+        before_pf = strategy_result.profit_factor if strategy_result.profit_factor is not None else 0
+        after_pf = best_result.profit_factor if best_result.profit_factor is not None else 0
+        before_pnl = strategy_result.total_pnl_percent if strategy_result.total_pnl_percent is not None else 0
+        after_pnl = best_result.total_pnl_percent if best_result.total_pnl_percent is not None else 0
+
         tuned_result = TunedResult(
             original_result=strategy_result,
             tuned_params=best_params,
             default_params=default_params,
             before_score=baseline_score,
             after_score=best_score,
-            before_win_rate=strategy_result.win_rate,
-            after_win_rate=best_result.win_rate,
-            before_profit_factor=strategy_result.profit_factor,
-            after_profit_factor=best_result.profit_factor,
-            before_pnl_percent=strategy_result.total_pnl_percent,
-            after_pnl_percent=best_result.total_pnl_percent,
+            before_win_rate=before_wr,
+            after_win_rate=after_wr,
+            before_profit_factor=before_pf,
+            after_profit_factor=after_pf,
+            before_pnl_percent=before_pnl,
+            after_pnl_percent=after_pnl,
             tuned_result=best_result,
         )
 
@@ -2792,7 +2921,21 @@ class StrategyEngine:
         total = len(top_strategies)
 
         for i, strategy_result in enumerate(top_strategies):
-            # Update progress
+            # Get tuning parameters info for this strategy
+            entry_rule = strategy_result.entry_rule
+            param_config = STRATEGY_PARAM_MAP.get(entry_rule, {'params': [], 'ranges': {}})
+            param_names = param_config['params']
+            param_ranges = param_config['ranges']
+
+            # Calculate number of combinations
+            from itertools import product
+            if param_names:
+                param_values = [param_ranges.get(p, []) for p in param_names]
+                num_combinations = len(list(product(*param_values)))
+            else:
+                num_combinations = 0
+
+            # Update progress with detailed tuning info
             if streaming_callback:
                 progress_pct = int((i / total) * 100)
                 streaming_callback({
@@ -2803,6 +2946,12 @@ class StrategyEngine:
                     'entry_rule': strategy_result.entry_rule,
                     'direction': strategy_result.direction,
                     'progress': progress_pct,
+                    # New detailed tuning info
+                    'params_being_tuned': param_names,
+                    'param_ranges': {p: list(param_ranges.get(p, [])) for p in param_names},
+                    'num_combinations': num_combinations,
+                    'original_score': strategy_result.composite_score,
+                    'original_pnl': strategy_result.total_pnl_percent,
                 })
 
             # Tune this strategy
@@ -3247,14 +3396,14 @@ def run_strategy_finder(df: pd.DataFrame,
                 'total_trades': r.total_trades,
                 'wins': r.wins,
                 'losses': r.losses,
-                'win_rate': round(r.win_rate, 1),
-                'profit_factor': r.profit_factor,
-                'total_pnl': round(r.total_pnl, 2),
-                'total_pnl_percent': round(r.total_pnl_percent, 2),
-                'max_drawdown': round(r.max_drawdown, 2),
-                'max_drawdown_percent': round(r.max_drawdown_percent, 2),
-                'avg_trade': round(r.avg_trade, 2),
-                'composite_score': round(r.composite_score, 1),
+                'win_rate': round(r.win_rate, 1) if r.win_rate is not None else 0,
+                'profit_factor': r.profit_factor if r.profit_factor is not None else 0,
+                'total_pnl': round(r.total_pnl, 2) if r.total_pnl is not None else 0,
+                'total_pnl_percent': round(r.total_pnl_percent, 2) if r.total_pnl_percent is not None else 0,
+                'max_drawdown': round(r.max_drawdown, 2) if r.max_drawdown is not None else 0,
+                'max_drawdown_percent': round(r.max_drawdown_percent, 2) if r.max_drawdown_percent is not None else 0,
+                'avg_trade': round(r.avg_trade, 2) if r.avg_trade is not None else 0,
+                'composite_score': round(r.composite_score, 1) if r.composite_score is not None else 0,
                 # Buy & Hold comparison
                 'buy_hold_return': r.buy_hold_return,
                 'vs_buy_hold': r.vs_buy_hold,
