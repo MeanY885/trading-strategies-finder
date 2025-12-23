@@ -110,17 +110,23 @@ def _generate_period_buckets(earliest: datetime, latest: datetime) -> List[Tuple
         chunk_days = 14
         label_fn = lambda i: f'W{i*2+1}-{i*2+2}'
     elif span_days <= 180:
-        # 91-180 days (3-6 months): Monthly (M1, M2...)
+        # 91-180 days (3-6 months): Monthly with actual month names
         chunk_days = 30
-        label_fn = lambda i: f'M{i+1}'
+        month_names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+        start_month = earliest.month - 1  # 0-indexed
+        label_fn = lambda i, sm=start_month: month_names[(sm + i) % 12]
     elif span_days <= 365:
-        # 181-365 days (6-12 months): Monthly
+        # 181-365 days (6-12 months): Monthly with actual month names
         chunk_days = 30
-        label_fn = lambda i: f'M{i+1}'
+        month_names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+        start_month = earliest.month - 1  # 0-indexed
+        label_fn = lambda i, sm=start_month: month_names[(sm + i) % 12]
     elif span_days <= 730:
-        # 1-2 years: Bi-monthly
+        # 1-2 years: Bi-monthly with month names
         chunk_days = 60
-        label_fn = lambda i: f'M{i*2+1}-{i*2+2}'
+        month_names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+        start_month = earliest.month - 1
+        label_fn = lambda i, sm=start_month: f"{month_names[(sm + i*2) % 12]}-{month_names[(sm + i*2 + 1) % 12]}"
     elif span_days <= 1095:
         # 2-3 years: Quarterly (Q1, Q2...)
         chunk_days = 91
@@ -325,6 +331,15 @@ class StrategyResult:
     equity_curve_gbp: List[float] = None # Equity curve in GBP
     source_currency: str = "USD"         # Currency of source data
     display_currencies: List[str] = None # Currencies to display (e.g., ["USD", "GBP"])
+
+    # Bidirectional trading fields (direction can be 'long', 'short', or 'both')
+    long_trades: int = 0                 # Number of long trades (for bidirectional)
+    long_wins: int = 0                   # Long trade wins
+    long_pnl: float = 0.0                # Long trades P&L
+    short_trades: int = 0                # Number of short trades (for bidirectional)
+    short_wins: int = 0                  # Short trade wins
+    short_pnl: float = 0.0               # Short trades P&L
+    flip_count: int = 0                  # Number of position flips (for bidirectional)
 
     def __post_init__(self):
         if self.params is None:
@@ -669,15 +684,29 @@ class StrategyResult:
         consistency = self.consistency_score
 
         # Weighted composite
-        self.composite_score = round(
+        base_score = (
             wr_score * 0.25 +
             pf_score * 0.15 +
             pnl_score * 0.15 +
             trades_score * 0.10 +
             dd_score * 0.15 +
-            consistency * 0.20,
-            1
+            consistency * 0.20
         )
+
+        # Bidirectional bonus: reward balanced performance across both directions
+        if self.direction == 'both' and self.long_trades > 0 and self.short_trades > 0:
+            # Balance ratio: closer to 1.0 = more balanced
+            balance_ratio = min(self.long_trades, self.short_trades) / max(self.long_trades, self.short_trades)
+            # Up to 10% bonus for balanced trade distribution
+            balance_bonus = balance_ratio * 0.10
+
+            # Additional 5% bonus if both directions are profitable
+            if self.long_pnl > 0 and self.short_pnl > 0:
+                balance_bonus += 0.05
+
+            base_score *= (1 + balance_bonus)
+
+        self.composite_score = round(base_score, 1)
 
 
 # =============================================================================
@@ -1920,7 +1949,10 @@ class StrategyEngine:
                 return safe_bool((move > df['atr'] * 1.5) & (df['close'] < df['close'].shift(1)))
 
         elif strategy == 'low_volatility_breakout':
-            low_vol = df['atr'] < df['atr'].rolling(20).mean() * 0.7
+            # ADAPTIVE: Uses 25th percentile of ATR to identify low volatility periods
+            # This works across any pair/timeframe by adapting to the data's volatility profile
+            atr_threshold = df['atr'].quantile(0.25)  # Bottom 25% = low volatility
+            low_vol = df['atr'] < atr_threshold
             if direction == 'long':
                 return safe_bool(low_vol.shift(1) & (df['close'] > df['high'].shift(1)))
             else:
@@ -2001,7 +2033,7 @@ class StrategyEngine:
             # Handle case where vwap might have None/NaN values
             if 'vwap' not in df.columns or df['vwap'].isna().all():
                 return pd.Series(False, index=df.index)
-            vwap = df['vwap'].fillna(method='ffill').fillna(df['close'])
+            vwap = df['vwap'].ffill().fillna(df['close'])
             if direction == 'long':
                 # Price touched below VWAP and bounced back above
                 touched_below = df['low'] < vwap
@@ -2084,13 +2116,16 @@ class StrategyEngine:
                 return safe_bool((df['mom'] < 0) & (df['mom'].shift(1) >= 0))
 
         elif strategy == 'roc_extreme':
-            # Rate of Change extreme values
+            # Rate of Change extreme values - ADAPTIVE to any pair/timeframe
+            # Uses 5th/95th percentile to identify extremes relative to the data
+            roc_lower = df['roc'].quantile(0.05)  # Bottom 5% = oversold
+            roc_upper = df['roc'].quantile(0.95)  # Top 5% = overbought
             if direction == 'long':
-                # Long: ROC below -5% (oversold)
-                return safe_bool(df['roc'] < -5)
+                # Long: ROC in bottom 5th percentile (oversold)
+                return safe_bool(df['roc'] < roc_lower)
             else:
-                # Short: ROC above 5% (overbought)
-                return safe_bool(df['roc'] > 5)
+                # Short: ROC in top 95th percentile (overbought)
+                return safe_bool(df['roc'] > roc_upper)
 
         elif strategy == 'uo_extreme':
             # Ultimate Oscillator extreme values
@@ -2509,12 +2544,388 @@ class StrategyEngine:
             display_currencies=["USD", "GBP"] if needs_conversion else [source_currency]
         )
 
+    def backtest_bidirectional(self, strategy: str,
+                               tp_percent: float, sl_percent: float,
+                               initial_capital: float = 1000.0,
+                               position_size_pct: float = 75.0,
+                               commission_pct: float = 0.1,
+                               source_currency: str = "USD",
+                               fx_fetcher=None) -> StrategyResult:
+        """
+        Run bidirectional backtest - strategy can take both long AND short trades.
+
+        Position handling: Flip-style (one position at a time).
+        - An opposite signal closes current position and opens new one.
+        - Conflicting signals (both fire) are skipped.
+
+        Args:
+            strategy: Entry strategy name
+            tp_percent: Take profit percentage (same for both directions)
+            sl_percent: Stop loss percentage (same for both directions)
+            initial_capital: Starting capital (default £1000)
+            position_size_pct: Position size as % of equity (default 75%)
+            commission_pct: Commission per trade (default 0.1%)
+            source_currency: Currency of source data ("USD" for BTCUSDT, "GBP" for BTCGBP)
+            fx_fetcher: Exchange rate fetcher instance (optional, for USD->GBP conversion)
+        """
+        df = self.df
+
+        # Get BOTH long and short signals upfront
+        long_signals = self._get_signals(strategy, 'long')
+        short_signals = self._get_signals(strategy, 'short')
+
+        trades = []
+        position = None  # None, or dict with 'direction' key
+        equity = initial_capital
+        equity_curve = [initial_capital]
+        cumulative_pnl = 0.0
+        trade_num = 0
+        flip_count = 0
+
+        # Per-direction tracking
+        long_trade_count = 0
+        long_win_count = 0
+        long_pnl_total = 0.0
+        short_trade_count = 0
+        short_win_count = 0
+        short_pnl_total = 0.0
+
+        # GBP tracking (for USD source data conversion)
+        needs_conversion = source_currency == "USD" and fx_fetcher is not None
+        equity_gbp = initial_capital
+        equity_curve_gbp = [initial_capital]
+        cumulative_pnl_gbp = 0.0
+
+        def close_position(row, exit_reason, exit_price_override=None):
+            """Helper to close current position and record trade."""
+            nonlocal position, equity, cumulative_pnl, trade_num
+            nonlocal equity_gbp, cumulative_pnl_gbp
+            nonlocal long_trade_count, long_win_count, long_pnl_total
+            nonlocal short_trade_count, short_win_count, short_pnl_total
+
+            if position is None:
+                return None
+
+            entry = position['entry_price']
+            pos_size = position['position_size']
+            entry_time = position['entry_time']
+            pos_qty = position['position_qty']
+            direction = position['direction']
+
+            # Calculate exit price and P&L based on exit reason
+            if exit_reason == 'tp':
+                if direction == 'long':
+                    exit_price = entry * (1 + tp_percent / 100)
+                    pnl_pct = tp_percent
+                else:  # short
+                    exit_price = entry * (1 - tp_percent / 100)
+                    pnl_pct = tp_percent
+            elif exit_reason == 'sl':
+                if direction == 'long':
+                    exit_price = entry * (1 - sl_percent / 100)
+                    pnl_pct = -sl_percent
+                else:  # short
+                    exit_price = entry * (1 + sl_percent / 100)
+                    pnl_pct = -sl_percent
+            else:  # flip - close at current price
+                exit_price = exit_price_override or row['close']
+                if direction == 'long':
+                    pnl_pct = ((exit_price - entry) / entry) * 100
+                else:  # short
+                    pnl_pct = ((entry - exit_price) / entry) * 100
+
+            pnl = pos_size * (pnl_pct / 100)
+            pnl -= pos_size * (commission_pct / 100) * 2  # Entry + Exit commission
+            equity += pnl
+            cumulative_pnl += pnl
+            trade_num += 1
+            exit_time = str(row['time']) if 'time' in row else f"bar_{position['entry_bar']}"
+
+            # Per-direction tracking
+            if direction == 'long':
+                long_trade_count += 1
+                long_pnl_total += pnl
+                if pnl > 0:
+                    long_win_count += 1
+            else:
+                short_trade_count += 1
+                short_pnl_total += pnl
+                if pnl > 0:
+                    short_win_count += 1
+
+            # Run-up and drawdown
+            if direction == 'long':
+                run_up_pct = ((position['best_price'] - entry) / entry) * 100
+                dd_pct = ((entry - position['worst_price']) / entry) * 100
+            else:
+                run_up_pct = ((entry - position['best_price']) / entry) * 100
+                dd_pct = ((position['worst_price'] - entry) / entry) * 100
+            run_up = pos_size * (run_up_pct / 100)
+            dd = pos_size * (dd_pct / 100)
+
+            # GBP conversion
+            exit_dt = pd.to_datetime(row['time']) if 'time' in row else None
+            usd_gbp_rate = fx_fetcher.get_rate_for_date(exit_dt) if needs_conversion else 1.0
+            pnl_gbp = pnl * usd_gbp_rate if needs_conversion else pnl
+            pos_size_gbp = pos_size * usd_gbp_rate if needs_conversion else pos_size
+            equity_gbp += pnl_gbp
+            cumulative_pnl_gbp += pnl_gbp
+
+            trade = TradeResult(
+                direction, entry, exit_price, pnl, pnl_pct, exit_reason,
+                trade_num=trade_num, entry_time=entry_time, exit_time=exit_time,
+                position_size=pos_size, position_qty=pos_qty,
+                run_up=run_up, run_up_pct=run_up_pct,
+                drawdown=dd, drawdown_pct=dd_pct,
+                cumulative_pnl=cumulative_pnl,
+                pnl_gbp=pnl_gbp, position_size_gbp=pos_size_gbp,
+                cumulative_pnl_gbp=cumulative_pnl_gbp, usd_gbp_rate=usd_gbp_rate
+            )
+            trades.append(trade)
+            equity_curve.append(equity)
+            equity_curve_gbp.append(equity_gbp)
+            position = None
+            return trade
+
+        def open_position(row, direction, bar_idx):
+            """Helper to open a new position."""
+            nonlocal position
+            pos_size = equity * (position_size_pct / 100)
+            entry_price = row['close']
+            pos_qty = pos_size / entry_price
+            entry_time = str(row['time']) if 'time' in row else f"bar_{bar_idx}"
+            position = {
+                'direction': direction,
+                'entry_price': entry_price,
+                'position_size': pos_size,
+                'position_qty': pos_qty,
+                'entry_bar': bar_idx,
+                'entry_time': entry_time,
+                'best_price': entry_price,
+                'worst_price': entry_price
+            }
+
+        # Main loop
+        for i in range(50, len(df)):
+            row = df.iloc[i]
+
+            # Track run-up/drawdown while in position
+            if position is not None:
+                entry = position['entry_price']
+                if position['direction'] == 'long':
+                    best_price = max(position.get('best_price', entry), row['high'])
+                    worst_price = min(position.get('worst_price', entry), row['low'])
+                else:  # short
+                    best_price = min(position.get('best_price', entry), row['low'])
+                    worst_price = max(position.get('worst_price', entry), row['high'])
+                position['best_price'] = best_price
+                position['worst_price'] = worst_price
+
+            # Check TP/SL exits
+            if position is not None:
+                entry = position['entry_price']
+                direction = position['direction']
+
+                if direction == 'long':
+                    tp_price = entry * (1 + tp_percent / 100)
+                    sl_price = entry * (1 - sl_percent / 100)
+                    # SL first (conservative)
+                    if row['low'] <= sl_price:
+                        close_position(row, 'sl')
+                    elif row['high'] >= tp_price:
+                        close_position(row, 'tp')
+                else:  # short
+                    tp_price = entry * (1 - tp_percent / 100)
+                    sl_price = entry * (1 + sl_percent / 100)
+                    if row['high'] >= sl_price:
+                        close_position(row, 'sl')
+                    elif row['low'] <= tp_price:
+                        close_position(row, 'tp')
+
+            # Get current signals
+            long_sig = long_signals.iloc[i]
+            short_sig = short_signals.iloc[i]
+
+            # Skip conflicting signals
+            if long_sig and short_sig:
+                continue
+
+            # Entry/Flip logic
+            if equity > 0:
+                if position is None:
+                    # No position - check for new entry
+                    if long_sig:
+                        open_position(row, 'long', i)
+                    elif short_sig:
+                        open_position(row, 'short', i)
+                else:
+                    # In position - check for flip signal
+                    current_dir = position['direction']
+                    if current_dir == 'long' and short_sig:
+                        # Flip from long to short
+                        close_position(row, 'flip', row['close'])
+                        flip_count += 1
+                        if equity > 0:
+                            open_position(row, 'short', i)
+                    elif current_dir == 'short' and long_sig:
+                        # Flip from short to long
+                        close_position(row, 'flip', row['close'])
+                        flip_count += 1
+                        if equity > 0:
+                            open_position(row, 'long', i)
+
+        # Calculate metrics
+        if not trades:
+            return StrategyResult(
+                strategy_name=f"{strategy}_both",
+                strategy_category=self.ENTRY_STRATEGIES.get(strategy, {}).get('category', 'Unknown'),
+                direction='both',
+                tp_percent=tp_percent,
+                sl_percent=sl_percent,
+                entry_rule=strategy,
+                total_trades=0, wins=0, losses=0,
+                win_rate=0, total_pnl=0, total_pnl_percent=0,
+                profit_factor=0, max_drawdown=0, max_drawdown_percent=0,
+                avg_trade=0, avg_trade_percent=0,
+                buy_hold_return=self.buy_hold_return,
+                vs_buy_hold=-self.buy_hold_return,
+                beats_buy_hold=False,
+                total_pnl_gbp=0, max_drawdown_gbp=0, avg_trade_gbp=0,
+                equity_curve_gbp=equity_curve_gbp,
+                source_currency=source_currency,
+                display_currencies=["USD", "GBP"] if needs_conversion else [source_currency],
+                # Bidirectional fields
+                long_trades=0, long_wins=0, long_pnl=0,
+                short_trades=0, short_wins=0, short_pnl=0,
+                flip_count=0
+            )
+
+        wins = [t for t in trades if t.pnl > 0]
+        losses = [t for t in trades if t.pnl <= 0]
+        total_pnl = sum(t.pnl for t in trades)
+        total_pnl_percent = ((equity - initial_capital) / initial_capital) * 100
+
+        gross_profit = sum(t.pnl for t in wins) if wins else 0
+        gross_loss = abs(sum(t.pnl for t in losses)) if losses else 0.001
+        pf = gross_profit / gross_loss if gross_loss > 0.001 else (10 if gross_profit > 0 else 0)
+
+        # Max drawdown calculation
+        equity_arr = np.array(equity_curve)
+        peak = np.maximum.accumulate(equity_arr)
+        drawdown = peak - equity_arr
+        max_dd = drawdown.max()
+        max_dd_pct = (max_dd / peak[np.argmax(drawdown)]) * 100 if peak[np.argmax(drawdown)] > 0 else 0
+
+        # Build trades list
+        trades_list = [{
+            'trade_num': t.trade_num,
+            'direction': t.direction,
+            'entry_time': t.entry_time,
+            'exit_time': t.exit_time,
+            'entry': round(t.entry_price, 2),
+            'exit': round(t.exit_price, 2),
+            'position_size': round(t.position_size, 2),
+            'position_size_gbp': round(t.position_size_gbp, 2),
+            'position_qty': round(t.position_qty, 5),
+            'pnl': round(t.pnl, 2),
+            'pnl_gbp': round(t.pnl_gbp, 2),
+            'pnl_pct': round(t.pnl_percent, 2),
+            'run_up': round(t.run_up, 2),
+            'run_up_pct': round(t.run_up_pct, 2),
+            'drawdown': round(t.drawdown, 2),
+            'drawdown_pct': round(t.drawdown_pct, 2),
+            'cumulative_pnl': round(t.cumulative_pnl, 2),
+            'cumulative_pnl_gbp': round(t.cumulative_pnl_gbp, 2),
+            'usd_gbp_rate': round(t.usd_gbp_rate, 4),
+            'result': 'WIN' if t.pnl > 0 else 'LOSS',
+            'exit_reason': t.exit_reason
+        } for t in trades]
+
+        # Open position tracking
+        open_position_data = None
+        has_open = False
+        if position is not None:
+            has_open = True
+            last_row = self.df.iloc[-1]
+            current_price = last_row['close']
+            entry_price = position['entry_price']
+            pos_size = position['position_size']
+            if position['direction'] == 'long':
+                unrealized_pnl_pct = ((current_price - entry_price) / entry_price) * 100
+            else:
+                unrealized_pnl_pct = ((entry_price - current_price) / entry_price) * 100
+            unrealized_pnl = pos_size * (unrealized_pnl_pct / 100)
+            open_position_data = {
+                'direction': position['direction'],
+                'entry_price': round(entry_price, 2),
+                'entry_time': position['entry_time'],
+                'current_price': round(current_price, 2),
+                'position_size': round(pos_size, 2),
+                'unrealized_pnl': round(unrealized_pnl, 2),
+                'unrealized_pnl_pct': round(unrealized_pnl_pct, 2)
+            }
+
+        vs_bh = round(total_pnl_percent - self.buy_hold_return, 2)
+
+        # GBP metrics
+        total_pnl_gbp = sum(t.pnl_gbp for t in trades) if trades else 0.0
+        avg_trade_gbp = total_pnl_gbp / len(trades) if trades else 0.0
+        if equity_curve_gbp and len(equity_curve_gbp) > 1:
+            equity_arr_gbp = np.array(equity_curve_gbp)
+            peak_gbp = np.maximum.accumulate(equity_arr_gbp)
+            drawdown_gbp = peak_gbp - equity_arr_gbp
+            max_dd_gbp = drawdown_gbp.max()
+        else:
+            max_dd_gbp = 0.0
+
+        return StrategyResult(
+            strategy_name=f"{strategy}_both",
+            strategy_category=self.ENTRY_STRATEGIES.get(strategy, {}).get('category', 'Unknown'),
+            direction='both',
+            tp_percent=tp_percent,
+            sl_percent=sl_percent,
+            entry_rule=strategy,
+            total_trades=len(trades),
+            wins=len(wins),
+            losses=len(losses),
+            win_rate=len(wins) / len(trades) * 100 if trades else 0,
+            total_pnl=round(total_pnl, 2),
+            total_pnl_percent=round(total_pnl_percent, 2),
+            profit_factor=round(pf, 2),
+            max_drawdown=round(max_dd, 2),
+            max_drawdown_percent=round(max_dd_pct, 2),
+            avg_trade=round(total_pnl / len(trades), 2) if trades else 0,
+            avg_trade_percent=round(total_pnl_percent / len(trades), 2) if trades else 0,
+            buy_hold_return=float(self.buy_hold_return),
+            vs_buy_hold=float(vs_bh),
+            beats_buy_hold=bool(total_pnl_percent > self.buy_hold_return),
+            equity_curve=equity_curve,
+            trades_list=trades_list,
+            has_open_position=has_open,
+            open_position=open_position_data,
+            total_pnl_gbp=round(total_pnl_gbp, 2),
+            max_drawdown_gbp=round(max_dd_gbp, 2),
+            avg_trade_gbp=round(avg_trade_gbp, 2),
+            equity_curve_gbp=equity_curve_gbp,
+            source_currency=source_currency,
+            display_currencies=["USD", "GBP"] if needs_conversion else [source_currency],
+            # Bidirectional fields
+            long_trades=long_trade_count,
+            long_wins=long_win_count,
+            long_pnl=round(long_pnl_total, 2),
+            short_trades=short_trade_count,
+            short_wins=short_win_count,
+            short_pnl=round(short_pnl_total, 2),
+            flip_count=flip_count
+        )
+
     def find_strategies(self, min_trades: int = 3,
                         min_win_rate: float = 0,
                         save_to_db: bool = True,
                         symbol: str = None,
                         timeframe: str = None,
-                        n_trials: int = 300) -> List[StrategyResult]:
+                        n_trials: int = 300,
+                        mode: str = "separate") -> List[StrategyResult]:
         """
         Find all profitable strategies.
         Saves winners to database for future reference.
@@ -2525,9 +2936,14 @@ class StrategyEngine:
         - 400: 0.5% increments (thorough)
         - 625: 0.4% increments
         - 10000: 0.1% increments (exhaustive)
+
+        mode controls direction testing:
+        - "separate": Test long and short independently (default, current behavior)
+        - "bidirectional": Test combined long+short strategies only
+        - "all": Run both separate and bidirectional modes
         """
         strategies = list(self.ENTRY_STRATEGIES.keys())
-        directions = ['long', 'short']
+        directions = ['long', 'short'] if mode in ['separate', 'all'] else []
 
         # TP/SL range: 0.1% to 10%
         # Granularity based on n_trials: more trials = finer increments
@@ -2550,7 +2966,12 @@ class StrategyEngine:
         num_directions = len(directions)
         num_tp = len(tp_range)
         num_sl = len(sl_range)
-        total = num_strategies * num_directions * num_tp * num_sl
+
+        # Calculate total combinations based on mode
+        separate_total = num_strategies * num_directions * num_tp * num_sl if directions else 0
+        bidirectional_total = num_strategies * num_tp * num_sl if mode in ['bidirectional', 'all'] else 0
+        total = separate_total + bidirectional_total
+
         tested = 0
         profitable_count = 0
 
@@ -2560,7 +2981,8 @@ class StrategyEngine:
         # 90-95%: Sorting/filtering
         # 95-100%: Saving to DB
 
-        self._update_status(f"Testing {total:,} combinations ({num_strategies} strategies × 2 directions × {num_tp}×{num_sl} TP/SL @ {increment:.2f}% steps)...", 2)
+        mode_desc = "bidirectional" if mode == "bidirectional" else ("separate + bidirectional" if mode == "all" else "separate (long/short)")
+        self._update_status(f"Testing {total:,} combinations ({num_strategies} strategies, {mode_desc}, {num_tp}×{num_sl} TP/SL @ {increment:.2f}% steps)...", 2)
 
         # Start database run if available
         db_run_id = None
@@ -2574,29 +2996,62 @@ class StrategyEngine:
         # Calculate update frequency - update at least every 1% of progress or every 25 tests
         update_interval = max(1, min(25, total // 100))
 
-        for strat_idx, strategy in enumerate(strategies):
-            for dir_idx, direction in enumerate(directions):
-                # Update at start of each strategy/direction combination
-                combo_num = strat_idx * num_directions + dir_idx + 1
-                combo_total = num_strategies * num_directions
+        # === SEPARATE DIRECTION TESTING (long/short independently) ===
+        if directions:  # Only run if mode is "separate" or "all"
+            for strat_idx, strategy in enumerate(strategies):
+                for dir_idx, direction in enumerate(directions):
+                    # Update at start of each strategy/direction combination
+                    combo_num = strat_idx * num_directions + dir_idx + 1
+                    combo_total = num_strategies * num_directions
+
+                    for tp in tp_range:
+                        for sl in sl_range:
+                            result = self.backtest(strategy, direction, tp, sl,
+                                                   initial_capital=self.capital,
+                                                   position_size_pct=self.position_size_pct,
+                                                   source_currency=self.source_currency,
+                                                   fx_fetcher=self.fx_fetcher)
+                            tested += 1
+
+                            # Update progress more frequently
+                            if tested % update_interval == 0 or tested == total:
+                                # Progress from 2% to 90% during testing phase
+                                progress = int(2 + (tested / total) * 88)
+                                # Calculate actual overall progress percentage for display
+                                overall_pct = self.progress_min + ((progress / 100) * (self.progress_max - self.progress_min))
+                                self._update_status(
+                                    f"[{combo_num}/{combo_total}] {strategy} {direction.upper()} | {tested:,}/{total:,} ({overall_pct:.1f}%) | Found: {profitable_count}",
+                                    progress
+                                )
+
+                            if result.total_trades >= 1 and (result.win_rate or 0) >= min_win_rate:
+                                results.append(result)
+
+                                # Stream profitable ones
+                                if result.total_pnl is not None and result.total_pnl > 0:
+                                    profitable_count += 1
+                                    self._publish_result(result)
+
+        # === BIDIRECTIONAL TESTING (combined long+short) ===
+        if mode in ['bidirectional', 'all']:
+            for strat_idx, strategy in enumerate(strategies):
+                combo_num = strat_idx + 1
 
                 for tp in tp_range:
                     for sl in sl_range:
-                        result = self.backtest(strategy, direction, tp, sl,
-                                               initial_capital=self.capital,
-                                               position_size_pct=self.position_size_pct,
-                                               source_currency=self.source_currency,
-                                               fx_fetcher=self.fx_fetcher)
+                        result = self.backtest_bidirectional(strategy, tp, sl,
+                                                             initial_capital=self.capital,
+                                                             position_size_pct=self.position_size_pct,
+                                                             source_currency=self.source_currency,
+                                                             fx_fetcher=self.fx_fetcher)
                         tested += 1
 
                         # Update progress more frequently
                         if tested % update_interval == 0 or tested == total:
-                            # Progress from 2% to 90% during testing phase
                             progress = int(2 + (tested / total) * 88)
-                            # Calculate actual overall progress percentage for display
                             overall_pct = self.progress_min + ((progress / 100) * (self.progress_max - self.progress_min))
                             self._update_status(
-                                f"[{combo_num}/{combo_total}] {strategy} {direction.upper()} | {tested:,}/{total:,} ({overall_pct:.1f}%) | Found: {profitable_count}",
+                                f"[{combo_num}/{num_strategies}] {strategy} BIDIRECTIONAL | {tested:,}/{total:,} ({overall_pct:.1f}%) | Found: {profitable_count}",
                                 progress
                             )
 
@@ -3359,10 +3814,10 @@ priceMove = math.abs(close - close[1])
 largeMove = priceMove > atrValue * 1.5
 entrySignal = largeMove and {"close > close[1]" if is_long else "close < close[1]"}''',
 
-        'low_volatility_breakout': f'''// Low Volatility Breakout Entry
+        'low_volatility_breakout': f'''// Low Volatility Breakout Entry (ADAPTIVE)
 atrValue = ta.atr(14)
-avgAtr = ta.sma(atrValue, 20)
-lowVol = atrValue < avgAtr * 0.7
+atrThreshold = ta.percentile_linear_interpolation(atrValue, 100, 25)  // Bottom 25%
+lowVol = atrValue < atrThreshold
 entrySignal = lowVol[1] and {"close > high[1]" if is_long else "close < low[1]"}''',
 
         'higher_low': f'''// Higher Low/Lower High Entry
@@ -3450,9 +3905,11 @@ entrySignal = {"ta.crossover(aroonUp, aroonDown)" if is_long else "ta.crossover(
 momValue = ta.mom(close, 10)
 entrySignal = {"ta.crossover(momValue, 0)" if is_long else "ta.crossunder(momValue, 0)"}''',
 
-        'roc_extreme': f'''// Rate of Change Extreme Entry
+        'roc_extreme': f'''// Rate of Change Extreme Entry (ADAPTIVE)
 rocValue = ta.roc(close, 9)
-entrySignal = {"rocValue < -5" if is_long else "rocValue > 5"}''',
+rocLower = ta.percentile_linear_interpolation(rocValue, 100, 5)  // Bottom 5%
+rocUpper = ta.percentile_linear_interpolation(rocValue, 100, 95) // Top 5%
+entrySignal = {"rocValue < rocLower" if is_long else "rocValue > rocUpper"}''',
 
         'uo_extreme': f'''// Ultimate Oscillator Extreme Entry
 uoValue = ta.uo(7, 14, 28)

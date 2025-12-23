@@ -583,12 +583,13 @@ mih_atr(simple int length) =>
                 direction = "short"
 
         is_long = direction == "long"
+        is_bidirectional = direction == "both"
         enable_longs = direction in ["long", "both"]
         enable_shorts = direction in ["short", "both"]
 
         # Variables for stats table
         direction_upper = direction.upper()
-        direction_color = "color.green" if is_long else "color.red"
+        direction_color = "color.green" if is_long else ("color.purple" if is_bidirectional else "color.red")
 
         # Generate date range filtering code
         date_range_code = ""
@@ -991,15 +992,204 @@ recentHigh = ta.highest(high, 20)
 entrySignal = {"close <= recentLow * 1.005" if is_long else "close >= recentHigh * 0.995"}''',
         }
 
-        # Select the appropriate entry conditions based on engine
-        if engine == "mihakralj":
+        # Bidirectional entry conditions - generates BOTH long and short signals
+        bidirectional_entry_conditions = {
+            'rsi_extreme': f'''// RSI Strategy - BIDIRECTIONAL
+rsiValue = ta.rsi(close, {rsi_len})
+longEntrySignal = ta.crossover(rsiValue, 30)
+shortEntrySignal = ta.crossunder(rsiValue, 70)''',
+
+            'rsi_cross_50': f'''// RSI Cross 50 - BIDIRECTIONAL
+rsiValue = ta.rsi(close, {rsi_len})
+longEntrySignal = ta.crossover(rsiValue, 50)
+shortEntrySignal = ta.crossunder(rsiValue, 50)''',
+
+            'stoch_extreme': f'''// Stochastic Slow - BIDIRECTIONAL
+k = ta.sma(ta.stoch(close, high, low, {stoch_k}), {stoch_smooth})
+d = ta.sma(k, {stoch_d})
+longEntrySignal = ta.crossover(k, d) and k < 20
+shortEntrySignal = ta.crossunder(k, d) and k > 80''',
+
+            'williams_r': f'''// Williams %R - BIDIRECTIONAL
+willrValue = ta.wpr({willr_len})
+longEntrySignal = willrValue < -80
+shortEntrySignal = willrValue > -20''',
+
+            'cci_extreme': f'''// CCI Extreme - BIDIRECTIONAL
+cciValue = ta.cci(high, low, close, {cci_len})
+longEntrySignal = cciValue < -100
+shortEntrySignal = cciValue > 100''',
+
+            'bb_touch': f'''// Bollinger Bands - BIDIRECTIONAL
+[bbMiddle, bbUpper, bbLower] = ta.bb(close, {bb_len}, {bb_mult})
+longEntrySignal = ta.crossover(close, bbLower)
+shortEntrySignal = ta.crossunder(close, bbUpper)''',
+
+            'ema_cross': f'''// EMA Cross - BIDIRECTIONAL
+emaFast = ta.ema(close, {ema_fast})
+emaSlow = ta.ema(close, {ema_slow})
+longEntrySignal = ta.crossover(emaFast, emaSlow)
+shortEntrySignal = ta.crossunder(emaFast, emaSlow)''',
+
+            'sma_cross': f'''// SMA Cross - BIDIRECTIONAL
+mafast = ta.sma(close, {sma_fast})
+maslow = ta.sma(close, {sma_slow})
+longEntrySignal = ta.crossover(mafast, maslow)
+shortEntrySignal = ta.crossunder(mafast, maslow)''',
+
+            'macd_cross': f'''// MACD - BIDIRECTIONAL
+[macdLine, signalLine, histLine] = ta.macd(close, {macd_fast}, {macd_slow}, {macd_signal})
+delta = macdLine - signalLine
+longEntrySignal = ta.crossover(delta, 0)
+shortEntrySignal = ta.crossunder(delta, 0)''',
+
+            'price_above_sma': f'''// Price Crosses SMA - BIDIRECTIONAL
+sma20 = ta.sma(close, {sma_20})
+longEntrySignal = ta.crossover(close, sma20)
+shortEntrySignal = ta.crossunder(close, sma20)''',
+
+            'supertrend': f'''// Supertrend - BIDIRECTIONAL
+[supertrendValue, supertrendDir] = ta.supertrend({st_factor}, {st_atr})
+dirChange = ta.change(supertrendDir)
+longEntrySignal = dirChange < 0
+shortEntrySignal = dirChange > 0''',
+
+            'adx_strong_trend': f'''// ADX Strong Trend - BIDIRECTIONAL
+[diPlus, diMinus, adxValue] = ta.dmi({adx_len}, {adx_len})
+strongTrend = adxValue > 25
+longEntrySignal = strongTrend and diPlus > diMinus
+shortEntrySignal = strongTrend and diMinus > diPlus''',
+
+            'psar_reversal': f'''// Parabolic SAR - BIDIRECTIONAL
+psarValue = ta.sar(0.02, 0.02, 0.2)
+longEntrySignal = close > psarValue and close[1] <= psarValue[1]
+shortEntrySignal = close < psarValue and close[1] >= psarValue[1]''',
+
+            'consecutive_candles': f'''// Consecutive Candles - BIDIRECTIONAL
+greenCandle = close > open
+redCandle = close < open
+threeRed = redCandle[2] and redCandle[1] and redCandle
+threeGreen = greenCandle[2] and greenCandle[1] and greenCandle
+longEntrySignal = threeRed
+shortEntrySignal = threeGreen''',
+
+            'big_candle': f'''// Big Candle Reversal - BIDIRECTIONAL
+atrValue = ta.atr(14)
+candleRange = high - low
+bigCandle = candleRange > atrValue * 2
+greenCandle = close > open
+redCandle = close < open
+longEntrySignal = bigCandle and redCandle
+shortEntrySignal = bigCandle and greenCandle''',
+
+            'doji_reversal': f'''// Doji Reversal - BIDIRECTIONAL
+body = math.abs(close - open)
+totalRange = high - low
+isDoji = totalRange > 0 and body < totalRange * 0.1
+prevRed = close[1] < open[1]
+prevGreen = close[1] > open[1]
+longEntrySignal = isDoji and prevRed
+shortEntrySignal = isDoji and prevGreen''',
+
+            'engulfing': f'''// Engulfing Pattern - BIDIRECTIONAL
+greenCandle = close > open
+redCandle = close < open
+bullishEngulf = greenCandle and redCandle[1] and close > open[1] and open < close[1]
+bearishEngulf = redCandle and greenCandle[1] and close < open[1] and open > close[1]
+longEntrySignal = bullishEngulf
+shortEntrySignal = bearishEngulf''',
+
+            'inside_bar': f'''// Inside Bar - BIDIRECTIONAL
+insideBar = high < high[1] and low > low[1]
+greenCandle = close > open
+redCandle = close < open
+longEntrySignal = insideBar and greenCandle
+shortEntrySignal = insideBar and redCandle''',
+
+            'outside_bar': f'''// Outside Bar - BIDIRECTIONAL
+outsideBar = high > high[1] and low < low[1]
+greenCandle = close > open
+redCandle = close < open
+longEntrySignal = outsideBar and greenCandle
+shortEntrySignal = outsideBar and redCandle''',
+
+            'atr_breakout': f'''// ATR Breakout - BIDIRECTIONAL
+atrValue = ta.atr(14)
+priceMove = math.abs(close - close[1])
+bigMove = priceMove > atrValue * 1.5
+moveUp = close > close[1]
+moveDown = close < close[1]
+longEntrySignal = bigMove and moveUp
+shortEntrySignal = bigMove and moveDown''',
+
+            'low_volatility_breakout': f'''// Low Volatility Breakout - BIDIRECTIONAL
+atrValue = ta.atr(14)
+avgAtr = ta.sma(atrValue, 20)
+lowVol = atrValue[1] < avgAtr * 0.7
+breakHigh = close > high[1]
+breakLow = close < low[1]
+longEntrySignal = lowVol and breakHigh
+shortEntrySignal = lowVol and breakLow''',
+
+            'higher_low': f'''// Higher Low / Lower High - BIDIRECTIONAL
+higherLow = low > low[1] and low[1] > low[2]
+lowerHigh = high < high[1] and high[1] < high[2]
+longEntrySignal = higherLow
+shortEntrySignal = lowerHigh''',
+
+            'support_resistance': f'''// Support/Resistance - BIDIRECTIONAL
+recentLow = ta.lowest(low, 20)
+recentHigh = ta.highest(high, 20)
+longEntrySignal = close <= recentLow * 1.005
+shortEntrySignal = close >= recentHigh * 0.995''',
+
+            'price_vs_sma': f'''// Price vs SMA - BIDIRECTIONAL
+sma20 = ta.sma(close, {sma_20})
+longEntrySignal = close < sma20 * 0.99
+shortEntrySignal = close > sma20 * 1.01''',
+
+            'vwap_bounce': f'''// VWAP Bounce - BIDIRECTIONAL
+vwapValue = ta.vwap(hlc3)
+touchedBelow = low < vwapValue
+touchedAbove = high > vwapValue
+closedAbove = close > vwapValue
+closedBelow = close < vwapValue
+longEntrySignal = touchedBelow and closedAbove
+shortEntrySignal = touchedAbove and closedBelow''',
+
+            'bb_squeeze_breakout': f'''// BB Squeeze Breakout - BIDIRECTIONAL
+[bbMiddle, bbUpper, bbLower] = ta.bb(close, {bb_len}, {bb_mult})
+bbWidth = (bbUpper - bbLower) / bbMiddle
+avgWidth = ta.sma(bbWidth, {bb_len})
+squeezed = bbWidth[1] < avgWidth * 0.8
+expanding = bbWidth > bbWidth[1]
+longEntrySignal = squeezed and expanding and close > bbMiddle
+shortEntrySignal = squeezed and expanding and close < bbMiddle''',
+
+            'rsi_divergence': f'''// RSI Divergence - BIDIRECTIONAL
+rsiValue = ta.rsi(close, {rsi_len})
+lookback = 5
+priceLowerLow = low < ta.lowest(low, lookback)[1]
+rsiHigherLow = rsiValue > ta.valuewhen(priceLowerLow[1], rsiValue, 0)
+priceHigherHigh = high > ta.highest(high, lookback)[1]
+rsiLowerHigh = rsiValue < ta.valuewhen(priceHigherHigh[1], rsiValue, 0)
+longEntrySignal = priceLowerLow and rsiHigherLow and rsiValue < 40
+shortEntrySignal = priceHigherHigh and rsiLowerHigh and rsiValue > 60''',
+        }
+
+        # Select the appropriate entry conditions based on engine and direction
+        if is_bidirectional:
+            # Use bidirectional conditions that generate both signals
+            entry_code = bidirectional_entry_conditions.get(entry_rule, '''// Unknown strategy - BIDIRECTIONAL
+longEntrySignal = false
+shortEntrySignal = false''')
+        elif engine == "mihakralj":
             selected_conditions = mihakralj_entry_conditions
+            entry_code = selected_conditions.get(entry_rule, '// Unknown strategy - defaulting to manual signal\n// TODO: Add proper entry condition\nentrySignal = false  // DISABLED - unknown entry rule')
         else:
             # Both "tradingview" and "pandas_ta" use TradingView's built-in ta.* functions
             selected_conditions = entry_conditions
-
-        # Get the entry condition code for this strategy
-        entry_code = selected_conditions.get(entry_rule, '// Unknown strategy - defaulting to manual signal\n// TODO: Add proper entry condition\nentrySignal = false  // DISABLED - unknown entry rule')
+            entry_code = selected_conditions.get(entry_rule, '// Unknown strategy - defaulting to manual signal\n// TODO: Add proper entry condition\nentrySignal = false  // DISABLED - unknown entry rule')
 
         # Get engine label and indicator functions for header
         engine_label = engine.upper() if engine else "TRADINGVIEW"
@@ -1061,7 +1251,32 @@ enableShorts = input.bool({str(enable_shorts).lower()}, "Enable Short Trades", g
 
 {entry_code}
 
-longCondition = entrySignal and enableLongs and strategy.position_size == 0{date_range_condition}
+{f'''// BIDIRECTIONAL - Check for signal conflict (skip when both fire)
+signalConflict = longEntrySignal and shortEntrySignal
+
+longCondition = longEntrySignal and not signalConflict and enableLongs{date_range_condition}
+shortCondition = shortEntrySignal and not signalConflict and enableShorts{date_range_condition}
+
+// =============================================================================
+// TRADE EXECUTION - BIDIRECTIONAL WITH FLIP LOGIC
+// =============================================================================
+
+// Flip from short to long
+if longCondition and strategy.position_size < 0
+    strategy.close("Short", comment="Flip to Long")
+    strategy.entry("Long", strategy.long)
+
+// Flip from long to short
+if shortCondition and strategy.position_size > 0
+    strategy.close("Long", comment="Flip to Short")
+    strategy.entry("Short", strategy.short)
+
+// Fresh entry (no position)
+if longCondition and strategy.position_size == 0
+    strategy.entry("Long", strategy.long)
+
+if shortCondition and strategy.position_size == 0
+    strategy.entry("Short", strategy.short)''' if is_bidirectional else f'''longCondition = entrySignal and enableLongs and strategy.position_size == 0{date_range_condition}
 shortCondition = entrySignal and enableShorts and strategy.position_size == 0{date_range_condition}
 
 // =============================================================================
@@ -1072,7 +1287,7 @@ if longCondition
     strategy.entry("Long", strategy.long)
 
 if shortCondition
-    strategy.entry("Short", strategy.short)
+    strategy.entry("Short", strategy.short)'''}
 
 // =============================================================================
 // EXIT LOGIC - PERCENTAGE-BASED TP/SL

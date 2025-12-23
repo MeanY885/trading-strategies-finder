@@ -122,6 +122,15 @@ class StrategyDatabase:
             ('tuning_score_before', 'REAL'),
             ('tuning_score_after', 'REAL'),
             ('tuning_improvement_pct', 'REAL'),
+            # Bidirectional trading fields
+            ('trade_mode', "TEXT DEFAULT 'single'"),  # 'long', 'short', 'bidirectional'
+            ('long_trades', 'INTEGER DEFAULT 0'),
+            ('long_wins', 'INTEGER DEFAULT 0'),
+            ('long_pnl', 'REAL DEFAULT 0'),
+            ('short_trades', 'INTEGER DEFAULT 0'),
+            ('short_wins', 'INTEGER DEFAULT 0'),
+            ('short_pnl', 'REAL DEFAULT 0'),
+            ('flip_count', 'INTEGER DEFAULT 0'),
         ]
 
         for col_name, col_type in migration_columns:
@@ -225,6 +234,10 @@ class StrategyDatabase:
             tuning_score_after = tuning_info.get('after_score')
             tuning_improvement_pct = tuning_info.get('improvement_pct')
 
+        # Determine trade mode from direction
+        direction = getattr(result, 'direction', 'long')
+        trade_mode = 'bidirectional' if direction == 'both' else direction
+
         # Use getattr with defaults for compatibility with both old and new result formats
         cursor.execute('''
             INSERT INTO strategies
@@ -233,8 +246,9 @@ class StrategyDatabase:
              sharpe_ratio, composite_score, tp_percent, sl_percent,
              indicator_params, tuning_improved, tuning_score_before, tuning_score_after, tuning_improvement_pct,
              val_pnl, val_profit_factor, val_win_rate, found_by, data_source, symbol,
-             timeframe, data_start, data_end, optimization_run_id, equity_curve)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             timeframe, data_start, data_end, optimization_run_id, equity_curve,
+             trade_mode, long_trades, long_wins, long_pnl, short_trades, short_wins, short_pnl, flip_count)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             getattr(result, 'strategy_name', 'unknown'),
             getattr(result, 'strategy_category', 'unknown'),
@@ -265,7 +279,16 @@ class StrategyDatabase:
             data_start,
             data_end,
             run_id,
-            equity_curve
+            equity_curve,
+            # Bidirectional fields
+            trade_mode,
+            getattr(result, 'long_trades', 0),
+            getattr(result, 'long_wins', 0),
+            getattr(result, 'long_pnl', 0.0),
+            getattr(result, 'short_trades', 0),
+            getattr(result, 'short_wins', 0),
+            getattr(result, 'short_pnl', 0.0),
+            getattr(result, 'flip_count', 0)
         ))
 
         strategy_id = cursor.lastrowid
