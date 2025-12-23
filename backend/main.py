@@ -1244,6 +1244,42 @@ async def get_database_stats():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/db/filter-options")
+async def get_filter_options():
+    """Get distinct symbols, timeframes, and date range for filter dropdowns."""
+    if not HAS_DATABASE:
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    try:
+        db = get_strategy_db()
+        conn = db.conn
+        cursor = conn.cursor()
+
+        # Get distinct symbols
+        cursor.execute("SELECT DISTINCT symbol FROM strategies WHERE symbol IS NOT NULL ORDER BY symbol")
+        symbols = [row[0] for row in cursor.fetchall()]
+
+        # Get distinct timeframes
+        cursor.execute("SELECT DISTINCT timeframe FROM strategies WHERE timeframe IS NOT NULL ORDER BY timeframe")
+        timeframes = [row[0] for row in cursor.fetchall()]
+
+        # Get date range
+        cursor.execute("SELECT MIN(created_at), MAX(created_at) FROM strategies")
+        date_row = cursor.fetchone()
+        date_range = {
+            "min": date_row[0] if date_row[0] else None,
+            "max": date_row[1] if date_row[1] else None
+        }
+
+        return {
+            "symbols": symbols,
+            "timeframes": timeframes,
+            "date_range": date_range
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/db/strategies")
 async def get_saved_strategies(
     limit: int = 20,

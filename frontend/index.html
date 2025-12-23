@@ -412,6 +412,233 @@
         .info-box strong {
             color: var(--accent-secondary);
         }
+
+        /* Tab Navigation */
+        .tab-nav {
+            display: flex;
+            gap: 0.5rem;
+            margin-top: 1.5rem;
+            justify-content: center;
+        }
+
+        .tab-btn {
+            padding: 0.75rem 1.5rem;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: var(--bg-secondary);
+            color: var(--text-secondary);
+            font-family: inherit;
+            font-size: 0.95rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .tab-btn:hover {
+            background: var(--bg-hover);
+            color: var(--text-primary);
+        }
+
+        .tab-btn.active {
+            background: linear-gradient(135deg, var(--accent-primary), #7c3aed);
+            border-color: var(--accent-primary);
+            color: white;
+        }
+
+        .tab-content {
+            margin-top: 1.5rem;
+        }
+
+        /* Filter Controls */
+        .filter-controls {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 1rem;
+            padding: 1rem;
+            background: var(--bg-secondary);
+            border-radius: 8px;
+            margin-bottom: 1.5rem;
+            align-items: flex-end;
+        }
+
+        .filter-controls .input-group {
+            flex: 1;
+            min-width: 150px;
+            max-width: 200px;
+        }
+
+        /* History Table */
+        .table-container {
+            overflow-x: auto;
+            margin: 0 -0.5rem;
+            padding: 0 0.5rem;
+        }
+
+        .history-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.9rem;
+        }
+
+        .history-table th,
+        .history-table td {
+            padding: 0.75rem 0.5rem;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .history-table th {
+            background: var(--bg-secondary);
+            color: var(--text-secondary);
+            font-weight: 500;
+            white-space: nowrap;
+        }
+
+        .history-table tbody tr:hover {
+            background: var(--bg-hover);
+        }
+
+        .history-table td {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.85rem;
+        }
+
+        /* Sortable Headers */
+        .sortable {
+            cursor: pointer;
+            user-select: none;
+            position: relative;
+            padding-right: 1.25rem !important;
+        }
+
+        .sortable:hover {
+            color: var(--text-primary);
+        }
+
+        .sortable::after {
+            content: '⇅';
+            position: absolute;
+            right: 0.25rem;
+            opacity: 0.3;
+            font-size: 0.75rem;
+        }
+
+        .sortable.active.asc::after {
+            content: '↑';
+            opacity: 1;
+            color: var(--accent-primary);
+        }
+
+        .sortable.active.desc::after {
+            content: '↓';
+            opacity: 1;
+            color: var(--accent-primary);
+        }
+
+        /* Win Rate Color Coding */
+        .win-rate-high { color: var(--success); }
+        .win-rate-medium { color: var(--warning); }
+        .win-rate-low { color: var(--danger); }
+
+        /* PnL Styling */
+        .pnl-positive { color: var(--success); }
+        .pnl-negative { color: var(--danger); }
+
+        /* Loading and Empty States */
+        .loading-state,
+        .empty-state {
+            text-align: center;
+            padding: 3rem;
+            color: var(--text-secondary);
+        }
+
+        /* Action Buttons in Table */
+        .action-btn-group {
+            display: flex;
+            gap: 0.25rem;
+        }
+
+        .action-btn {
+            padding: 0.35rem 0.5rem;
+            font-size: 0.75rem;
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            background: var(--bg-hover);
+            color: var(--text-secondary);
+            cursor: pointer;
+            transition: all 0.2s;
+            font-family: inherit;
+        }
+
+        .action-btn:hover {
+            background: var(--accent-primary);
+            border-color: var(--accent-primary);
+            color: white;
+        }
+
+        .action-btn.danger:hover {
+            background: var(--danger);
+            border-color: var(--danger);
+        }
+
+        /* Strategy Detail Panel */
+        .detail-stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 1rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .detail-stat {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1rem;
+            text-align: center;
+        }
+
+        .detail-stat-label {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            margin-bottom: 0.25rem;
+        }
+
+        .detail-stat-value {
+            font-size: 1.25rem;
+            font-weight: 600;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .detail-section {
+            margin-top: 1.5rem;
+            padding-top: 1.5rem;
+            border-top: 1px solid var(--border);
+        }
+
+        .detail-section h3 {
+            font-size: 1rem;
+            margin-bottom: 1rem;
+            color: var(--text-secondary);
+        }
+
+        /* Symbol Badge */
+        .symbol-badge {
+            display: inline-block;
+            padding: 0.2rem 0.5rem;
+            background: rgba(139, 92, 246, 0.2);
+            border-radius: 4px;
+            font-size: 0.8rem;
+        }
+
+        /* Timeframe Badge */
+        .tf-badge {
+            display: inline-block;
+            padding: 0.2rem 0.4rem;
+            background: var(--bg-hover);
+            border-radius: 4px;
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+        }
     </style>
 </head>
 <body>
@@ -419,8 +646,20 @@
         <header>
             <h1>Trading Strategy Optimizer</h1>
             <p>Find profitable strategies automatically. Get TradingView-ready code.</p>
+
+            <!-- Tab Navigation -->
+            <div class="tab-nav">
+                <button class="tab-btn active" data-tab="main" onclick="showTab('main')">
+                    Optimizer
+                </button>
+                <button class="tab-btn" data-tab="history" onclick="showTab('history')">
+                    Strategy History
+                </button>
+            </div>
         </header>
-        
+
+        <!-- Main Tab Content -->
+        <div id="main-tab" class="tab-content">
         <div class="grid">
             <!-- Data Section -->
             <div class="card">
@@ -699,12 +938,509 @@
                 </div>
             </div>
         </div>
+        </div><!-- End main-tab -->
+
+        <!-- History Tab Content -->
+        <div id="history-tab" class="tab-content" style="display: none;">
+            <div class="card full-width">
+                <div class="card-header">
+                    <div class="icon">📚</div>
+                    <h2>Strategy History</h2>
+                    <span class="status-badge neutral" id="history-count">Loading...</span>
+                </div>
+
+                <!-- Filter Controls -->
+                <div class="filter-controls">
+                    <div class="input-group">
+                        <label>Trading Pair</label>
+                        <select id="filter-symbol" onchange="applyHistoryFilters()">
+                            <option value="">All Pairs</option>
+                        </select>
+                    </div>
+
+                    <div class="input-group">
+                        <label>Timeframe</label>
+                        <select id="filter-timeframe" onchange="applyHistoryFilters()">
+                            <option value="">All Timeframes</option>
+                        </select>
+                    </div>
+
+                    <div class="input-group">
+                        <label>From Date</label>
+                        <input type="date" id="filter-date-from" onchange="applyHistoryFilters()">
+                    </div>
+
+                    <div class="input-group">
+                        <label>To Date</label>
+                        <input type="date" id="filter-date-to" onchange="applyHistoryFilters()">
+                    </div>
+
+                    <button class="btn btn-secondary" onclick="resetHistoryFilters()" style="margin-top: 1.5rem;">
+                        Reset Filters
+                    </button>
+                </div>
+
+                <!-- Results Table -->
+                <div class="table-container">
+                    <table class="history-table" id="history-table">
+                        <thead>
+                            <tr>
+                                <th class="sortable" data-sort="rank" onclick="sortHistoryTable('rank')">#</th>
+                                <th class="sortable" data-sort="strategy_name" onclick="sortHistoryTable('strategy_name')">Strategy</th>
+                                <th class="sortable" data-sort="symbol" onclick="sortHistoryTable('symbol')">Symbol</th>
+                                <th class="sortable" data-sort="timeframe" onclick="sortHistoryTable('timeframe')">TF</th>
+                                <th class="sortable active desc" data-sort="composite_score" onclick="sortHistoryTable('composite_score')">Score</th>
+                                <th class="sortable" data-sort="win_rate" onclick="sortHistoryTable('win_rate')">Win Rate</th>
+                                <th class="sortable" data-sort="profit_factor" onclick="sortHistoryTable('profit_factor')">PF</th>
+                                <th class="sortable" data-sort="total_pnl" onclick="sortHistoryTable('total_pnl')">PnL</th>
+                                <th class="sortable" data-sort="total_trades" onclick="sortHistoryTable('total_trades')">Trades</th>
+                                <th class="sortable" data-sort="created_at" onclick="sortHistoryTable('created_at')">Date</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="history-tbody">
+                            <!-- Populated by JavaScript -->
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Loading/Empty States -->
+                <div id="history-loading" class="loading-state">
+                    Loading strategies...
+                </div>
+                <div id="history-empty" class="empty-state" style="display: none;">
+                    No strategies found matching your filters.
+                </div>
+            </div>
+
+            <!-- Strategy Detail Panel -->
+            <div id="strategy-detail-panel" class="card full-width" style="display: none; margin-top: 1.5rem;">
+                <div class="card-header">
+                    <div class="icon">📊</div>
+                    <h2 id="detail-strategy-name">Strategy Details</h2>
+                    <button class="btn btn-secondary" onclick="closeStrategyDetail()" style="margin-left: auto;">
+                        Close
+                    </button>
+                </div>
+                <div id="strategy-detail-content">
+                    <!-- Populated dynamically -->
+                </div>
+            </div>
+        </div><!-- End history-tab -->
     </div>
-    
+
     <script>
         // State
         let pollingInterval = null;
-        
+
+        // Strategy History State
+        let historyStrategies = [];
+        let historySortBy = 'composite_score';
+        let historySortOrder = 'desc';
+        let historyFilters = {
+            symbol: '',
+            timeframe: '',
+            dateFrom: '',
+            dateTo: ''
+        };
+        let historyInitialized = false;
+
+        // Tab Navigation
+        function showTab(tabName) {
+            // Hide all tab contents
+            document.querySelectorAll('.tab-content').forEach(tab => {
+                tab.style.display = 'none';
+            });
+
+            // Remove active class from all tab buttons
+            document.querySelectorAll('.tab-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+
+            // Show selected tab
+            document.getElementById(tabName + '-tab').style.display = 'block';
+            document.querySelector(`[data-tab="${tabName}"]`).classList.add('active');
+
+            // Initialize history tab on first view
+            if (tabName === 'history' && !historyInitialized) {
+                initHistoryTab();
+            }
+        }
+
+        // Initialize History Tab
+        async function initHistoryTab() {
+            historyInitialized = true;
+            try {
+                // Fetch filter options
+                const response = await fetch('/api/db/filter-options');
+                const options = await response.json();
+
+                // Populate symbol dropdown
+                const symbolSelect = document.getElementById('filter-symbol');
+                symbolSelect.innerHTML = '<option value="">All Pairs</option>';
+                options.symbols.forEach(symbol => {
+                    symbolSelect.innerHTML += `<option value="${symbol}">${symbol}</option>`;
+                });
+
+                // Populate timeframe dropdown
+                const timeframeSelect = document.getElementById('filter-timeframe');
+                timeframeSelect.innerHTML = '<option value="">All Timeframes</option>';
+                options.timeframes.forEach(tf => {
+                    timeframeSelect.innerHTML += `<option value="${tf}">${tf}</option>`;
+                });
+
+                // Set date range bounds
+                if (options.date_range.min) {
+                    const minDate = options.date_range.min.split(' ')[0];
+                    const maxDate = options.date_range.max ? options.date_range.max.split(' ')[0] : '';
+                    document.getElementById('filter-date-from').min = minDate;
+                    document.getElementById('filter-date-to').max = maxDate || new Date().toISOString().split('T')[0];
+                }
+
+                // Load strategies
+                await loadHistoryStrategies();
+            } catch (error) {
+                console.error('Failed to initialize history tab:', error);
+                document.getElementById('history-loading').textContent = 'Failed to load. Please try again.';
+            }
+        }
+
+        // Load History Strategies
+        async function loadHistoryStrategies() {
+            const tbody = document.getElementById('history-tbody');
+            const loading = document.getElementById('history-loading');
+            const empty = document.getElementById('history-empty');
+            const table = document.getElementById('history-table');
+
+            // Show loading
+            loading.style.display = 'block';
+            empty.style.display = 'none';
+            table.style.display = 'none';
+
+            try {
+                // Build query parameters
+                const params = new URLSearchParams({
+                    limit: '20'
+                });
+
+                if (historyFilters.symbol) params.append('symbol', historyFilters.symbol);
+                if (historyFilters.timeframe) params.append('timeframe', historyFilters.timeframe);
+
+                const response = await fetch(`/api/db/strategies?${params.toString()}`);
+                historyStrategies = await response.json();
+
+                // Filter by date if specified (client-side since API doesn't support it)
+                if (historyFilters.dateFrom || historyFilters.dateTo) {
+                    historyStrategies = historyStrategies.filter(s => {
+                        const createdAt = new Date(s.created_at);
+                        if (historyFilters.dateFrom && createdAt < new Date(historyFilters.dateFrom)) return false;
+                        if (historyFilters.dateTo && createdAt > new Date(historyFilters.dateTo + 'T23:59:59')) return false;
+                        return true;
+                    });
+                }
+
+                // Sort strategies
+                sortStrategiesArray();
+
+                // Update count
+                document.getElementById('history-count').textContent = `${historyStrategies.length} strategies`;
+                document.getElementById('history-count').className = 'status-badge ' + (historyStrategies.length > 0 ? 'success' : 'neutral');
+
+                // Render table or show empty state
+                if (historyStrategies.length > 0) {
+                    loading.style.display = 'none';
+                    table.style.display = 'table';
+                    renderHistoryTable();
+                } else {
+                    loading.style.display = 'none';
+                    empty.style.display = 'block';
+                }
+            } catch (error) {
+                console.error('Failed to load strategies:', error);
+                loading.textContent = 'Failed to load strategies.';
+            }
+        }
+
+        // Sort strategies array
+        function sortStrategiesArray() {
+            historyStrategies.sort((a, b) => {
+                let aVal = a[historySortBy];
+                let bVal = b[historySortBy];
+
+                // Handle null/undefined
+                if (aVal === null || aVal === undefined) aVal = historySortOrder === 'desc' ? -Infinity : Infinity;
+                if (bVal === null || bVal === undefined) bVal = historySortOrder === 'desc' ? -Infinity : Infinity;
+
+                // String comparison for text fields
+                if (typeof aVal === 'string') {
+                    return historySortOrder === 'asc' ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
+                }
+
+                // Numeric comparison
+                return historySortOrder === 'asc' ? aVal - bVal : bVal - aVal;
+            });
+        }
+
+        // Render History Table
+        function renderHistoryTable() {
+            const tbody = document.getElementById('history-tbody');
+            tbody.innerHTML = '';
+
+            historyStrategies.forEach((strategy, index) => {
+                const row = document.createElement('tr');
+
+                // Win rate color class
+                const winRateClass = strategy.win_rate >= 50 ? 'win-rate-high' :
+                                     strategy.win_rate >= 40 ? 'win-rate-medium' : 'win-rate-low';
+
+                // PnL color class
+                const pnlClass = strategy.total_pnl >= 0 ? 'pnl-positive' : 'pnl-negative';
+                const pnlPrefix = strategy.total_pnl >= 0 ? '+' : '';
+
+                // Format date
+                const createdDate = strategy.created_at ? new Date(strategy.created_at) : null;
+                const dateStr = createdDate ? createdDate.toLocaleDateString('en-GB', {
+                    day: '2-digit', month: 'short', year: 'numeric'
+                }) : '-';
+
+                row.innerHTML = `
+                    <td>${index + 1}</td>
+                    <td title="${strategy.strategy_name}">${truncateText(strategy.strategy_name, 20)}</td>
+                    <td><span class="symbol-badge">${strategy.symbol || '-'}</span></td>
+                    <td><span class="tf-badge">${strategy.timeframe || '-'}</span></td>
+                    <td>${formatNumber(strategy.composite_score, 1)}</td>
+                    <td class="${winRateClass}">${formatNumber(strategy.win_rate, 1)}%</td>
+                    <td>${formatNumber(strategy.profit_factor, 2)}</td>
+                    <td class="${pnlClass}">${pnlPrefix}${formatNumber(strategy.total_pnl, 2)}</td>
+                    <td>${strategy.total_trades || 0}</td>
+                    <td>${dateStr}</td>
+                    <td>
+                        <div class="action-btn-group">
+                            <button class="action-btn" onclick="viewStrategyDetails(${strategy.id})" title="View Details">📊</button>
+                            <button class="action-btn" onclick="downloadPineScript(${strategy.id}, '${strategy.strategy_name}')" title="Download Pine Script">📜</button>
+                            <button class="action-btn danger" onclick="deleteStrategy(${strategy.id}, '${strategy.strategy_name}')" title="Delete">🗑️</button>
+                        </div>
+                    </td>
+                `;
+
+                tbody.appendChild(row);
+            });
+
+            // Update sort indicators
+            updateSortIndicators();
+        }
+
+        // Update sort indicators on headers
+        function updateSortIndicators() {
+            document.querySelectorAll('.history-table .sortable').forEach(th => {
+                th.classList.remove('active', 'asc', 'desc');
+                if (th.dataset.sort === historySortBy) {
+                    th.classList.add('active', historySortOrder);
+                }
+            });
+        }
+
+        // Sort table by column
+        function sortHistoryTable(column) {
+            if (historySortBy === column) {
+                // Toggle order
+                historySortOrder = historySortOrder === 'desc' ? 'asc' : 'desc';
+            } else {
+                historySortBy = column;
+                historySortOrder = 'desc'; // Default to descending for new column
+            }
+
+            sortStrategiesArray();
+            renderHistoryTable();
+        }
+
+        // Apply filters
+        function applyHistoryFilters() {
+            historyFilters.symbol = document.getElementById('filter-symbol').value;
+            historyFilters.timeframe = document.getElementById('filter-timeframe').value;
+            historyFilters.dateFrom = document.getElementById('filter-date-from').value;
+            historyFilters.dateTo = document.getElementById('filter-date-to').value;
+
+            loadHistoryStrategies();
+        }
+
+        // Reset filters
+        function resetHistoryFilters() {
+            document.getElementById('filter-symbol').value = '';
+            document.getElementById('filter-timeframe').value = '';
+            document.getElementById('filter-date-from').value = '';
+            document.getElementById('filter-date-to').value = '';
+
+            historyFilters = { symbol: '', timeframe: '', dateFrom: '', dateTo: '' };
+            loadHistoryStrategies();
+        }
+
+        // View strategy details
+        async function viewStrategyDetails(strategyId) {
+            const panel = document.getElementById('strategy-detail-panel');
+            const content = document.getElementById('strategy-detail-content');
+            const nameEl = document.getElementById('detail-strategy-name');
+
+            panel.style.display = 'block';
+            content.innerHTML = '<p style="text-align: center; color: var(--text-secondary);">Loading...</p>';
+
+            try {
+                const response = await fetch(`/api/db/strategies/${strategyId}`);
+                const strategy = await response.json();
+
+                nameEl.textContent = strategy.strategy_name;
+
+                // Build detail content
+                const winRateClass = strategy.win_rate >= 50 ? 'pnl-positive' : strategy.win_rate >= 40 ? '' : 'pnl-negative';
+                const pnlClass = strategy.total_pnl >= 0 ? 'pnl-positive' : 'pnl-negative';
+
+                content.innerHTML = `
+                    <div class="detail-stats-grid">
+                        <div class="detail-stat">
+                            <div class="detail-stat-label">Composite Score</div>
+                            <div class="detail-stat-value">${formatNumber(strategy.composite_score, 1)}</div>
+                        </div>
+                        <div class="detail-stat">
+                            <div class="detail-stat-label">Win Rate</div>
+                            <div class="detail-stat-value ${winRateClass}">${formatNumber(strategy.win_rate, 1)}%</div>
+                        </div>
+                        <div class="detail-stat">
+                            <div class="detail-stat-label">Profit Factor</div>
+                            <div class="detail-stat-value">${formatNumber(strategy.profit_factor, 2)}</div>
+                        </div>
+                        <div class="detail-stat">
+                            <div class="detail-stat-label">Total PnL</div>
+                            <div class="detail-stat-value ${pnlClass}">${strategy.total_pnl >= 0 ? '+' : ''}${formatNumber(strategy.total_pnl, 2)}</div>
+                        </div>
+                        <div class="detail-stat">
+                            <div class="detail-stat-label">Total Trades</div>
+                            <div class="detail-stat-value">${strategy.total_trades || 0}</div>
+                        </div>
+                        <div class="detail-stat">
+                            <div class="detail-stat-label">Max Drawdown</div>
+                            <div class="detail-stat-value pnl-negative">${formatNumber(strategy.max_drawdown, 2)}%</div>
+                        </div>
+                        <div class="detail-stat">
+                            <div class="detail-stat-label">Sharpe Ratio</div>
+                            <div class="detail-stat-value">${formatNumber(strategy.sharpe_ratio, 2)}</div>
+                        </div>
+                        <div class="detail-stat">
+                            <div class="detail-stat-label">Recovery Factor</div>
+                            <div class="detail-stat-value">${formatNumber(strategy.recovery_factor, 2)}</div>
+                        </div>
+                    </div>
+
+                    <div class="detail-section">
+                        <h3>Strategy Parameters</h3>
+                        <table class="params-table" style="width: 100%;">
+                            <tr><td>Symbol</td><td><span class="symbol-badge">${strategy.symbol || '-'}</span></td></tr>
+                            <tr><td>Timeframe</td><td><span class="tf-badge">${strategy.timeframe || '-'}</span></td></tr>
+                            <tr><td>Take Profit</td><td>${formatNumber(strategy.tp_percent, 2)}%</td></tr>
+                            <tr><td>Stop Loss</td><td>${formatNumber(strategy.sl_percent, 2)}%</td></tr>
+                            <tr><td>Data Range</td><td>${strategy.data_start || '-'} → ${strategy.data_end || '-'}</td></tr>
+                            <tr><td>Data Source</td><td>${strategy.data_source || '-'}</td></tr>
+                            <tr><td>Created</td><td>${strategy.created_at || '-'}</td></tr>
+                        </table>
+                    </div>
+
+                    ${strategy.indicator_params ? `
+                    <div class="detail-section">
+                        <h3>Indicator Parameters</h3>
+                        <pre style="background: var(--bg-secondary); padding: 1rem; border-radius: 8px; overflow-x: auto; font-size: 0.85rem;">${JSON.stringify(strategy.indicator_params, null, 2)}</pre>
+                    </div>
+                    ` : ''}
+
+                    <div style="margin-top: 1.5rem; display: flex; gap: 0.5rem;">
+                        <button class="btn btn-primary" onclick="downloadPineScript(${strategy.id}, '${strategy.strategy_name}')">
+                            📜 Download Pine Script
+                        </button>
+                        <button class="btn btn-secondary danger" style="background: var(--danger-bg); border-color: var(--danger); color: var(--danger);" onclick="deleteStrategy(${strategy.id}, '${strategy.strategy_name}')">
+                            🗑️ Delete Strategy
+                        </button>
+                    </div>
+                `;
+
+                // Scroll to panel
+                panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            } catch (error) {
+                console.error('Failed to load strategy details:', error);
+                content.innerHTML = '<p style="text-align: center; color: var(--danger);">Failed to load strategy details.</p>';
+            }
+        }
+
+        // Close strategy detail panel
+        function closeStrategyDetail() {
+            document.getElementById('strategy-detail-panel').style.display = 'none';
+        }
+
+        // Download Pine Script
+        async function downloadPineScript(strategyId, strategyName) {
+            try {
+                const response = await fetch(`/api/db/strategies/${strategyId}/pinescript`);
+                const data = await response.json();
+
+                if (data.pinescript) {
+                    // Create download
+                    const blob = new Blob([data.pinescript], { type: 'text/plain' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `${strategyName.replace(/[^a-z0-9]/gi, '_')}.pine`;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                } else {
+                    alert('Failed to generate Pine Script');
+                }
+            } catch (error) {
+                console.error('Failed to download Pine Script:', error);
+                alert('Failed to download Pine Script: ' + error.message);
+            }
+        }
+
+        // Delete strategy
+        async function deleteStrategy(strategyId, strategyName) {
+            if (!confirm(`Delete strategy "${strategyName}"?\n\nThis action cannot be undone.`)) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/db/strategies/${strategyId}`, {
+                    method: 'DELETE'
+                });
+
+                if (response.ok) {
+                    // Remove from array and re-render
+                    historyStrategies = historyStrategies.filter(s => s.id !== strategyId);
+                    renderHistoryTable();
+
+                    // Close detail panel if showing this strategy
+                    closeStrategyDetail();
+
+                    // Update count
+                    document.getElementById('history-count').textContent = `${historyStrategies.length} strategies`;
+                } else {
+                    alert('Failed to delete strategy');
+                }
+            } catch (error) {
+                console.error('Failed to delete strategy:', error);
+                alert('Failed to delete strategy: ' + error.message);
+            }
+        }
+
+        // Helper: Format number with decimals
+        function formatNumber(num, decimals = 2) {
+            if (num === null || num === undefined || isNaN(num)) return '-';
+            return Number(num).toFixed(decimals);
+        }
+
+        // Helper: Truncate text
+        function truncateText(text, maxLength) {
+            if (!text) return '-';
+            return text.length > maxLength ? text.substring(0, maxLength) + '...' : text;
+        }
+
         // Utility functions
         function formatTime() {
             const now = new Date();
@@ -1466,11 +2202,12 @@
                                 const pm = periodMetrics[p];
                                 const wrColor = pm.win_rate >= 60 ? 'var(--success)' : pm.win_rate >= 50 ? 'var(--warning)' : 'var(--danger)';
                                 const pnlColor = pm.pnl >= 0 ? 'var(--success)' : 'var(--danger)';
-                                const ddVal = pm.max_dd_pct || 0;
+                                const pnlPct = pm.pnl_pct || 0;
+                                const pnlPctColor = pnlPct >= 0 ? 'var(--success)' : 'var(--danger)';
                                 return `<div style="display: inline-block; text-align: center; margin-right: 1.5rem;">
                                     <div style="color: var(--text-muted); font-weight: 600; font-size: 0.7rem; margin-bottom: 0.15rem;">${p.toUpperCase()}</div>
                                     <div style="font-size: 0.75rem;"><span style="color: ${wrColor};">${pm.win_rate?.toFixed(0) || '-'}%</span> <span style="color: ${pnlColor};">${pm.pnl >= 0 ? '+' : ''}£${pm.pnl?.toFixed(0) || '0'}</span></div>
-                                    <div style="font-size: 0.65rem;"><span style="color: var(--danger);">${ddVal > 0 ? '-' : ''}${ddVal.toFixed(1)}%</span> <span style="color: var(--text-muted);">${pm.trades} trades</span></div>
+                                    <div style="font-size: 0.65rem;"><span style="color: ${pnlPctColor};">${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%</span> <span style="color: var(--text-muted);">${pm.trades} trades</span></div>
                                 </div>`;
                             }).join('');
 
