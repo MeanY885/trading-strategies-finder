@@ -1150,9 +1150,6 @@
     </div>
 
     <script>
-        // State
-        let pollingInterval = null;
-
         // Strategy History State
         let historyStrategies = [];
         let historySortBy = 'composite_score';
@@ -1190,9 +1187,14 @@
         async function initHistoryTab() {
             historyInitialized = true;
             try {
-                // Fetch filter options
-                const response = await fetch('/api/db/filter-options');
-                const options = await response.json();
+                // Fetch filter options AND strategies in PARALLEL (faster load)
+                const [optionsResponse, strategiesResponse] = await Promise.all([
+                    fetch('/api/db/filter-options'),
+                    fetch('/api/db/strategies?limit=20')
+                ]);
+
+                const options = await optionsResponse.json();
+                historyStrategies = await strategiesResponse.json();
 
                 // Populate symbol dropdown
                 const symbolSelect = document.getElementById('filter-symbol');
@@ -1208,8 +1210,23 @@
                     timeframeSelect.innerHTML += `<option value="${tf}">${tf}</option>`;
                 });
 
-                // Load strategies
-                await loadHistoryStrategies();
+                // Sort and render (strategies already loaded)
+                sortStrategiesArray();
+                document.getElementById('history-count').textContent = `${historyStrategies.length} strategies`;
+                document.getElementById('history-count').className = 'status-badge ' + (historyStrategies.length > 0 ? 'success' : 'neutral');
+
+                const loading = document.getElementById('history-loading');
+                const empty = document.getElementById('history-empty');
+                const table = document.getElementById('history-table');
+
+                if (historyStrategies.length > 0) {
+                    loading.style.display = 'none';
+                    table.style.display = 'table';
+                    renderHistoryTable();
+                } else {
+                    loading.style.display = 'none';
+                    empty.style.display = 'block';
+                }
             } catch (error) {
                 console.error('Failed to initialize history tab:', error);
                 document.getElementById('history-loading').textContent = 'Failed to load. Please try again.';
@@ -2609,8 +2626,25 @@
             }
 
             const improved = tuning.is_improved;
-            const borderColor = improved ? 'var(--success)' : 'var(--text-muted)';
-            const bgColor = improved ? 'rgba(34, 197, 94, 0.05)' : 'rgba(100, 100, 100, 0.05)';
+            const paramsChanged = tuning.params_changed;
+
+            // Determine status message and styling
+            let statusMessage = '';
+            let borderColor = 'var(--text-muted)';
+            let bgColor = 'rgba(100, 100, 100, 0.05)';
+
+            if (improved && paramsChanged) {
+                statusMessage = '<span style="color: var(--success);">✓ Improved!</span>';
+                borderColor = 'var(--success)';
+                bgColor = 'rgba(34, 197, 94, 0.05)';
+            } else if (paramsChanged && !improved) {
+                statusMessage = '<span style="color: var(--warning);">Tested - No improvement</span>';
+                borderColor = 'var(--warning)';
+                bgColor = 'rgba(234, 179, 8, 0.05)';
+            } else {
+                // No params changed - defaults are optimal
+                statusMessage = '<span style="color: var(--text-muted);">Defaults optimal</span>';
+            }
 
             let paramRows = '';
             for (const [param, value] of Object.entries(tuning.tuned_params)) {
@@ -2634,7 +2668,7 @@
                 <div style="background: ${bgColor}; border-radius: 8px; padding: 0.75rem; border-left: 3px solid ${borderColor}; margin-top: 0.75rem;">
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
                         <span style="font-size: 0.85rem; font-weight: 600; color: var(--text-primary);">
-                            🔧 Indicator Tuning ${improved ? '<span style="color: var(--success);">- Improved!</span>' : ''}
+                            🔧 Indicator Tuning ${statusMessage}
                         </span>
                     </div>
 
@@ -2657,19 +2691,19 @@
                             <div style="color: var(--text-muted);">Score</div>
                             <div style="font-weight: 600;">
                                 ${tuning.before?.score?.toFixed(1) || 'N/A'} →
-                                <span style="color: ${tuning.improvements?.score >= 0 ? 'var(--success)' : 'var(--danger)'};">
+                                <span style="color: ${tuning.improvements?.score > 0 ? 'var(--success)' : tuning.improvements?.score < 0 ? 'var(--danger)' : 'var(--text-primary)'};">
                                     ${tuning.after?.score?.toFixed(1) || 'N/A'}
                                 </span>
                             </div>
-                            <div style="color: ${tuning.improvements?.score >= 0 ? 'var(--success)' : 'var(--danger)'}; font-size: 0.7rem;">
-                                ${tuning.improvements?.score >= 0 ? '+' : ''}${tuning.improvements?.score?.toFixed(1) || 0}%
+                            <div style="color: ${tuning.improvements?.score > 0 ? 'var(--success)' : tuning.improvements?.score < 0 ? 'var(--danger)' : 'var(--text-muted)'}; font-size: 0.7rem;">
+                                ${tuning.improvements?.score > 0 ? '+' : ''}${tuning.improvements?.score?.toFixed(1) || 0}%
                             </div>
                         </div>
                         <div style="text-align: center; padding: 0.4rem; background: var(--bg-card); border-radius: 4px;">
                             <div style="color: var(--text-muted);">Win Rate</div>
                             <div style="font-weight: 600;">
                                 ${tuning.before?.win_rate?.toFixed(1) || 'N/A'}% →
-                                <span style="color: ${tuning.improvements?.win_rate >= 0 ? 'var(--success)' : 'var(--danger)'};">
+                                <span style="color: ${tuning.improvements?.win_rate > 0 ? 'var(--success)' : tuning.improvements?.win_rate < 0 ? 'var(--danger)' : 'var(--text-primary)'};">
                                     ${tuning.after?.win_rate?.toFixed(1) || 'N/A'}%
                                 </span>
                             </div>
@@ -2678,7 +2712,7 @@
                             <div style="color: var(--text-muted);">Profit Factor</div>
                             <div style="font-weight: 600;">
                                 ${tuning.before?.profit_factor?.toFixed(2) || 'N/A'} →
-                                <span style="color: ${tuning.improvements?.profit_factor >= 0 ? 'var(--success)' : 'var(--danger)'};">
+                                <span style="color: ${tuning.improvements?.profit_factor > 0 ? 'var(--success)' : tuning.improvements?.profit_factor < 0 ? 'var(--danger)' : 'var(--text-primary)'};">
                                     ${tuning.after?.profit_factor?.toFixed(2) || 'N/A'}
                                 </span>
                             </div>
@@ -2687,7 +2721,7 @@
                             <div style="color: var(--text-muted);">P&L</div>
                             <div style="font-weight: 600;">
                                 ${tuning.before?.pnl_percent?.toFixed(1) || 'N/A'}% →
-                                <span style="color: ${tuning.improvements?.pnl >= 0 ? 'var(--success)' : 'var(--danger)'};">
+                                <span style="color: ${tuning.improvements?.pnl > 0 ? 'var(--success)' : tuning.improvements?.pnl < 0 ? 'var(--danger)' : 'var(--text-primary)'};">
                                     ${tuning.after?.pnl_percent?.toFixed(1) || 'N/A'}%
                                 </span>
                             </div>
@@ -3577,39 +3611,45 @@
             if (card) card.style.display = 'block';
         }
 
-        // Polling
-        let fastPollingInterval = null;
+        // Polling - uses sequential pattern to prevent request pileup
+        let pollingActive = false;
+        let fastPollingActive = false;
+        let pollingDelay = 1500;
 
         function startPolling() {
-            if (pollingInterval) clearInterval(pollingInterval);
-
-            // Immediate first poll
-            pollStatus();
-
-            pollingInterval = setInterval(pollStatus, 1500);
+            pollingActive = true;
+            fastPollingActive = false;
+            pollingDelay = 1500;
+            schedulePoll();
         }
 
         function startFastPolling() {
             // Fast polling during data fetch (500ms instead of 1500ms)
-            if (fastPollingInterval) clearInterval(fastPollingInterval);
-            if (pollingInterval) clearInterval(pollingInterval);
-
-            // Immediate first poll
-            pollStatus();
-
-            fastPollingInterval = setInterval(pollStatus, 500);
+            pollingActive = true;
+            fastPollingActive = true;
+            pollingDelay = 500;
+            schedulePoll();
         }
 
         function stopFastPolling() {
-            if (fastPollingInterval) {
-                clearInterval(fastPollingInterval);
-                fastPollingInterval = null;
-            }
-            // Resume normal polling
-            startPolling();
+            fastPollingActive = false;
+            pollingDelay = 1500;
+            // Continue normal polling
+        }
+
+        function stopPolling() {
+            pollingActive = false;
+            fastPollingActive = false;
+        }
+
+        function schedulePoll() {
+            if (!pollingActive) return;
+            setTimeout(pollStatus, pollingDelay);
         }
 
         async function pollStatus() {
+            if (!pollingActive) return;
+
             try {
                 const response = await fetch('/api/status');
                 const data = await response.json();
@@ -3618,8 +3658,8 @@
 
                 // Handle data loading completion
                 if (data.data.loaded) {
-                    // Stop fast polling if active, resume normal polling
-                    if (fastPollingInterval) {
+                    // Switch to normal polling if was fast polling
+                    if (fastPollingActive) {
                         stopFastPolling();
                     }
 
@@ -3655,6 +3695,9 @@
             } catch (error) {
                 console.error('Polling error:', error);
             }
+
+            // Schedule next poll AFTER this one completes (prevents pileup)
+            schedulePoll();
         }
         
         // Initial load

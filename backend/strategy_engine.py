@@ -82,63 +82,78 @@ def _generate_period_buckets(earliest: datetime, latest: datetime) -> List[Tuple
     Target: 6-12 periods max to fit UI without overlap.
 
     Returns: [(label, start_dt, end_dt), ...]
+
+    Labels include date ranges for better clarity:
+    - Weekly: "W1 (24-30 Nov)"
+    - Bi-weekly: "W1-2 (24 Nov-7 Dec)"
     """
     from datetime import timedelta
+
+    month_names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+    def format_date_range(start: datetime, end: datetime, compact: bool = True) -> str:
+        """Format a date range like '24-30 Nov' or '24 Nov-7 Dec'"""
+        # End date is exclusive, so subtract 1 day for display
+        display_end = end - timedelta(days=1)
+        if display_end < start:
+            display_end = start
+
+        if start.month == display_end.month:
+            # Same month: "24-30 Nov"
+            return f"{start.day}-{display_end.day} {month_names[start.month-1]}"
+        else:
+            # Different months: "24 Nov-7 Dec"
+            return f"{start.day} {month_names[start.month-1]}-{display_end.day} {month_names[display_end.month-1]}"
 
     # Calculate span in days (inclusive)
     span_days = (latest - earliest).days
 
     # === SCALING RULES (based on actual day difference) ===
+    # label_mode: 'index' = simple index, 'week' = W1 with dates, 'month' = month names, etc.
     if span_days <= 7:
         # Up to 1 week: Daily (D1, D2, D3...)
         chunk_days = 1
-        label_fn = lambda i: f'D{i+1}'
+        label_mode = 'daily'
     elif span_days <= 14:
         # 8-14 days (~2 weeks): 2-day chunks
         chunk_days = 2
-        label_fn = lambda i: f'D{i*2+1}-{i*2+2}'
+        label_mode = 'daily_range'
     elif span_days <= 21:
         # 15-21 days (~3 weeks): 3-day chunks
         chunk_days = 3
-        label_fn = lambda i: f'D{i*3+1}-{i*3+3}'
+        label_mode = 'daily_range'
     elif span_days <= 45:
-        # 22-45 days (1-1.5 months): Weekly (W1, W2, W3...)
+        # 22-45 days (1-1.5 months): Weekly with date ranges (W1, W2, W3...)
         chunk_days = 7
-        label_fn = lambda i: f'W{i+1}'
+        label_mode = 'weekly'
     elif span_days <= 90:
-        # 46-90 days (1.5-3 months): Bi-weekly
+        # 46-90 days (1.5-3 months): Bi-weekly with date ranges
         chunk_days = 14
-        label_fn = lambda i: f'W{i*2+1}-{i*2+2}'
+        label_mode = 'biweekly'
     elif span_days <= 180:
         # 91-180 days (3-6 months): Monthly with actual month names
         chunk_days = 30
-        month_names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-        start_month = earliest.month - 1  # 0-indexed
-        label_fn = lambda i, sm=start_month: month_names[(sm + i) % 12]
+        label_mode = 'monthly'
     elif span_days <= 365:
         # 181-365 days (6-12 months): Monthly with actual month names
         chunk_days = 30
-        month_names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-        start_month = earliest.month - 1  # 0-indexed
-        label_fn = lambda i, sm=start_month: month_names[(sm + i) % 12]
+        label_mode = 'monthly'
     elif span_days <= 730:
         # 1-2 years: Bi-monthly with month names
         chunk_days = 60
-        month_names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-        start_month = earliest.month - 1
-        label_fn = lambda i, sm=start_month: f"{month_names[(sm + i*2) % 12]}-{month_names[(sm + i*2 + 1) % 12]}"
+        label_mode = 'bimonthly'
     elif span_days <= 1095:
         # 2-3 years: Quarterly (Q1, Q2...)
         chunk_days = 91
-        label_fn = lambda i: f'Q{i+1}'
+        label_mode = 'quarterly'
     elif span_days <= 1825:
         # 3-5 years: Semi-annual (H1, H2...)
         chunk_days = 182
-        label_fn = lambda i: f'H{i+1}'
+        label_mode = 'semiannual'
     else:
         # 5+ years: Yearly (Y1, Y2...)
         chunk_days = 365
-        label_fn = lambda i: f'Y{i+1}'
+        label_mode = 'yearly'
 
     # Generate buckets - only create buckets that overlap with data range
     buckets = []
@@ -148,7 +163,31 @@ def _generate_period_buckets(earliest: datetime, latest: datetime) -> List[Tuple
 
     while current <= latest_end:
         bucket_end = current + timedelta(days=chunk_days)
-        label = label_fn(i)
+
+        # Generate label based on mode (all include date ranges for clarity)
+        date_range = format_date_range(current, bucket_end)
+
+        if label_mode == 'daily':
+            label = f'D{i+1}'
+        elif label_mode == 'daily_range':
+            label = f'D{i*chunk_days+1}-{i*chunk_days+chunk_days}'
+        elif label_mode == 'weekly':
+            label = f'W{i+1} ({date_range})'
+        elif label_mode == 'biweekly':
+            label = f'W{i*2+1}-{i*2+2} ({date_range})'
+        elif label_mode == 'monthly':
+            label = f'{month_names[current.month - 1]} ({date_range})'
+        elif label_mode == 'bimonthly':
+            label = f'{month_names[current.month-1]}-{month_names[(current.month % 12)][:3]} ({date_range})'
+        elif label_mode == 'quarterly':
+            label = f'Q{i+1} ({date_range})'
+        elif label_mode == 'semiannual':
+            label = f'H{i+1} ({date_range})'
+        elif label_mode == 'yearly':
+            label = f'Y{i+1} ({date_range})'
+        else:
+            label = f'P{i+1}'
+
         buckets.append((label, current, bucket_end))
         current = bucket_end
         i += 1
@@ -485,8 +524,15 @@ class StrategyResult:
             return {}
 
         # === STEP 3: Generate dynamic non-overlapping buckets ===
-        earliest = min(t['_exit_dt'] for t in trades_with_times)
-        latest = max(t['_exit_dt'] for t in trades_with_times)
+        # Use FULL DATA DATE RANGE (not trade dates) for proper period scaling
+        # This ensures a 1-month dataset shows W1-W4, not D1-D4 just because trades clustered
+        if data_start and data_end:
+            earliest = data_start
+            latest = data_end
+        else:
+            # Fallback to trade dates if no data range available
+            earliest = min(t['_exit_dt'] for t in trades_with_times)
+            latest = max(t['_exit_dt'] for t in trades_with_times)
 
         buckets = _generate_period_buckets(earliest, latest)
 
@@ -1043,6 +1089,9 @@ class TunedResult:
     # Was tuning beneficial?
     is_improved: bool = False
 
+    # Did the parameters actually change from defaults?
+    params_changed: bool = False
+
     def __post_init__(self):
         # Calculate improvements
         if self.before_score > 0:
@@ -1061,6 +1110,9 @@ class TunedResult:
 
         # Tuning is considered beneficial if score improved
         self.is_improved = self.after_score > self.before_score
+
+        # Check if parameters actually changed from defaults
+        self.params_changed = self.tuned_params != self.default_params
 
     def to_dict(self) -> Dict:
         """Convert to dictionary for JSON serialization."""
@@ -1091,6 +1143,7 @@ class TunedResult:
                 'pnl': round(self.pnl_improvement, 2),
             },
             'is_improved': self.is_improved,
+            'params_changed': self.params_changed,
         }
 
 
