@@ -1097,9 +1097,6 @@
                     <button class="btn btn-secondary" onclick="resetHistoryFilters()" style="margin-top: 1.5rem;">
                         Reset Filters
                     </button>
-                    <button class="btn btn-secondary" onclick="removeDuplicateStrategies()" style="margin-top: 1.5rem; margin-left: 0.5rem;" title="Remove duplicate strategies keeping only the most recent">
-                        Remove Duplicates
-                    </button>
                 </div>
 
                 <!-- Results Table -->
@@ -1527,28 +1524,6 @@
 
             historyFilters = { symbol: '', timeframe: '', period: '' };
             loadHistoryStrategies();
-        }
-
-        // Remove duplicate strategies
-        async function removeDuplicateStrategies() {
-            if (!confirm('Remove duplicate strategies? This will keep only the most recent of each unique strategy.')) {
-                return;
-            }
-
-            try {
-                const response = await fetch('/api/db/remove-duplicates', { method: 'POST' });
-                const result = await response.json();
-
-                if (result.removed_count > 0) {
-                    alert(`Removed ${result.removed_count} duplicate strategies.`);
-                    loadHistoryStrategies();
-                } else {
-                    alert('No duplicates found.');
-                }
-            } catch (error) {
-                console.error('Error removing duplicates:', error);
-                alert('Failed to remove duplicates: ' + error.message);
-            }
         }
 
         // View strategy details

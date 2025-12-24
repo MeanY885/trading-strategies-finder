@@ -30,6 +30,9 @@ class StrategyDatabase:
 
         self._init_database()
 
+        # Auto-clean duplicates on startup
+        self._auto_deduplicate()
+
     def _init_database(self):
         """Create database tables if they don't exist."""
         conn = sqlite3.connect(self.db_path)
@@ -145,6 +148,12 @@ class StrategyDatabase:
         conn.close()
 
         print(f"Strategy database initialized: {self.db_path}")
+
+    def _auto_deduplicate(self):
+        """Automatically remove duplicates on startup."""
+        removed = self.remove_duplicates()
+        if removed > 0:
+            print(f"Auto-cleaned {removed} duplicate strategies")
 
     def start_optimization_run(self, symbol: str = None, timeframe: str = None,
                                data_source: str = None, data_rows: int = 0,
