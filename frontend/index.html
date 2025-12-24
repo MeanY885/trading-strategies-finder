@@ -1248,9 +1248,9 @@
             table.style.display = 'none';
 
             try {
-                // Build query parameters
+                // Build query parameters - fetch more to allow client-side filtering
                 const params = new URLSearchParams({
-                    limit: '20'
+                    limit: '500'
                 });
 
                 if (historyFilters.symbol) params.append('symbol', historyFilters.symbol);
@@ -1259,7 +1259,8 @@
                 const response = await fetch(`/api/db/strategies?${params.toString()}`);
                 historyStrategies = await response.json();
 
-                // Filter by historical period if specified (client-side)
+                // Filter by backtest data period if specified (client-side)
+                // Uses data_start (start of backtest data) to filter
                 if (historyFilters.period) {
                     const now = new Date();
                     let cutoffDate = new Date();
@@ -1274,8 +1275,11 @@
                     }
 
                     historyStrategies = historyStrategies.filter(s => {
-                        const createdAt = new Date(s.created_at);
-                        return createdAt >= cutoffDate;
+                        // Use data_start if available, fall back to created_at
+                        const dateStr = s.data_start || s.created_at;
+                        if (!dateStr) return true; // Keep if no date info
+                        const dataDate = new Date(dateStr);
+                        return dataDate >= cutoffDate;
                     });
                 }
 

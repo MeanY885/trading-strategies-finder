@@ -1401,6 +1401,16 @@ class StrategyEngine:
         # Calculate Buy & Hold benchmark
         self.buy_hold_return = self._calculate_buy_hold()
 
+        # Extract data date range for database storage
+        self.data_start = None
+        self.data_end = None
+        if len(df) > 0 and df.index is not None:
+            try:
+                self.data_start = str(df.index[0])
+                self.data_end = str(df.index[-1])
+            except:
+                pass
+
         self._calculate_indicators()
 
     def _calculate_buy_hold(self) -> float:
@@ -3174,7 +3184,9 @@ class StrategyEngine:
                     result,
                     run_id=db_run_id,
                     symbol=symbol,
-                    timeframe=timeframe
+                    timeframe=timeframe,
+                    data_start=self.data_start,
+                    data_end=self.data_end
                 )
                 # Update progress during save
                 if i % 10 == 0:
