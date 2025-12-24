@@ -188,7 +188,7 @@ class StrategyDatabase:
                       data_source: str = None, data_start: str = None,
                       data_end: str = None,
                       indicator_params: Dict = None,
-                      tuning_info: Dict = None) -> int:
+                      tuning_info: Dict = None) -> Optional[int]:
         """
         Save a strategy result to the database.
 
@@ -204,7 +204,7 @@ class StrategyDatabase:
             tuning_info: Dict with tuning results (improved, before_score, after_score, improvement_pct)
 
         Returns:
-            Strategy ID in database
+            Strategy ID in database, or None if duplicate
         """
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
@@ -213,6 +213,34 @@ class StrategyDatabase:
         params = result.params if hasattr(result, 'params') else {}
         tp_percent = params.get('tp_percent', 1.0)
         sl_percent = params.get('sl_percent', 3.0)
+
+        # Check for duplicate - same strategy with same key metrics
+        strategy_name = getattr(result, 'strategy_name', 'unknown')
+        total_trades = getattr(result, 'total_trades', 0)
+        win_rate = getattr(result, 'win_rate', 0)
+        total_pnl = getattr(result, 'total_pnl', 0)
+        profit_factor = getattr(result, 'profit_factor', 0)
+
+        cursor.execute('''
+            SELECT id FROM strategies
+            WHERE strategy_name = ?
+              AND symbol = ?
+              AND timeframe = ?
+              AND ABS(tp_percent - ?) < 0.01
+              AND ABS(sl_percent - ?) < 0.01
+              AND total_trades = ?
+              AND ABS(win_rate - ?) < 0.01
+              AND ABS(total_pnl - ?) < 0.01
+              AND ABS(profit_factor - ?) < 0.01
+            LIMIT 1
+        ''', (strategy_name, symbol, timeframe, tp_percent, sl_percent,
+              total_trades, win_rate, total_pnl, profit_factor))
+
+        existing = cursor.fetchone()
+        if existing:
+            conn.close()
+            print(f"Skipping duplicate strategy: {strategy_name} (TP={tp_percent}%, SL={sl_percent}%)")
+            return None  # Return None to indicate duplicate was skipped
 
         # Convert found_by list to JSON
         found_by = json.dumps(result.found_by) if hasattr(result, 'found_by') else '[]'
@@ -547,6 +575,32 @@ class StrategyDatabase:
         conn.commit()
         conn.close()
 
+        return deleted
+
+    def remove_duplicates(self) -> int:
+        """Remove duplicate strategies, keeping the most recent (highest ID) of each group."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        # Find duplicates - same strategy with same key metrics
+        # Keep the one with highest ID (most recent)
+        cursor.execute('''
+            DELETE FROM strategies
+            WHERE id NOT IN (
+                SELECT MAX(id)
+                FROM strategies
+                GROUP BY strategy_name, symbol, timeframe,
+                         ROUND(tp_percent, 1), ROUND(sl_percent, 1),
+                         total_trades, ROUND(win_rate, 1),
+                         ROUND(total_pnl, 1), ROUND(profit_factor, 2)
+            )
+        ''')
+
+        deleted = cursor.rowcount
+        conn.commit()
+        conn.close()
+
+        print(f"Removed {deleted} duplicate strategies from database")
         return deleted
 
     def clear_all(self) -> int:

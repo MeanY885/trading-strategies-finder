@@ -1097,6 +1097,9 @@
                     <button class="btn btn-secondary" onclick="resetHistoryFilters()" style="margin-top: 1.5rem;">
                         Reset Filters
                     </button>
+                    <button class="btn btn-secondary" onclick="removeDuplicateStrategies()" style="margin-top: 1.5rem; margin-left: 0.5rem;" title="Remove duplicate strategies keeping only the most recent">
+                        Remove Duplicates
+                    </button>
                 </div>
 
                 <!-- Results Table -->
@@ -1108,6 +1111,8 @@
                                 <th class="sortable" data-sort="strategy_name" onclick="sortHistoryTable('strategy_name')">Strategy</th>
                                 <th class="sortable" data-sort="symbol" onclick="sortHistoryTable('symbol')">Symbol</th>
                                 <th class="sortable" data-sort="timeframe" onclick="sortHistoryTable('timeframe')">TF</th>
+                                <th class="sortable" data-sort="tp_percent" onclick="sortHistoryTable('tp_percent')">TP%</th>
+                                <th class="sortable" data-sort="sl_percent" onclick="sortHistoryTable('sl_percent')">SL%</th>
                                 <th class="sortable active desc" data-sort="composite_score" onclick="sortHistoryTable('composite_score')">Score</th>
                                 <th class="sortable" data-sort="win_rate" onclick="sortHistoryTable('win_rate')">Win Rate</th>
                                 <th class="sortable" data-sort="profit_factor" onclick="sortHistoryTable('profit_factor')">PF</th>
@@ -1348,11 +1353,17 @@
                     day: '2-digit', month: 'short', year: 'numeric'
                 }) : '-';
 
+                // TP/SL values
+                const tpPercent = strategy.tp_percent || strategy.params?.tp_percent || '-';
+                const slPercent = strategy.sl_percent || strategy.params?.sl_percent || '-';
+
                 row.innerHTML = `
                     <td><span class="expand-icon">▶</span> ${index + 1}</td>
                     <td title="${strategy.strategy_name}">${truncateText(strategy.strategy_name, 20)}</td>
                     <td><span class="symbol-badge">${strategy.symbol || '-'}</span></td>
                     <td><span class="tf-badge">${strategy.timeframe || '-'}</span></td>
+                    <td style="color: var(--success);">${typeof tpPercent === 'number' ? formatNumber(tpPercent, 1) : tpPercent}</td>
+                    <td style="color: var(--danger);">${typeof slPercent === 'number' ? formatNumber(slPercent, 1) : slPercent}</td>
                     <td>${formatNumber(strategy.composite_score, 1)}</td>
                     <td class="${winRateClass}">${formatNumber(strategy.win_rate, 1)}%</td>
                     <td>${formatNumber(strategy.profit_factor, 2)}</td>
@@ -1379,7 +1390,7 @@
                 detailRow.className = 'strategy-detail-row';
                 detailRow.id = `detail-row-${strategy.id}`;
                 detailRow.style.display = 'none';
-                detailRow.innerHTML = `<td colspan="12" class="detail-cell"><div class="inline-detail-content" id="detail-content-${strategy.id}"></div></td>`;
+                detailRow.innerHTML = `<td colspan="14" class="detail-cell"><div class="inline-detail-content" id="detail-content-${strategy.id}"></div></td>`;
                 tbody.appendChild(detailRow);
             });
 
@@ -1516,6 +1527,28 @@
 
             historyFilters = { symbol: '', timeframe: '', period: '' };
             loadHistoryStrategies();
+        }
+
+        // Remove duplicate strategies
+        async function removeDuplicateStrategies() {
+            if (!confirm('Remove duplicate strategies? This will keep only the most recent of each unique strategy.')) {
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/db/remove-duplicates', { method: 'POST' });
+                const result = await response.json();
+
+                if (result.removed_count > 0) {
+                    alert(`Removed ${result.removed_count} duplicate strategies.`);
+                    loadHistoryStrategies();
+                } else {
+                    alert('No duplicates found.');
+                }
+            } catch (error) {
+                console.error('Error removing duplicates:', error);
+                alert('Failed to remove duplicates: ' + error.message);
+            }
         }
 
         // View strategy details

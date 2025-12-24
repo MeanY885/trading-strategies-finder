@@ -1511,6 +1511,20 @@ async def delete_strategy(strategy_id: int):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/db/remove-duplicates")
+async def remove_duplicate_strategies():
+    """Remove duplicate strategies from the database, keeping only the most recent."""
+    if not HAS_DATABASE:
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    try:
+        db = get_strategy_db()
+        removed = db.remove_duplicates()
+        return {"message": f"Removed {removed} duplicate strategies", "removed_count": removed}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # =============================================================================
 # TRADINGVIEW COMPARISON FEATURE - Compare our results vs TradingView
 # =============================================================================
