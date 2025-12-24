@@ -2204,17 +2204,19 @@
                                 const pnlColor = pm.pnl >= 0 ? 'var(--success)' : 'var(--danger)';
                                 const pnlPct = pm.pnl_pct || 0;
                                 const pnlPctColor = pnlPct >= 0 ? 'var(--success)' : 'var(--danger)';
-                                return `<div style="display: inline-block; text-align: center; margin-right: 1.5rem;">
-                                    <div style="color: var(--text-muted); font-weight: 600; font-size: 0.7rem; margin-bottom: 0.15rem;">${p.toUpperCase()}</div>
-                                    <div style="font-size: 0.75rem;"><span style="color: ${wrColor};">${pm.win_rate?.toFixed(0) || '-'}%</span> <span style="color: ${pnlColor};">${pm.pnl >= 0 ? '+' : ''}£${pm.pnl?.toFixed(0) || '0'}</span></div>
-                                    <div style="font-size: 0.65rem;"><span style="color: ${pnlPctColor};">${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%</span> <span style="color: var(--text-muted);">${pm.trades} trades</span></div>
+                                return `<div style="flex: 1; text-align: center; padding: 0.4rem 0.5rem; min-width: 100px;">
+                                    <div style="color: var(--text-muted); font-weight: 600; font-size: 0.8rem; margin-bottom: 0.2rem;">${p.toUpperCase()}</div>
+                                    <div style="font-size: 0.9rem; font-weight: 500;"><span style="color: ${wrColor};">${pm.win_rate?.toFixed(0) || '-'}%</span> <span style="color: ${pnlColor};">${pm.pnl >= 0 ? '+' : ''}£${pm.pnl?.toFixed(0) || '0'}</span></div>
+                                    <div style="font-size: 0.75rem; margin-top: 0.1rem;"><span style="color: ${pnlPctColor};">${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%</span> <span style="color: var(--text-muted);">${pm.trades} trades</span></div>
                                 </div>`;
                             }).join('');
 
                             periodRow = `
                             <tr class="period-row" style="background: var(--bg-secondary);">
-                                <td colspan="12" style="padding: 0.3rem 0.5rem 0.3rem 2.5rem; font-size: 0.75rem;">
-                                    ${periodBoxes}
+                                <td colspan="12" style="padding: 0.4rem 1rem;">
+                                    <div style="display: flex; justify-content: flex-start; gap: 0.5rem; flex-wrap: wrap;">
+                                        ${periodBoxes}
+                                    </div>
                                 </td>
                             </tr>`;
                         }

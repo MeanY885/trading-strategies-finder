@@ -5,6 +5,7 @@ import os
 import json
 import asyncio
 import concurrent.futures
+import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -672,6 +673,19 @@ def run_unified_sync(capital: float, risk_percent: float, n_trials: int, engine:
             if 'all_results' in report and report['all_results']:
                 all_phase1_results.extend(report['all_results'])
 
+        # CRITICAL: Deduplicate strategies before tuning
+        # Keep only the best result for each unique (entry_rule, direction) combination
+        # This prevents tuning the same strategy 20+ times with different TP/SL
+        if all_phase1_results:
+            seen_strategies = {}
+            for result in all_phase1_results:
+                key = (result.entry_rule, result.direction)
+                score = result.composite_score if result.composite_score is not None else 0
+                if key not in seen_strategies or score > (seen_strategies[key].composite_score or 0):
+                    seen_strategies[key] = result
+            all_phase1_results = list(seen_strategies.values())
+            print(f"[Tuning] Deduplicated to {len(all_phase1_results)} unique strategies for tuning")
+
         # Only proceed with tuning if we have results
         tuning_results = []
         if all_phase1_results:
@@ -787,16 +801,22 @@ async def get_unified_status():
 
 def publish_strategy_result(result: dict):
     """Publish a strategy result to all connected SSE clients"""
-    print(f"[SSE] Publishing result: {result.get('strategy_name', 'unknown')} score={result.get('composite_score', 0):.4f} to {len(streaming_clients)} clients")
     with streaming_lock:
+        client_count = len(streaming_clients)
         if not streaming_clients:
-            print("[SSE] WARNING: No SSE clients connected!")
-        for q in streaming_clients:
-            try:
-                q.put_nowait(result)
-                print(f"[SSE] Result queued successfully")
-            except queue.Full:
-                print(f"[SSE] Queue full, skipping")
+            return  # No clients, skip silently
+        # Iterate over a copy to avoid issues if list changes
+        clients_copy = list(streaming_clients)
+
+    # Log outside the lock to avoid holding it too long
+    strategy_name = result.get('strategy_name', result.get('type', 'unknown'))
+    print(f"[SSE] Publishing: {strategy_name} to {client_count} clients")
+
+    for q in clients_copy:
+        try:
+            q.put_nowait(result)
+        except queue.Full:
+            print(f"[SSE] Queue full, skipping")
 
 
 async def generate_sse_stream():
@@ -827,7 +847,10 @@ async def generate_sse_stream():
             await asyncio.sleep(0.1)
     finally:
         with streaming_lock:
-            streaming_clients.remove(client_queue)
+            try:
+                streaming_clients.remove(client_queue)
+            except ValueError:
+                pass  # Already removed, ignore
 
 
 @app.get("/api/unified-stream")
@@ -1252,7 +1275,7 @@ async def get_filter_options():
 
     try:
         db = get_strategy_db()
-        conn = db.conn
+        conn = sqlite3.connect(db.db_path)
         cursor = conn.cursor()
 
         # Get distinct symbols
@@ -1271,6 +1294,7 @@ async def get_filter_options():
             "max": date_row[1] if date_row[1] else None
         }
 
+        conn.close()
         return {
             "symbols": symbols,
             "timeframes": timeframes,

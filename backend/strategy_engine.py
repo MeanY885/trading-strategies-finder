@@ -381,6 +381,23 @@ class StrategyResult:
         if not self.trades_list:
             return {}
 
+        # === Get actual data date range from DataFrame ===
+        data_start = None
+        data_end = None
+        if hasattr(self, 'df') and self.df is not None and len(self.df) > 0:
+            if 'time' in self.df.columns:
+                try:
+                    data_start = pd.to_datetime(self.df['time'].iloc[0])
+                    data_end = pd.to_datetime(self.df['time'].iloc[-1])
+                except Exception:
+                    pass
+            elif self.df.index.name == 'time' or isinstance(self.df.index, pd.DatetimeIndex):
+                try:
+                    data_start = pd.to_datetime(self.df.index[0])
+                    data_end = pd.to_datetime(self.df.index[-1])
+                except Exception:
+                    pass
+
         # === STEP 1: Parse ALL trade exit times (including bar_ timestamps) ===
         trades_with_times = []
         trades_with_bar_times = []  # Trades with bar_ timestamps (need estimation)
@@ -444,13 +461,25 @@ class StrategyResult:
                     trade['_exit_dt'] = estimated_dt
                     trades_with_times.append(trade)
             else:
-                # No valid timestamps at all - distribute trades evenly across a synthetic period
-                # Use trade_num as ordering
+                # No valid timestamps at all - use actual data date range from DataFrame
+                # This ensures period labels match the selected backtest period
                 num_trades = len(trades_with_bar_times)
-                base_dt = datetime.now() - timedelta(days=7)  # Assume 7 days ago as base
-                for i, trade in enumerate(sorted(trades_with_bar_times, key=lambda x: x['_bar_idx'])):
-                    trade['_exit_dt'] = base_dt + timedelta(hours=i * 12)  # 12 hours apart
-                    trades_with_times.append(trade)
+
+                # Use actual data range if available, otherwise fallback to 7 days
+                if data_start is not None and data_end is not None:
+                    base_dt = data_start
+                    span_seconds = (data_end - data_start).total_seconds()
+                    # Distribute trades evenly across the actual data span
+                    seconds_per_trade = span_seconds / max(num_trades - 1, 1) if num_trades > 1 else 0
+                    for i, trade in enumerate(sorted(trades_with_bar_times, key=lambda x: x['_bar_idx'])):
+                        trade['_exit_dt'] = base_dt + timedelta(seconds=i * seconds_per_trade)
+                        trades_with_times.append(trade)
+                else:
+                    # Fallback: no date info available
+                    base_dt = datetime.now() - timedelta(days=7)
+                    for i, trade in enumerate(sorted(trades_with_bar_times, key=lambda x: x['_bar_idx'])):
+                        trade['_exit_dt'] = base_dt + timedelta(hours=i * 12)
+                        trades_with_times.append(trade)
 
         if not trades_with_times:
             return {}
@@ -543,6 +572,8 @@ class StrategyResult:
         """
         Calculate a score for performance consistency across time periods.
 
+        UPDATED: Made less punitive to avoid over-penalizing normal trading variability.
+
         Factors:
         - Win Rate Consistency (30%): Low standard deviation of win rates
         - Profitability Consistency (30%): % of periods that are profitable
@@ -559,32 +590,40 @@ class StrategyResult:
             return 50.0  # Need at least 2 periods to measure consistency
 
         # 1. Win Rate Consistency (low standard deviation = consistent)
+        # UPDATED: Reduced penalty multiplier from 4 to 2 for less punitive scoring
         win_rates = [pm.win_rate for pm in valid_periods if pm.win_rate is not None]
         if len(win_rates) >= 2:
             import statistics
             wr_mean = statistics.mean(win_rates)
             wr_stdev = statistics.stdev(win_rates)
-            # Lower stdev = higher score (0-25 stdev maps to 100-0)
-            wr_consistency = max(0, 100 - (wr_stdev * 4))
+            # Lower stdev = higher score (reduced penalty: 0-50 stdev maps to 100-0)
+            wr_consistency = max(0, 100 - (wr_stdev * 2))
         else:
             wr_consistency = 50
 
         # 2. Profitability Consistency (how many periods are profitable)
+        # UPDATED: 60%+ profitable periods is good (was requiring near 100%)
         profitable_periods = sum(1 for pm in valid_periods if pm.total_pnl is not None and pm.total_pnl > 0)
-        pnl_consistency = (profitable_periods / len(valid_periods)) * 100
+        profit_ratio = profitable_periods / len(valid_periods)
+        # Scale so 60%+ profitable = 100 points, 40% = 66 points, 20% = 33 points
+        if profit_ratio >= 0.6:
+            pnl_consistency = 100
+        else:
+            pnl_consistency = (profit_ratio / 0.6) * 100
 
         # 3. Max Drawdown Score (lower is better)
+        # UPDATED: More lenient thresholds
         max_dds = [pm.max_drawdown_pct for pm in valid_periods if pm.max_drawdown_pct is not None]
         if max_dds:
             avg_dd = sum(max_dds) / len(max_dds)
-            # DD < 5%: 100, DD 5-10%: 80, DD 10-20%: 60, DD 20-30%: 40, DD > 30%: 20
-            if avg_dd < 5:
+            # DD < 10%: 100, DD 10-20%: 80, DD 20-30%: 60, DD 30-40%: 40, DD > 40%: 20
+            if avg_dd < 10:
                 dd_score = 100
-            elif avg_dd < 10:
-                dd_score = 80
             elif avg_dd < 20:
-                dd_score = 60
+                dd_score = 80
             elif avg_dd < 30:
+                dd_score = 60
+            elif avg_dd < 40:
                 dd_score = 40
             else:
                 dd_score = 20
@@ -592,14 +631,15 @@ class StrategyResult:
             dd_score = 50
 
         # 4. Trade Distribution (trades per period - lower variance = more consistent)
+        # UPDATED: Reduced penalty multiplier from 50 to 30 for less punitive scoring
         trade_counts = [pm.total_trades for pm in valid_periods]
         if len(trade_counts) >= 2:
             import statistics
             tc_mean = statistics.mean(trade_counts)
             tc_stdev = statistics.stdev(trade_counts)
             tc_cv = tc_stdev / tc_mean if tc_mean > 0 else 1
-            # Lower CV = higher score
-            distribution_score = max(0, 100 - (tc_cv * 50))
+            # Lower CV = higher score (reduced penalty)
+            distribution_score = max(0, 100 - (tc_cv * 30))
         else:
             distribution_score = 50
 
@@ -683,28 +723,24 @@ class StrategyResult:
         # Consistency Score (already calculated)
         consistency = self.consistency_score
 
-        # Weighted composite
+        # Weighted composite - prioritizes capital preservation and edge detection
+        # Win Rate (15%): Reduced - vanity metric, can profit at 30% WR with good R:R
+        # Profit Factor (20%): Increased - better indicator of edge than win rate
+        # Return % (10%): Reduced - returns meaningless without risk context
+        # Trade Count (10%): Statistical significance
+        # Max Drawdown (25%): Increased - capital preservation is #1 job
+        # Consistency (20%): Filter out one-hit wonders
         base_score = (
-            wr_score * 0.25 +
-            pf_score * 0.15 +
-            pnl_score * 0.15 +
+            wr_score * 0.15 +
+            pf_score * 0.20 +
+            pnl_score * 0.10 +
             trades_score * 0.10 +
-            dd_score * 0.15 +
+            dd_score * 0.25 +
             consistency * 0.20
         )
 
-        # Bidirectional bonus: reward balanced performance across both directions
-        if self.direction == 'both' and self.long_trades > 0 and self.short_trades > 0:
-            # Balance ratio: closer to 1.0 = more balanced
-            balance_ratio = min(self.long_trades, self.short_trades) / max(self.long_trades, self.short_trades)
-            # Up to 10% bonus for balanced trade distribution
-            balance_bonus = balance_ratio * 0.10
-
-            # Additional 5% bonus if both directions are profitable
-            if self.long_pnl > 0 and self.short_pnl > 0:
-                balance_bonus += 0.05
-
-            base_score *= (1 + balance_bonus)
+        # NOTE: Bidirectional bonus removed - was artificially inflating scores
+        # All strategies should be evaluated on the same criteria without bonuses
 
         self.composite_score = round(base_score, 1)
 
@@ -2800,8 +2836,9 @@ class StrategyEngine:
                 flip_count=0
             )
 
-        wins = [t for t in trades if t.pnl > 0]
-        losses = [t for t in trades if t.pnl <= 0]
+        # Use exit_reason for consistent profit factor calculation (matches regular backtest)
+        wins = [t for t in trades if t.exit_reason == 'tp']
+        losses = [t for t in trades if t.exit_reason == 'sl']
         total_pnl = sum(t.pnl for t in trades)
         total_pnl_percent = ((equity - initial_capital) / initial_capital) * 100
 
@@ -3024,7 +3061,7 @@ class StrategyEngine:
                                     progress
                                 )
 
-                            if result.total_trades >= 1 and (result.win_rate or 0) >= min_win_rate:
+                            if result.total_trades >= min_trades and (result.win_rate or 0) >= min_win_rate:
                                 results.append(result)
 
                                 # Stream profitable ones
@@ -3055,7 +3092,7 @@ class StrategyEngine:
                                 progress
                             )
 
-                        if result.total_trades >= 1 and (result.win_rate or 0) >= min_win_rate:
+                        if result.total_trades >= min_trades and (result.win_rate or 0) >= min_win_rate:
                             results.append(result)
 
                             # Stream profitable ones
@@ -3557,6 +3594,8 @@ class StrategyEngine:
         print(f"  [Tuning] {entry_rule}_{direction}: Testing {len(combinations)} combinations for params: {param_names}")
         print(f"  [Tuning] Default params: {default_params}, Baseline score: {baseline_score:.1f}")
 
+        import gc
+
         for combo in combinations:
             param_dict = dict(zip(param_names, combo))
 
@@ -3592,6 +3631,11 @@ class StrategyEngine:
                 best_params = param_dict.copy()
                 best_result = result
                 print(f"    *** NEW BEST: {param_dict} -> Score: {result_score:.1f} (was {baseline_score:.1f})")
+
+            # Clean up to prevent memory buildup
+            del df_copy
+            if tested_count % 10 == 0:
+                gc.collect()
 
         print(f"  [Tuning] Tested {tested_count} combos, {len(improved_combos)} improved. Best score: {best_score:.1f} (baseline: {baseline_score:.1f})")
 
