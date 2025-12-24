@@ -1321,78 +1321,194 @@
             });
         }
 
-        // Render History Table
+        // Render History Table - Groups strategies by name, shows best (lowest SL) first
         function renderHistoryTable() {
             const tbody = document.getElementById('history-tbody');
             tbody.innerHTML = '';
 
-            historyStrategies.forEach((strategy, index) => {
+            // Group strategies by name+symbol+timeframe
+            const groups = {};
+            historyStrategies.forEach(strategy => {
+                const key = `${strategy.strategy_name}|${strategy.symbol}|${strategy.timeframe}`;
+                if (!groups[key]) {
+                    groups[key] = [];
+                }
+                groups[key].push(strategy);
+            });
+
+            // Sort each group by SL (ascending - lowest first)
+            Object.values(groups).forEach(group => {
+                group.sort((a, b) => {
+                    const slA = a.sl_percent || a.params?.sl_percent || 999;
+                    const slB = b.sl_percent || b.params?.sl_percent || 999;
+                    return slA - slB;
+                });
+            });
+
+            // Convert to array and sort groups by best strategy's score
+            const sortedGroups = Object.values(groups).sort((a, b) => {
+                return (b[0].composite_score || 0) - (a[0].composite_score || 0);
+            });
+
+            let rowIndex = 0;
+            sortedGroups.forEach(group => {
+                const bestStrategy = group[0]; // Lowest SL
+                const hasVariants = group.length > 1;
+                rowIndex++;
+
                 const row = document.createElement('tr');
                 row.className = 'strategy-row';
-                row.dataset.strategyId = strategy.id;
+                row.dataset.strategyId = bestStrategy.id;
+                row.dataset.groupKey = `${bestStrategy.strategy_name}|${bestStrategy.symbol}|${bestStrategy.timeframe}`;
                 row.style.cursor = 'pointer';
 
                 // Win rate color class
-                const winRateClass = strategy.win_rate >= 50 ? 'win-rate-high' :
-                                     strategy.win_rate >= 40 ? 'win-rate-medium' : 'win-rate-low';
+                const winRateClass = bestStrategy.win_rate >= 50 ? 'win-rate-high' :
+                                     bestStrategy.win_rate >= 40 ? 'win-rate-medium' : 'win-rate-low';
 
                 // PnL color class
-                const pnlClass = strategy.total_pnl >= 0 ? 'pnl-positive' : 'pnl-negative';
-                const pnlPrefix = strategy.total_pnl >= 0 ? '+' : '';
+                const pnlClass = bestStrategy.total_pnl >= 0 ? 'pnl-positive' : 'pnl-negative';
+                const pnlPrefix = bestStrategy.total_pnl >= 0 ? '+' : '';
 
-                // Drawdown color class (lower is better)
-                const dd = strategy.max_drawdown || 0;
+                // Drawdown color class
+                const dd = bestStrategy.max_drawdown || 0;
                 const ddClass = dd <= 5 ? 'dd-low' : dd <= 15 ? 'dd-medium' : 'dd-high';
 
                 // Format date
-                const createdDate = strategy.created_at ? new Date(strategy.created_at) : null;
+                const createdDate = bestStrategy.created_at ? new Date(bestStrategy.created_at) : null;
                 const dateStr = createdDate ? createdDate.toLocaleDateString('en-GB', {
                     day: '2-digit', month: 'short', year: 'numeric'
                 }) : '-';
 
                 // TP/SL values
-                const tpPercent = strategy.tp_percent || strategy.params?.tp_percent || '-';
-                const slPercent = strategy.sl_percent || strategy.params?.sl_percent || '-';
+                const tpPercent = bestStrategy.tp_percent || bestStrategy.params?.tp_percent || '-';
+                const slPercent = bestStrategy.sl_percent || bestStrategy.params?.sl_percent || '-';
+
+                // Show variant count badge if there are variants
+                const variantBadge = hasVariants ? `<span class="variant-badge" style="background: var(--primary); color: white; padding: 0.1rem 0.4rem; border-radius: 10px; font-size: 0.7rem; margin-left: 0.3rem;">${group.length}</span>` : '';
 
                 row.innerHTML = `
-                    <td><span class="expand-icon">▶</span> ${index + 1}</td>
-                    <td title="${strategy.strategy_name}">${truncateText(strategy.strategy_name, 20)}</td>
-                    <td><span class="symbol-badge">${strategy.symbol || '-'}</span></td>
-                    <td><span class="tf-badge">${strategy.timeframe || '-'}</span></td>
+                    <td><span class="expand-icon">${hasVariants ? '▶' : '•'}</span> ${rowIndex}</td>
+                    <td title="${bestStrategy.strategy_name}">${truncateText(bestStrategy.strategy_name, 18)}${variantBadge}</td>
+                    <td><span class="symbol-badge">${bestStrategy.symbol || '-'}</span></td>
+                    <td><span class="tf-badge">${bestStrategy.timeframe || '-'}</span></td>
                     <td style="color: var(--success);">${typeof tpPercent === 'number' ? formatNumber(tpPercent, 1) : tpPercent}</td>
                     <td style="color: var(--danger);">${typeof slPercent === 'number' ? formatNumber(slPercent, 1) : slPercent}</td>
-                    <td>${formatNumber(strategy.composite_score, 1)}</td>
-                    <td class="${winRateClass}">${formatNumber(strategy.win_rate, 1)}%</td>
-                    <td>${formatNumber(strategy.profit_factor, 2)}</td>
-                    <td class="${pnlClass}">${pnlPrefix}${formatNumber(strategy.total_pnl, 2)}</td>
+                    <td>${formatNumber(bestStrategy.composite_score, 1)}</td>
+                    <td class="${winRateClass}">${formatNumber(bestStrategy.win_rate, 1)}%</td>
+                    <td>${formatNumber(bestStrategy.profit_factor, 2)}</td>
+                    <td class="${pnlClass}">${pnlPrefix}${formatNumber(bestStrategy.total_pnl, 2)}</td>
                     <td class="${ddClass}">${formatNumber(dd, 1)}%</td>
-                    <td>${strategy.total_trades || 0}</td>
+                    <td>${bestStrategy.total_trades || 0}</td>
                     <td>${dateStr}</td>
                     <td>
                         <div class="action-btn-group">
-                            <button class="action-btn" onclick="event.stopPropagation(); copyPineScript(${strategy.id})" title="Copy Pine Script">📋</button>
-                            <button class="action-btn" onclick="event.stopPropagation(); downloadPineScript(${strategy.id}, '${strategy.strategy_name}')" title="Download Pine Script">📜</button>
-                            <button class="action-btn danger" onclick="event.stopPropagation(); deleteStrategy(${strategy.id}, '${strategy.strategy_name}')" title="Delete">🗑️</button>
+                            <button class="action-btn" onclick="event.stopPropagation(); copyPineScript(${bestStrategy.id})" title="Copy Pine Script">📋</button>
+                            <button class="action-btn" onclick="event.stopPropagation(); downloadPineScript(${bestStrategy.id}, '${bestStrategy.strategy_name}')" title="Download Pine Script">📜</button>
+                            <button class="action-btn danger" onclick="event.stopPropagation(); deleteStrategy(${bestStrategy.id}, '${bestStrategy.strategy_name}')" title="Delete">🗑️</button>
                         </div>
                     </td>
                 `;
 
-                // Click to expand/collapse
-                row.addEventListener('click', () => toggleStrategyDetails(strategy.id, row));
+                // Click to expand variants or show details
+                if (hasVariants) {
+                    row.addEventListener('click', () => toggleVariants(row, group));
+                } else {
+                    row.addEventListener('click', () => toggleStrategyDetails(bestStrategy.id, row));
+                }
 
                 tbody.appendChild(row);
 
-                // Create expandable detail row (hidden by default)
-                const detailRow = document.createElement('tr');
-                detailRow.className = 'strategy-detail-row';
-                detailRow.id = `detail-row-${strategy.id}`;
-                detailRow.style.display = 'none';
-                detailRow.innerHTML = `<td colspan="14" class="detail-cell"><div class="inline-detail-content" id="detail-content-${strategy.id}"></div></td>`;
-                tbody.appendChild(detailRow);
+                // Create variants container row (hidden by default)
+                if (hasVariants) {
+                    const variantsRow = document.createElement('tr');
+                    variantsRow.className = 'variants-row';
+                    variantsRow.id = `variants-row-${bestStrategy.id}`;
+                    variantsRow.style.display = 'none';
+                    variantsRow.innerHTML = `<td colspan="14" class="variants-cell" style="padding: 0; background: var(--bg-secondary);"></td>`;
+                    tbody.appendChild(variantsRow);
+                }
             });
 
             // Update sort indicators
             updateSortIndicators();
+        }
+
+        // Toggle variants dropdown
+        function toggleVariants(rowElement, group) {
+            const bestStrategy = group[0];
+            const variantsRow = document.getElementById(`variants-row-${bestStrategy.id}`);
+            const expandIcon = rowElement.querySelector('.expand-icon');
+
+            if (!variantsRow) return;
+
+            // Close all other expanded rows
+            document.querySelectorAll('.variants-row').forEach(r => {
+                if (r.id !== `variants-row-${bestStrategy.id}`) {
+                    r.style.display = 'none';
+                }
+            });
+            document.querySelectorAll('.strategy-row').forEach(r => {
+                if (r !== rowElement) {
+                    r.classList.remove('expanded');
+                    const icon = r.querySelector('.expand-icon');
+                    if (icon && icon.textContent === '▼') icon.textContent = '▶';
+                }
+            });
+
+            // Toggle current row
+            if (variantsRow.style.display === 'none') {
+                variantsRow.style.display = 'table-row';
+                rowElement.classList.add('expanded');
+                expandIcon.textContent = '▼';
+
+                // Build variants table
+                const variantsCell = variantsRow.querySelector('.variants-cell');
+                let variantsHtml = `<div style="padding: 0.5rem 1rem 0.5rem 2rem;">
+                    <table style="width: 100%; font-size: 0.85rem; border-collapse: collapse;">
+                        <thead>
+                            <tr style="background: var(--bg-card);">
+                                <th style="padding: 0.3rem; text-align: left; color: var(--text-muted);">TP%</th>
+                                <th style="padding: 0.3rem; text-align: left; color: var(--text-muted);">SL%</th>
+                                <th style="padding: 0.3rem; text-align: left; color: var(--text-muted);">Score</th>
+                                <th style="padding: 0.3rem; text-align: left; color: var(--text-muted);">Win Rate</th>
+                                <th style="padding: 0.3rem; text-align: left; color: var(--text-muted);">PF</th>
+                                <th style="padding: 0.3rem; text-align: left; color: var(--text-muted);">PnL</th>
+                                <th style="padding: 0.3rem; text-align: center; color: var(--text-muted);">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>`;
+
+                group.forEach((variant, idx) => {
+                    const tp = variant.tp_percent || variant.params?.tp_percent || '-';
+                    const sl = variant.sl_percent || variant.params?.sl_percent || '-';
+                    const pnlClass = variant.total_pnl >= 0 ? 'pnl-positive' : 'pnl-negative';
+                    const pnlPrefix = variant.total_pnl >= 0 ? '+' : '';
+                    const isBest = idx === 0;
+
+                    variantsHtml += `
+                        <tr style="border-bottom: 1px solid var(--border-subtle); ${isBest ? 'background: rgba(34, 197, 94, 0.1);' : ''}">
+                            <td style="padding: 0.4rem; color: var(--success);">${typeof tp === 'number' ? formatNumber(tp, 1) : tp}${isBest ? ' <span style="color: var(--success); font-size: 0.7rem;">★ Best</span>' : ''}</td>
+                            <td style="padding: 0.4rem; color: var(--danger);">${typeof sl === 'number' ? formatNumber(sl, 1) : sl}</td>
+                            <td style="padding: 0.4rem;">${formatNumber(variant.composite_score, 1)}</td>
+                            <td style="padding: 0.4rem; color: ${variant.win_rate >= 50 ? 'var(--success)' : 'var(--text-primary)'};">${formatNumber(variant.win_rate, 1)}%</td>
+                            <td style="padding: 0.4rem;">${formatNumber(variant.profit_factor, 2)}</td>
+                            <td style="padding: 0.4rem;" class="${pnlClass}">${pnlPrefix}${formatNumber(variant.total_pnl, 2)}</td>
+                            <td style="padding: 0.4rem; text-align: center;">
+                                <button class="action-btn" onclick="event.stopPropagation(); copyPineScript(${variant.id})" title="Copy Pine Script">📋</button>
+                                <button class="action-btn" onclick="event.stopPropagation(); downloadPineScript(${variant.id}, '${variant.strategy_name}')" title="Download">📜</button>
+                                <button class="action-btn danger" onclick="event.stopPropagation(); deleteStrategy(${variant.id}, '${variant.strategy_name}')" title="Delete">🗑️</button>
+                            </td>
+                        </tr>`;
+                });
+
+                variantsHtml += `</tbody></table></div>`;
+                variantsCell.innerHTML = variantsHtml;
+            } else {
+                variantsRow.style.display = 'none';
+                rowElement.classList.remove('expanded');
+                expandIcon.textContent = '▶';
+            }
         }
 
         // Toggle inline strategy details
