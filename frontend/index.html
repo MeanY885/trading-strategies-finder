@@ -1259,27 +1259,29 @@
                 const response = await fetch(`/api/db/strategies?${params.toString()}`);
                 historyStrategies = await response.json();
 
-                // Filter by backtest data period if specified (client-side)
-                // Uses data_start (start of backtest data) to filter
+                // Filter by backtest data DURATION if specified (client-side)
+                // Shows only strategies tested on at least X amount of data
                 if (historyFilters.period) {
-                    const now = new Date();
-                    let cutoffDate = new Date();
-
+                    // Required duration in days
+                    let requiredDays = 0;
                     switch (historyFilters.period) {
-                        case '1w': cutoffDate.setDate(now.getDate() - 7); break;
-                        case '1m': cutoffDate.setMonth(now.getMonth() - 1); break;
-                        case '3m': cutoffDate.setMonth(now.getMonth() - 3); break;
-                        case '6m': cutoffDate.setMonth(now.getMonth() - 6); break;
-                        case '12m': cutoffDate.setFullYear(now.getFullYear() - 1); break;
-                        case '2y': cutoffDate.setFullYear(now.getFullYear() - 2); break;
+                        case '1w': requiredDays = 7; break;
+                        case '1m': requiredDays = 30; break;
+                        case '3m': requiredDays = 90; break;
+                        case '6m': requiredDays = 180; break;
+                        case '12m': requiredDays = 365; break;
+                        case '2y': requiredDays = 730; break;
                     }
 
                     historyStrategies = historyStrategies.filter(s => {
-                        // Use data_start if available, fall back to created_at
-                        const dateStr = s.data_start || s.created_at;
-                        if (!dateStr) return true; // Keep if no date info
-                        const dataDate = new Date(dateStr);
-                        return dataDate >= cutoffDate;
+                        // Need both data_start and data_end to calculate duration
+                        if (!s.data_start || !s.data_end) return false;
+
+                        const startDate = new Date(s.data_start);
+                        const endDate = new Date(s.data_end);
+                        const durationDays = (endDate - startDate) / (1000 * 60 * 60 * 24);
+
+                        return durationDays >= requiredDays;
                     });
                 }
 
