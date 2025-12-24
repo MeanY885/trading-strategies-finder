@@ -1274,8 +1274,8 @@
                     }
 
                     historyStrategies = historyStrategies.filter(s => {
-                        // Need both data_start and data_end to calculate duration
-                        if (!s.data_start || !s.data_end) return false;
+                        // If no date info, show the strategy (legacy data)
+                        if (!s.data_start || !s.data_end) return true;
 
                         const startDate = new Date(s.data_start);
                         const endDate = new Date(s.data_end);
