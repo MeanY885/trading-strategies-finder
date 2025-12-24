@@ -446,6 +446,16 @@ class StrategyDatabase:
 
         return self._row_to_dict(row) if row else None
 
+    def get_optimization_run_by_id(self, run_id: int) -> Optional[Dict]:
+        """Get optimization run by ID to access risk_percent and other settings."""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM optimization_runs WHERE id = ?', (run_id,))
+        row = cursor.fetchone()
+        conn.close()
+        return dict(row) if row else None
+
     def get_optimization_runs(self, limit: int = 20) -> List[Dict]:
         """Get recent optimization runs."""
         conn = sqlite3.connect(self.db_path)

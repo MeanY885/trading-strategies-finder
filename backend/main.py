@@ -1411,17 +1411,61 @@ async def get_strategy_pinescript_from_db(strategy_id: int):
         if not strategy:
             raise HTTPException(status_code=404, detail="Strategy not found")
 
+        # Extract entry_rule and direction from params
+        params = strategy['params']
+        entry_rule = params.get('entry_rule')
+        direction = params.get('direction') or strategy.get('trade_mode', 'long')
+
+        # Get position_size_pct from optimization run (stored as risk_percent)
+        position_size_pct = 75.0  # default
+        capital = 1000.0  # default
+        run_id = strategy.get('optimization_run_id')
+        if run_id:
+            run = db.get_optimization_run_by_id(run_id)
+            if run:
+                position_size_pct = run.get('risk_percent', 75.0)
+                capital = run.get('capital', 1000.0)
+
+        # Also check if stored in params (override if present)
+        position_size_pct = params.get('position_size_pct', position_size_pct)
+        capital = params.get('capital', capital)
+
+        # Build date range from strategy's data_start/data_end
+        date_range = None
+        data_start = strategy.get('data_start')
+        data_end = strategy.get('data_end')
+        if data_start and data_end:
+            # Parse ISO format dates and extract date/time components
+            try:
+                from datetime import datetime
+                start_dt = datetime.fromisoformat(data_start.replace('Z', '+00:00'))
+                end_dt = datetime.fromisoformat(data_end.replace('Z', '+00:00'))
+                date_range = {
+                    'enabled': True,
+                    'startDate': start_dt.strftime('%Y-%m-%d'),
+                    'startTime': start_dt.strftime('%H:%M'),
+                    'endDate': end_dt.strftime('%Y-%m-%d'),
+                    'endTime': end_dt.strftime('%H:%M'),
+                }
+            except Exception as e:
+                print(f"Date range parsing error: {e}")
+
         generator = PineScriptGenerator()
         pinescript = generator.generate_exact_match(
             strategy['strategy_name'],
-            strategy['params'],
+            params,
             {
                 'total_trades': strategy['total_trades'],
                 'win_rate': strategy['win_rate'],
                 'total_pnl': strategy['total_pnl'],
                 'profit_factor': strategy['profit_factor'],
                 'max_drawdown': strategy['max_drawdown'],
-            }
+            },
+            entry_rule=entry_rule,
+            direction=direction,
+            position_size_pct=position_size_pct,
+            capital=capital,
+            date_range=date_range
         )
 
         return {

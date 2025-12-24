@@ -544,6 +544,122 @@
         .pnl-positive { color: var(--success); }
         .pnl-negative { color: var(--danger); }
 
+        /* Drawdown Styling (lower is better) */
+        .dd-low { color: var(--success); }
+        .dd-medium { color: var(--warning); }
+        .dd-high { color: var(--danger); }
+
+        /* Expandable Row Styles */
+        .expand-icon {
+            display: inline-block;
+            width: 1em;
+            transition: transform 0.2s ease;
+            color: var(--text-muted);
+        }
+        .strategy-row:hover {
+            background: var(--bg-tertiary);
+        }
+        .strategy-row.expanded {
+            background: var(--bg-tertiary);
+            border-bottom: none;
+        }
+        .strategy-detail-row {
+            background: var(--bg-secondary);
+        }
+        .detail-cell {
+            padding: 0 !important;
+            border-top: none !important;
+        }
+        .inline-detail-content {
+            padding: 1rem 1.5rem;
+            background: var(--bg-secondary);
+            border-radius: 0 0 8px 8px;
+            margin: 0 0.5rem 0.5rem 0.5rem;
+        }
+        .inline-detail-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr auto;
+            gap: 1.5rem;
+            align-items: start;
+        }
+        .inline-detail-section h4 {
+            margin: 0 0 0.75rem 0;
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+            font-weight: 600;
+        }
+        .mini-stats-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 0.5rem;
+        }
+        .mini-stat {
+            display: flex;
+            flex-direction: column;
+            padding: 0.5rem;
+            background: var(--bg-tertiary);
+            border-radius: 6px;
+        }
+        .mini-stat .label {
+            font-size: 0.7rem;
+            color: var(--text-muted);
+            margin-bottom: 0.25rem;
+        }
+        .mini-stat .value {
+            font-size: 0.9rem;
+            font-weight: 600;
+        }
+        .params-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0.5rem;
+            font-size: 0.85rem;
+        }
+        .params-grid .label {
+            color: var(--text-muted);
+        }
+        .inline-actions {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+        .btn-sm {
+            padding: 0.4rem 0.8rem;
+            font-size: 0.8rem;
+        }
+        .btn-danger {
+            background: var(--danger-bg);
+            border-color: var(--danger);
+            color: var(--danger);
+        }
+        .btn-danger:hover {
+            background: var(--danger);
+            color: white;
+        }
+        .actions-section {
+            min-width: 150px;
+        }
+
+        /* Toast Notification */
+        .toast-notification {
+            position: fixed;
+            bottom: 2rem;
+            left: 50%;
+            transform: translateX(-50%) translateY(100px);
+            background: var(--success);
+            color: white;
+            padding: 0.75rem 1.5rem;
+            border-radius: 8px;
+            font-weight: 500;
+            z-index: 10000;
+            opacity: 0;
+            transition: all 0.3s ease;
+        }
+        .toast-notification.show {
+            transform: translateX(-50%) translateY(0);
+            opacity: 1;
+        }
+
         /* Loading and Empty States */
         .loading-state,
         .empty-state {
@@ -966,13 +1082,16 @@
                     </div>
 
                     <div class="input-group">
-                        <label>From Date</label>
-                        <input type="date" id="filter-date-from" onchange="applyHistoryFilters()">
-                    </div>
-
-                    <div class="input-group">
-                        <label>To Date</label>
-                        <input type="date" id="filter-date-to" onchange="applyHistoryFilters()">
+                        <label>Historical Period</label>
+                        <select id="filter-period" onchange="applyHistoryFilters()">
+                            <option value="">All Time</option>
+                            <option value="1w">1 Week</option>
+                            <option value="1m">1 Month</option>
+                            <option value="3m">3 Months</option>
+                            <option value="6m">6 Months</option>
+                            <option value="12m">12 Months</option>
+                            <option value="2y">2 Years</option>
+                        </select>
                     </div>
 
                     <button class="btn btn-secondary" onclick="resetHistoryFilters()" style="margin-top: 1.5rem;">
@@ -993,6 +1112,7 @@
                                 <th class="sortable" data-sort="win_rate" onclick="sortHistoryTable('win_rate')">Win Rate</th>
                                 <th class="sortable" data-sort="profit_factor" onclick="sortHistoryTable('profit_factor')">PF</th>
                                 <th class="sortable" data-sort="total_pnl" onclick="sortHistoryTable('total_pnl')">PnL</th>
+                                <th class="sortable" data-sort="max_drawdown" onclick="sortHistoryTable('max_drawdown')">DD%</th>
                                 <th class="sortable" data-sort="total_trades" onclick="sortHistoryTable('total_trades')">Trades</th>
                                 <th class="sortable" data-sort="created_at" onclick="sortHistoryTable('created_at')">Date</th>
                                 <th>Actions</th>
@@ -1040,8 +1160,7 @@
         let historyFilters = {
             symbol: '',
             timeframe: '',
-            dateFrom: '',
-            dateTo: ''
+            period: ''
         };
         let historyInitialized = false;
 
@@ -1089,14 +1208,6 @@
                     timeframeSelect.innerHTML += `<option value="${tf}">${tf}</option>`;
                 });
 
-                // Set date range bounds
-                if (options.date_range.min) {
-                    const minDate = options.date_range.min.split(' ')[0];
-                    const maxDate = options.date_range.max ? options.date_range.max.split(' ')[0] : '';
-                    document.getElementById('filter-date-from').min = minDate;
-                    document.getElementById('filter-date-to').max = maxDate || new Date().toISOString().split('T')[0];
-                }
-
                 // Load strategies
                 await loadHistoryStrategies();
             } catch (error) {
@@ -1129,13 +1240,23 @@
                 const response = await fetch(`/api/db/strategies?${params.toString()}`);
                 historyStrategies = await response.json();
 
-                // Filter by date if specified (client-side since API doesn't support it)
-                if (historyFilters.dateFrom || historyFilters.dateTo) {
+                // Filter by historical period if specified (client-side)
+                if (historyFilters.period) {
+                    const now = new Date();
+                    let cutoffDate = new Date();
+
+                    switch (historyFilters.period) {
+                        case '1w': cutoffDate.setDate(now.getDate() - 7); break;
+                        case '1m': cutoffDate.setMonth(now.getMonth() - 1); break;
+                        case '3m': cutoffDate.setMonth(now.getMonth() - 3); break;
+                        case '6m': cutoffDate.setMonth(now.getMonth() - 6); break;
+                        case '12m': cutoffDate.setFullYear(now.getFullYear() - 1); break;
+                        case '2y': cutoffDate.setFullYear(now.getFullYear() - 2); break;
+                    }
+
                     historyStrategies = historyStrategies.filter(s => {
                         const createdAt = new Date(s.created_at);
-                        if (historyFilters.dateFrom && createdAt < new Date(historyFilters.dateFrom)) return false;
-                        if (historyFilters.dateTo && createdAt > new Date(historyFilters.dateTo + 'T23:59:59')) return false;
-                        return true;
+                        return createdAt >= cutoffDate;
                     });
                 }
 
@@ -1188,6 +1309,9 @@
 
             historyStrategies.forEach((strategy, index) => {
                 const row = document.createElement('tr');
+                row.className = 'strategy-row';
+                row.dataset.strategyId = strategy.id;
+                row.style.cursor = 'pointer';
 
                 // Win rate color class
                 const winRateClass = strategy.win_rate >= 50 ? 'win-rate-high' :
@@ -1197,6 +1321,10 @@
                 const pnlClass = strategy.total_pnl >= 0 ? 'pnl-positive' : 'pnl-negative';
                 const pnlPrefix = strategy.total_pnl >= 0 ? '+' : '';
 
+                // Drawdown color class (lower is better)
+                const dd = strategy.max_drawdown || 0;
+                const ddClass = dd <= 5 ? 'dd-low' : dd <= 15 ? 'dd-medium' : 'dd-high';
+
                 // Format date
                 const createdDate = strategy.created_at ? new Date(strategy.created_at) : null;
                 const dateStr = createdDate ? createdDate.toLocaleDateString('en-GB', {
@@ -1204,7 +1332,7 @@
                 }) : '-';
 
                 row.innerHTML = `
-                    <td>${index + 1}</td>
+                    <td><span class="expand-icon">▶</span> ${index + 1}</td>
                     <td title="${strategy.strategy_name}">${truncateText(strategy.strategy_name, 20)}</td>
                     <td><span class="symbol-badge">${strategy.symbol || '-'}</span></td>
                     <td><span class="tf-badge">${strategy.timeframe || '-'}</span></td>
@@ -1212,22 +1340,122 @@
                     <td class="${winRateClass}">${formatNumber(strategy.win_rate, 1)}%</td>
                     <td>${formatNumber(strategy.profit_factor, 2)}</td>
                     <td class="${pnlClass}">${pnlPrefix}${formatNumber(strategy.total_pnl, 2)}</td>
+                    <td class="${ddClass}">${formatNumber(dd, 1)}%</td>
                     <td>${strategy.total_trades || 0}</td>
                     <td>${dateStr}</td>
                     <td>
                         <div class="action-btn-group">
-                            <button class="action-btn" onclick="viewStrategyDetails(${strategy.id})" title="View Details">📊</button>
-                            <button class="action-btn" onclick="downloadPineScript(${strategy.id}, '${strategy.strategy_name}')" title="Download Pine Script">📜</button>
-                            <button class="action-btn danger" onclick="deleteStrategy(${strategy.id}, '${strategy.strategy_name}')" title="Delete">🗑️</button>
+                            <button class="action-btn" onclick="event.stopPropagation(); copyPineScript(${strategy.id})" title="Copy Pine Script">📋</button>
+                            <button class="action-btn" onclick="event.stopPropagation(); downloadPineScript(${strategy.id}, '${strategy.strategy_name}')" title="Download Pine Script">📜</button>
+                            <button class="action-btn danger" onclick="event.stopPropagation(); deleteStrategy(${strategy.id}, '${strategy.strategy_name}')" title="Delete">🗑️</button>
                         </div>
                     </td>
                 `;
 
+                // Click to expand/collapse
+                row.addEventListener('click', () => toggleStrategyDetails(strategy.id, row));
+
                 tbody.appendChild(row);
+
+                // Create expandable detail row (hidden by default)
+                const detailRow = document.createElement('tr');
+                detailRow.className = 'strategy-detail-row';
+                detailRow.id = `detail-row-${strategy.id}`;
+                detailRow.style.display = 'none';
+                detailRow.innerHTML = `<td colspan="12" class="detail-cell"><div class="inline-detail-content" id="detail-content-${strategy.id}"></div></td>`;
+                tbody.appendChild(detailRow);
             });
 
             // Update sort indicators
             updateSortIndicators();
+        }
+
+        // Toggle inline strategy details
+        async function toggleStrategyDetails(strategyId, rowElement) {
+            const detailRow = document.getElementById(`detail-row-${strategyId}`);
+            const detailContent = document.getElementById(`detail-content-${strategyId}`);
+            const expandIcon = rowElement.querySelector('.expand-icon');
+
+            // Close all other expanded rows
+            document.querySelectorAll('.strategy-detail-row').forEach(r => {
+                if (r.id !== `detail-row-${strategyId}`) {
+                    r.style.display = 'none';
+                }
+            });
+            document.querySelectorAll('.strategy-row').forEach(r => {
+                r.classList.remove('expanded');
+                const icon = r.querySelector('.expand-icon');
+                if (icon) icon.textContent = '▶';
+            });
+
+            // Toggle current row
+            if (detailRow.style.display === 'none') {
+                detailRow.style.display = 'table-row';
+                rowElement.classList.add('expanded');
+                expandIcon.textContent = '▼';
+
+                // Load details if not already loaded
+                if (!detailContent.innerHTML || detailContent.innerHTML.includes('Loading')) {
+                    detailContent.innerHTML = '<p style="text-align: center; padding: 1rem; color: var(--text-secondary);">Loading...</p>';
+                    await loadInlineStrategyDetails(strategyId, detailContent);
+                }
+            } else {
+                detailRow.style.display = 'none';
+                rowElement.classList.remove('expanded');
+                expandIcon.textContent = '▶';
+            }
+        }
+
+        // Load strategy details inline
+        async function loadInlineStrategyDetails(strategyId, container) {
+            try {
+                const response = await fetch(`/api/db/strategies/${strategyId}`);
+                const strategy = await response.json();
+
+                const winRateClass = strategy.win_rate >= 50 ? 'pnl-positive' : strategy.win_rate >= 40 ? '' : 'pnl-negative';
+                const pnlClass = strategy.total_pnl >= 0 ? 'pnl-positive' : 'pnl-negative';
+                const ddClass = (strategy.max_drawdown || 0) <= 5 ? 'dd-low' : (strategy.max_drawdown || 0) <= 15 ? 'dd-medium' : 'dd-high';
+
+                container.innerHTML = `
+                    <div class="inline-detail-grid">
+                        <div class="inline-detail-section">
+                            <h4>Performance Metrics</h4>
+                            <div class="mini-stats-grid">
+                                <div class="mini-stat"><span class="label">Score</span><span class="value">${formatNumber(strategy.composite_score, 1)}</span></div>
+                                <div class="mini-stat"><span class="label">Win Rate</span><span class="value ${winRateClass}">${formatNumber(strategy.win_rate, 1)}%</span></div>
+                                <div class="mini-stat"><span class="label">Profit Factor</span><span class="value">${formatNumber(strategy.profit_factor, 2)}</span></div>
+                                <div class="mini-stat"><span class="label">Total PnL</span><span class="value ${pnlClass}">${strategy.total_pnl >= 0 ? '+' : ''}${formatNumber(strategy.total_pnl, 2)}</span></div>
+                                <div class="mini-stat"><span class="label">Trades</span><span class="value">${strategy.total_trades || 0}</span></div>
+                                <div class="mini-stat"><span class="label">Max DD</span><span class="value ${ddClass}">${formatNumber(strategy.max_drawdown, 1)}%</span></div>
+                                <div class="mini-stat"><span class="label">Sharpe</span><span class="value">${formatNumber(strategy.sharpe_ratio, 2)}</span></div>
+                                <div class="mini-stat"><span class="label">Recovery</span><span class="value">${formatNumber(strategy.recovery_factor, 2)}</span></div>
+                            </div>
+                        </div>
+                        <div class="inline-detail-section">
+                            <h4>Parameters</h4>
+                            <div class="params-grid">
+                                <div><span class="label">Symbol:</span> <span class="symbol-badge">${strategy.symbol || '-'}</span></div>
+                                <div><span class="label">Timeframe:</span> <span class="tf-badge">${strategy.timeframe || '-'}</span></div>
+                                <div><span class="label">Take Profit:</span> ${formatNumber(strategy.tp_percent, 2)}%</div>
+                                <div><span class="label">Stop Loss:</span> ${formatNumber(strategy.sl_percent, 2)}%</div>
+                                <div><span class="label">Data Source:</span> ${strategy.data_source || '-'}</div>
+                                <div><span class="label">Created:</span> ${strategy.created_at || '-'}</div>
+                            </div>
+                        </div>
+                        <div class="inline-detail-section actions-section">
+                            <h4>Actions</h4>
+                            <div class="inline-actions">
+                                <button class="btn btn-primary btn-sm" onclick="copyPineScript(${strategy.id})">📋 Copy Pine Script</button>
+                                <button class="btn btn-secondary btn-sm" onclick="downloadPineScript(${strategy.id}, '${strategy.strategy_name}')">📜 Download</button>
+                                <button class="btn btn-danger btn-sm" onclick="deleteStrategy(${strategy.id}, '${strategy.strategy_name}')">🗑️ Delete</button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            } catch (error) {
+                console.error('Failed to load strategy details:', error);
+                container.innerHTML = '<p style="text-align: center; padding: 1rem; color: var(--danger);">Failed to load details.</p>';
+            }
         }
 
         // Update sort indicators on headers
@@ -1258,8 +1486,7 @@
         function applyHistoryFilters() {
             historyFilters.symbol = document.getElementById('filter-symbol').value;
             historyFilters.timeframe = document.getElementById('filter-timeframe').value;
-            historyFilters.dateFrom = document.getElementById('filter-date-from').value;
-            historyFilters.dateTo = document.getElementById('filter-date-to').value;
+            historyFilters.period = document.getElementById('filter-period').value;
 
             loadHistoryStrategies();
         }
@@ -1268,10 +1495,9 @@
         function resetHistoryFilters() {
             document.getElementById('filter-symbol').value = '';
             document.getElementById('filter-timeframe').value = '';
-            document.getElementById('filter-date-from').value = '';
-            document.getElementById('filter-date-to').value = '';
+            document.getElementById('filter-period').value = '';
 
-            historyFilters = { symbol: '', timeframe: '', dateFrom: '', dateTo: '' };
+            historyFilters = { symbol: '', timeframe: '', period: '' };
             loadHistoryStrategies();
         }
 
@@ -1397,6 +1623,38 @@
                 console.error('Failed to download Pine Script:', error);
                 alert('Failed to download Pine Script: ' + error.message);
             }
+        }
+
+        // Copy Pine Script to clipboard
+        async function copyPineScript(strategyId) {
+            try {
+                const response = await fetch(`/api/db/strategies/${strategyId}/pinescript`);
+                const data = await response.json();
+
+                if (data.pinescript) {
+                    await navigator.clipboard.writeText(data.pinescript);
+                    // Show brief success feedback
+                    showToast('Pine Script copied to clipboard!');
+                } else {
+                    alert('Failed to generate Pine Script');
+                }
+            } catch (error) {
+                console.error('Failed to copy Pine Script:', error);
+                alert('Failed to copy Pine Script: ' + error.message);
+            }
+        }
+
+        // Show toast notification
+        function showToast(message) {
+            const toast = document.createElement('div');
+            toast.className = 'toast-notification';
+            toast.textContent = message;
+            document.body.appendChild(toast);
+            setTimeout(() => toast.classList.add('show'), 10);
+            setTimeout(() => {
+                toast.classList.remove('show');
+                setTimeout(() => document.body.removeChild(toast), 300);
+            }, 2000);
         }
 
         // Delete strategy

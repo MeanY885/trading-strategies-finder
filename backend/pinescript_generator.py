@@ -668,14 +668,15 @@ entrySignal = {"willrValue < -80" if is_long else "willrValue > -20"}''',
 cciValue = ta.cci(high, low, close, {cci_len})
 entrySignal = {"cciValue < -100" if is_long else "cciValue > 100"}''',
 
-            'rsi_divergence': f'''// RSI Divergence Entry (simplified)
+            'rsi_divergence': f'''// RSI Divergence Entry (rolling window - matches Python)
 // RSI Length: {rsi_len} {"(tuned)" if indicator_params and 'rsi_length' in indicator_params else "(default)"}
+// Python uses rolling().min/max().shift(1) - we match with ta.lowest/highest()[1]
 rsiValue = ta.rsi(close, {rsi_len})
 lookback = 5
 priceLowerLow = low < ta.lowest(low, lookback)[1]
-rsiHigherLow = rsiValue > ta.valuewhen(priceLowerLow[1], rsiValue, 0)
+rsiHigherLow = rsiValue > ta.lowest(rsiValue, lookback)[1]
 priceHigherHigh = high > ta.highest(high, lookback)[1]
-rsiLowerHigh = rsiValue < ta.valuewhen(priceHigherHigh[1], rsiValue, 0)
+rsiLowerHigh = rsiValue < ta.highest(rsiValue, lookback)[1]
 entrySignal = {"priceLowerLow and rsiHigherLow and rsiValue < 40" if is_long else "priceHigherHigh and rsiLowerHigh and rsiValue > 60"}''',
 
             # === MEAN REVERSION ===
@@ -750,12 +751,13 @@ psarValue = ta.sar(0.02, 0.02, 0.2)
 entrySignal = {"close > psarValue and close[1] <= psarValue[1]" if is_long else "close < psarValue and close[1] >= psarValue[1]"}''',
 
             # === PATTERN ===
-            'consecutive_candles': f'''// Consecutive Candles Entry (3 in a row)
-greenCandle = close > open
-redCandle = close < open
-threeRed = redCandle[2] and redCandle[1] and redCandle
-threeGreen = greenCandle[2] and greenCandle[1] and greenCandle
-entrySignal = {"threeRed" if is_long else "threeGreen"}''',
+            'consecutive_candles': f'''// Consecutive Up/Down Closes Entry (3 in a row - matches Python)
+// Python counts UP closes (close > close[1]), NOT green/red candles
+upClose = close > close[1]
+downClose = close < close[1]
+threeUp = upClose[2] and upClose[1] and upClose
+threeDown = downClose[2] and downClose[1] and downClose
+entrySignal = {"threeDown" if is_long else "threeUp"}''',
 
             'big_candle': f'''// Big Candle Reversal Entry (> 2x ATR)
 atrValue = ta.atr(14)
@@ -805,10 +807,11 @@ moveUp = close > close[1]
 moveDown = close < close[1]
 entrySignal = bigMove and {"moveUp" if is_long else "moveDown"}''',
 
-            'low_volatility_breakout': f'''// Low Volatility Breakout Entry
+            'low_volatility_breakout': f'''// Low Volatility Breakout Entry (adaptive threshold - matches Python)
+// Python uses 25th percentile of ATR; we approximate with lowest ATR * 1.5
 atrValue = ta.atr(14)
-avgAtr = ta.sma(atrValue, 20)
-lowVol = atrValue[1] < avgAtr * 0.7
+atrThreshold = ta.lowest(atrValue, 100) * 1.5  // Approximates 25th percentile
+lowVol = atrValue[1] < atrThreshold
 breakHigh = close > high[1]
 breakLow = close < low[1]
 entrySignal = lowVol and {"breakHigh" if is_long else "breakLow"}''',
@@ -823,6 +826,68 @@ entrySignal = {"higherLow" if is_long else "lowerHigh"}''',
 recentLow = ta.lowest(low, 20)
 recentHigh = ta.highest(high, 20)
 entrySignal = {"close <= recentLow * 1.005" if is_long else "close >= recentHigh * 0.995"}''',
+
+            # === BASELINE ===
+            'always': '''// Always Enter Strategy - Tests pure TP/SL effectiveness
+// Enters on every bar in configured direction
+entrySignal = true''',
+
+            # === ADDITIONAL STRATEGIES (11 new) ===
+            'keltner_breakout': f'''// Keltner Channel Breakout
+[kcMiddle, kcUpper, kcLower] = ta.kc(close, 20, 2.0)
+entrySignal = {"ta.crossover(close, kcUpper)" if is_long else "ta.crossunder(close, kcLower)"}''',
+
+            'donchian_breakout': f'''// Donchian Channel Breakout (Turtle Trading)
+dcUpper = ta.highest(high, 20)
+dcLower = ta.lowest(low, 20)
+entrySignal = {"close > dcUpper[1]" if is_long else "close < dcLower[1]"}''',
+
+            'ichimoku_cross': f'''// Ichimoku Tenkan-Kijun Cross
+[tenkan, kijun, spanA, spanB, laggingSpan] = ta.ichimoku(9, 26, 52, 26)
+entrySignal = {"ta.crossover(tenkan, kijun)" if is_long else "ta.crossunder(tenkan, kijun)"}''',
+
+            'ichimoku_cloud': f'''// Ichimoku Cloud Breakout
+[tenkan, kijun, spanA, spanB, laggingSpan] = ta.ichimoku(9, 26, 52, 26)
+cloudTop = math.max(spanA, spanB)
+cloudBottom = math.min(spanA, spanB)
+entrySignal = {"ta.crossover(close, cloudTop)" if is_long else "ta.crossunder(close, cloudBottom)"}''',
+
+            'aroon_cross': f'''// Aroon Oscillator Cross
+[aroonUp, aroonDown] = ta.aroon(14)
+entrySignal = {"ta.crossover(aroonUp, aroonDown)" if is_long else "ta.crossover(aroonDown, aroonUp)"}''',
+
+            'momentum_zero': f'''// Momentum Crosses Zero
+momValue = ta.mom(close, 10)
+entrySignal = {"ta.crossover(momValue, 0)" if is_long else "ta.crossunder(momValue, 0)"}''',
+
+            'roc_extreme': f'''// Rate of Change Extreme (adaptive percentile approximation)
+rocValue = ta.roc(close, 12)
+rocLower = ta.percentile_linear_interpolation(rocValue, 100, 5)
+rocUpper = ta.percentile_linear_interpolation(rocValue, 100, 95)
+entrySignal = {"rocValue < rocLower" if is_long else "rocValue > rocUpper"}''',
+
+            'uo_extreme': f'''// Ultimate Oscillator Extreme
+uoValue = ta.uo(7, 14, 28)
+entrySignal = {"uoValue < 30" if is_long else "uoValue > 70"}''',
+
+            'chop_trend': f'''// Choppiness Index Trend Detection
+chopValue = ta.chop(14)
+sma20 = ta.sma(close, 20)
+isTrending = chopValue < 38.2
+entrySignal = isTrending and {"close > sma20" if is_long else "close < sma20"}''',
+
+            'double_ema_cross': f'''// Double EMA Cross (12/26)
+ema12 = ta.ema(close, 12)
+ema26 = ta.ema(close, 26)
+entrySignal = {"ta.crossover(ema12, ema26)" if is_long else "ta.crossunder(ema12, ema26)"}''',
+
+            'triple_ema': f'''// Triple EMA Alignment (9/21/50)
+ema9 = ta.ema(close, 9)
+ema21 = ta.ema(close, 21)
+ema50 = ta.ema(close, 50)
+aligned = {"ema9 > ema21 and ema21 > ema50" if is_long else "ema9 < ema21 and ema21 < ema50"}
+wasNotAligned = {"not (ema9[1] > ema21[1] and ema21[1] > ema50[1])" if is_long else "not (ema9[1] < ema21[1] and ema21[1] < ema50[1])"}
+entrySignal = aligned and wasNotAligned''',
         }
 
         # Mihakralj entry conditions - uses mathematically rigorous mih_* functions
@@ -848,13 +913,14 @@ entrySignal = {"willrValue < -80" if is_long else "willrValue > -20"}''',
 cciValue = ta.cci(high, low, close, 20)
 entrySignal = {"cciValue < -100" if is_long else "cciValue > 100"}''',
 
-            'rsi_divergence': f'''// RSI Divergence Entry (mihakralj RSI)
+            'rsi_divergence': f'''// RSI Divergence Entry (mihakralj RSI - rolling window matches Python)
+// Python uses rolling().min/max().shift(1) - we match with ta.lowest/highest()[1]
 rsiValue = mih_rsi(close, 14)
 lookback = 5
 priceLowerLow = low < ta.lowest(low, lookback)[1]
-rsiHigherLow = rsiValue > ta.valuewhen(priceLowerLow[1], rsiValue, 0)
+rsiHigherLow = rsiValue > ta.lowest(rsiValue, lookback)[1]
 priceHigherHigh = high > ta.highest(high, lookback)[1]
-rsiLowerHigh = rsiValue < ta.valuewhen(priceHigherHigh[1], rsiValue, 0)
+rsiLowerHigh = rsiValue < ta.highest(rsiValue, lookback)[1]
 entrySignal = {"priceLowerLow and rsiHigherLow and rsiValue < 40" if is_long else "priceHigherHigh and rsiLowerHigh and rsiValue > 60"}''',
 
             # === MEAN REVERSION ===
@@ -917,12 +983,13 @@ psarValue = ta.sar(0.02, 0.02, 0.2)
 entrySignal = {"close > psarValue and close[1] <= psarValue[1]" if is_long else "close < psarValue and close[1] >= psarValue[1]"}''',
 
             # === PATTERN ===
-            'consecutive_candles': f'''// Consecutive Candles Entry (3 in a row)
-greenCandle = close > open
-redCandle = close < open
-threeRed = redCandle[2] and redCandle[1] and redCandle
-threeGreen = greenCandle[2] and greenCandle[1] and greenCandle
-entrySignal = {"threeRed" if is_long else "threeGreen"}''',
+            'consecutive_candles': f'''// Consecutive Up/Down Closes Entry (3 in a row - matches Python)
+// Python counts UP closes (close > close[1]), NOT green/red candles
+upClose = close > close[1]
+downClose = close < close[1]
+threeUp = upClose[2] and upClose[1] and upClose
+threeDown = downClose[2] and downClose[1] and downClose
+entrySignal = {"threeDown" if is_long else "threeUp"}''',
 
             'big_candle': f'''// Big Candle Reversal Entry (> 2x ATR, mihakralj ATR)
 atrValue = mih_atr(14)
@@ -972,10 +1039,11 @@ moveUp = close > close[1]
 moveDown = close < close[1]
 entrySignal = bigMove and {"moveUp" if is_long else "moveDown"}''',
 
-            'low_volatility_breakout': f'''// Low Volatility Breakout Entry (mihakralj ATR + SMA)
+            'low_volatility_breakout': f'''// Low Volatility Breakout Entry (adaptive threshold - matches Python)
+// Python uses 25th percentile of ATR; we approximate with lowest ATR * 1.5
 atrValue = mih_atr(14)
-avgAtr = mih_sma(atrValue, 20)
-lowVol = atrValue[1] < avgAtr * 0.7
+atrThreshold = ta.lowest(atrValue, 100) * 1.5  // Approximates 25th percentile
+lowVol = atrValue[1] < atrThreshold
 breakHigh = close > high[1]
 breakLow = close < low[1]
 entrySignal = lowVol and {"breakHigh" if is_long else "breakLow"}''',
@@ -990,6 +1058,67 @@ entrySignal = {"higherLow" if is_long else "lowerHigh"}''',
 recentLow = ta.lowest(low, 20)
 recentHigh = ta.highest(high, 20)
 entrySignal = {"close <= recentLow * 1.005" if is_long else "close >= recentHigh * 0.995"}''',
+
+            # === BASELINE ===
+            'always': '''// Always Enter Strategy (mihakralj)
+entrySignal = true''',
+
+            # === ADDITIONAL STRATEGIES ===
+            'keltner_breakout': f'''// Keltner Channel Breakout (mihakralj)
+[kcMiddle, kcUpper, kcLower] = ta.kc(close, 20, 2.0)
+entrySignal = {"ta.crossover(close, kcUpper)" if is_long else "ta.crossunder(close, kcLower)"}''',
+
+            'donchian_breakout': f'''// Donchian Channel Breakout (mihakralj)
+dcUpper = ta.highest(high, 20)
+dcLower = ta.lowest(low, 20)
+entrySignal = {"close > dcUpper[1]" if is_long else "close < dcLower[1]"}''',
+
+            'ichimoku_cross': f'''// Ichimoku Tenkan-Kijun Cross (mihakralj)
+[tenkan, kijun, spanA, spanB, laggingSpan] = ta.ichimoku(9, 26, 52, 26)
+entrySignal = {"ta.crossover(tenkan, kijun)" if is_long else "ta.crossunder(tenkan, kijun)"}''',
+
+            'ichimoku_cloud': f'''// Ichimoku Cloud Breakout (mihakralj)
+[tenkan, kijun, spanA, spanB, laggingSpan] = ta.ichimoku(9, 26, 52, 26)
+cloudTop = math.max(spanA, spanB)
+cloudBottom = math.min(spanA, spanB)
+entrySignal = {"ta.crossover(close, cloudTop)" if is_long else "ta.crossunder(close, cloudBottom)"}''',
+
+            'aroon_cross': f'''// Aroon Oscillator Cross (mihakralj)
+[aroonUp, aroonDown] = ta.aroon(14)
+entrySignal = {"ta.crossover(aroonUp, aroonDown)" if is_long else "ta.crossover(aroonDown, aroonUp)"}''',
+
+            'momentum_zero': f'''// Momentum Crosses Zero (mihakralj)
+momValue = ta.mom(close, 10)
+entrySignal = {"ta.crossover(momValue, 0)" if is_long else "ta.crossunder(momValue, 0)"}''',
+
+            'roc_extreme': f'''// Rate of Change Extreme (mihakralj)
+rocValue = ta.roc(close, 12)
+rocLower = ta.percentile_linear_interpolation(rocValue, 100, 5)
+rocUpper = ta.percentile_linear_interpolation(rocValue, 100, 95)
+entrySignal = {"rocValue < rocLower" if is_long else "rocValue > rocUpper"}''',
+
+            'uo_extreme': f'''// Ultimate Oscillator Extreme (mihakralj)
+uoValue = ta.uo(7, 14, 28)
+entrySignal = {"uoValue < 30" if is_long else "uoValue > 70"}''',
+
+            'chop_trend': f'''// Choppiness Index Trend Detection (mihakralj)
+chopValue = ta.chop(14)
+sma20 = ta.sma(close, 20)
+isTrending = chopValue < 38.2
+entrySignal = isTrending and {"close > sma20" if is_long else "close < sma20"}''',
+
+            'double_ema_cross': f'''// Double EMA Cross (12/26) (mihakralj)
+ema12 = ta.ema(close, 12)
+ema26 = ta.ema(close, 26)
+entrySignal = {"ta.crossover(ema12, ema26)" if is_long else "ta.crossunder(ema12, ema26)"}''',
+
+            'triple_ema': f'''// Triple EMA Alignment (9/21/50) (mihakralj)
+ema9 = ta.ema(close, 9)
+ema21 = ta.ema(close, 21)
+ema50 = ta.ema(close, 50)
+aligned = {"ema9 > ema21 and ema21 > ema50" if is_long else "ema9 < ema21 and ema21 < ema50"}
+wasNotAligned = {"not (ema9[1] > ema21[1] and ema21[1] > ema50[1])" if is_long else "not (ema9[1] < ema21[1] and ema21[1] < ema50[1])"}
+entrySignal = aligned and wasNotAligned''',
         }
 
         # Bidirectional entry conditions - generates BOTH long and short signals
@@ -1065,13 +1194,14 @@ psarValue = ta.sar(0.02, 0.02, 0.2)
 longEntrySignal = close > psarValue and close[1] <= psarValue[1]
 shortEntrySignal = close < psarValue and close[1] >= psarValue[1]''',
 
-            'consecutive_candles': f'''// Consecutive Candles - BIDIRECTIONAL
-greenCandle = close > open
-redCandle = close < open
-threeRed = redCandle[2] and redCandle[1] and redCandle
-threeGreen = greenCandle[2] and greenCandle[1] and greenCandle
-longEntrySignal = threeRed
-shortEntrySignal = threeGreen''',
+            'consecutive_candles': f'''// Consecutive Up/Down Closes - BIDIRECTIONAL (matches Python)
+// Python counts UP closes (close > close[1]), NOT green/red candles
+upClose = close > close[1]
+downClose = close < close[1]
+threeUp = upClose[2] and upClose[1] and upClose
+threeDown = downClose[2] and downClose[1] and downClose
+longEntrySignal = threeDown
+shortEntrySignal = threeUp''',
 
             'big_candle': f'''// Big Candle Reversal - BIDIRECTIONAL
 atrValue = ta.atr(14)
@@ -1122,10 +1252,11 @@ moveDown = close < close[1]
 longEntrySignal = bigMove and moveUp
 shortEntrySignal = bigMove and moveDown''',
 
-            'low_volatility_breakout': f'''// Low Volatility Breakout - BIDIRECTIONAL
+            'low_volatility_breakout': f'''// Low Volatility Breakout - BIDIRECTIONAL (adaptive threshold - matches Python)
+// Python uses 25th percentile of ATR; we approximate with lowest ATR * 1.5
 atrValue = ta.atr(14)
-avgAtr = ta.sma(atrValue, 20)
-lowVol = atrValue[1] < avgAtr * 0.7
+atrThreshold = ta.lowest(atrValue, 100) * 1.5  // Approximates 25th percentile
+lowVol = atrValue[1] < atrThreshold
 breakHigh = close > high[1]
 breakLow = close < low[1]
 longEntrySignal = lowVol and breakHigh
@@ -1166,15 +1297,91 @@ expanding = bbWidth > bbWidth[1]
 longEntrySignal = squeezed and expanding and close > bbMiddle
 shortEntrySignal = squeezed and expanding and close < bbMiddle''',
 
-            'rsi_divergence': f'''// RSI Divergence - BIDIRECTIONAL
+            'rsi_divergence': f'''// RSI Divergence - BIDIRECTIONAL (rolling window - matches Python)
+// Python uses rolling().min/max().shift(1) - we match with ta.lowest/highest()[1]
 rsiValue = ta.rsi(close, {rsi_len})
 lookback = 5
 priceLowerLow = low < ta.lowest(low, lookback)[1]
-rsiHigherLow = rsiValue > ta.valuewhen(priceLowerLow[1], rsiValue, 0)
+rsiHigherLow = rsiValue > ta.lowest(rsiValue, lookback)[1]
 priceHigherHigh = high > ta.highest(high, lookback)[1]
-rsiLowerHigh = rsiValue < ta.valuewhen(priceHigherHigh[1], rsiValue, 0)
+rsiLowerHigh = rsiValue < ta.highest(rsiValue, lookback)[1]
 longEntrySignal = priceLowerLow and rsiHigherLow and rsiValue < 40
 shortEntrySignal = priceHigherHigh and rsiLowerHigh and rsiValue > 60''',
+
+            # === BASELINE ===
+            'always': '''// Always Enter Strategy - BIDIRECTIONAL
+longEntrySignal = true
+shortEntrySignal = true''',
+
+            # === ADDITIONAL STRATEGIES ===
+            'keltner_breakout': f'''// Keltner Channel Breakout - BIDIRECTIONAL
+[kcMiddle, kcUpper, kcLower] = ta.kc(close, 20, 2.0)
+longEntrySignal = ta.crossover(close, kcUpper)
+shortEntrySignal = ta.crossunder(close, kcLower)''',
+
+            'donchian_breakout': f'''// Donchian Channel Breakout - BIDIRECTIONAL
+dcUpper = ta.highest(high, 20)
+dcLower = ta.lowest(low, 20)
+longEntrySignal = close > dcUpper[1]
+shortEntrySignal = close < dcLower[1]''',
+
+            'ichimoku_cross': f'''// Ichimoku Tenkan-Kijun Cross - BIDIRECTIONAL
+[tenkan, kijun, spanA, spanB, laggingSpan] = ta.ichimoku(9, 26, 52, 26)
+longEntrySignal = ta.crossover(tenkan, kijun)
+shortEntrySignal = ta.crossunder(tenkan, kijun)''',
+
+            'ichimoku_cloud': f'''// Ichimoku Cloud Breakout - BIDIRECTIONAL
+[tenkan, kijun, spanA, spanB, laggingSpan] = ta.ichimoku(9, 26, 52, 26)
+cloudTop = math.max(spanA, spanB)
+cloudBottom = math.min(spanA, spanB)
+longEntrySignal = ta.crossover(close, cloudTop)
+shortEntrySignal = ta.crossunder(close, cloudBottom)''',
+
+            'aroon_cross': f'''// Aroon Oscillator Cross - BIDIRECTIONAL
+[aroonUp, aroonDown] = ta.aroon(14)
+longEntrySignal = ta.crossover(aroonUp, aroonDown)
+shortEntrySignal = ta.crossover(aroonDown, aroonUp)''',
+
+            'momentum_zero': f'''// Momentum Crosses Zero - BIDIRECTIONAL
+momValue = ta.mom(close, 10)
+longEntrySignal = ta.crossover(momValue, 0)
+shortEntrySignal = ta.crossunder(momValue, 0)''',
+
+            'roc_extreme': f'''// Rate of Change Extreme - BIDIRECTIONAL
+rocValue = ta.roc(close, 12)
+rocLower = ta.percentile_linear_interpolation(rocValue, 100, 5)
+rocUpper = ta.percentile_linear_interpolation(rocValue, 100, 95)
+longEntrySignal = rocValue < rocLower
+shortEntrySignal = rocValue > rocUpper''',
+
+            'uo_extreme': f'''// Ultimate Oscillator Extreme - BIDIRECTIONAL
+uoValue = ta.uo(7, 14, 28)
+longEntrySignal = uoValue < 30
+shortEntrySignal = uoValue > 70''',
+
+            'chop_trend': f'''// Choppiness Index Trend - BIDIRECTIONAL
+chopValue = ta.chop(14)
+sma20 = ta.sma(close, 20)
+isTrending = chopValue < 38.2
+longEntrySignal = isTrending and close > sma20
+shortEntrySignal = isTrending and close < sma20''',
+
+            'double_ema_cross': f'''// Double EMA Cross (12/26) - BIDIRECTIONAL
+ema12 = ta.ema(close, 12)
+ema26 = ta.ema(close, 26)
+longEntrySignal = ta.crossover(ema12, ema26)
+shortEntrySignal = ta.crossunder(ema12, ema26)''',
+
+            'triple_ema': f'''// Triple EMA Alignment - BIDIRECTIONAL
+ema9 = ta.ema(close, 9)
+ema21 = ta.ema(close, 21)
+ema50 = ta.ema(close, 50)
+longAligned = ema9 > ema21 and ema21 > ema50
+shortAligned = ema9 < ema21 and ema21 < ema50
+longWasNotAligned = not (ema9[1] > ema21[1] and ema21[1] > ema50[1])
+shortWasNotAligned = not (ema9[1] < ema21[1] and ema21[1] < ema50[1])
+longEntrySignal = longAligned and longWasNotAligned
+shortEntrySignal = shortAligned and shortWasNotAligned''',
         }
 
         # Select the appropriate entry conditions based on engine and direction
