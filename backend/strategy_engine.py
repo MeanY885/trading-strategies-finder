@@ -1404,11 +1404,25 @@ class StrategyEngine:
         # Extract data date range for database storage
         self.data_start = None
         self.data_end = None
-        if len(df) > 0 and df.index is not None:
+        if len(df) > 0:
             try:
-                self.data_start = str(df.index[0])
-                self.data_end = str(df.index[-1])
-            except:
+                # Check for 'time' column first (most common)
+                if 'time' in df.columns:
+                    self.data_start = str(pd.to_datetime(df['time'].iloc[0]))
+                    self.data_end = str(pd.to_datetime(df['time'].iloc[-1]))
+                # Check if index is DatetimeIndex
+                elif isinstance(df.index, pd.DatetimeIndex):
+                    self.data_start = str(df.index[0])
+                    self.data_end = str(df.index[-1])
+                # Check for 'datetime' or 'date' column
+                elif 'datetime' in df.columns:
+                    self.data_start = str(pd.to_datetime(df['datetime'].iloc[0]))
+                    self.data_end = str(pd.to_datetime(df['datetime'].iloc[-1]))
+                elif 'date' in df.columns:
+                    self.data_start = str(pd.to_datetime(df['date'].iloc[0]))
+                    self.data_end = str(pd.to_datetime(df['date'].iloc[-1]))
+            except Exception as e:
+                print(f"Warning: Could not extract date range: {e}")
                 pass
 
         self._calculate_indicators()

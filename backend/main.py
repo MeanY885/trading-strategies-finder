@@ -37,14 +37,24 @@ HAS_DATABASE = True
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Handle startup and shutdown events."""
-    # Startup
-    asyncio.create_task(start_auto_elite_validation())
-    print("[Startup] Elite auto-validation loop started")
-    # Auto-start autonomous optimizer
-    asyncio.create_task(start_autonomous_optimizer())
-    print("[Startup] Autonomous optimizer auto-started")
+    print("[Startup] Application starting...")
+
+    # Define delayed startup to avoid blocking during app initialization
+    async def delayed_startup():
+        # Wait for the app to be fully ready
+        await asyncio.sleep(5)
+        print("[Startup] Starting background tasks...")
+        asyncio.create_task(start_auto_elite_validation())
+        print("[Startup] Elite auto-validation loop started")
+        asyncio.create_task(start_autonomous_optimizer())
+        print("[Startup] Autonomous optimizer auto-started")
+
+    # Schedule delayed startup without blocking
+    asyncio.create_task(delayed_startup())
+
     yield
-    # Shutdown (if needed in future)
+    # Shutdown
+    print("[Shutdown] Application shutting down...")
 
 # Initialize FastAPI with lifespan
 app = FastAPI(title="BTCGBP ML Optimizer", version="1.0.0", lifespan=lifespan)
@@ -100,16 +110,27 @@ autonomous_optimizer_status = {
     "current_timeframe": None,   # e.g., "15m"
     "current_granularity": None, # e.g., "0.5%"
 
+    # Trial progress (for real-time feedback)
+    "trial_current": 0,          # Current trial number
+    "trial_total": 0,            # Total trials for this run
+
+    # Data validation
+    "data_validation": None,     # Dict with date range validation info
+
     # Cycling state
     "cycle_index": 0,            # Current position in the full cycle
     "total_combinations": 0,     # Total combinations to process
     "completed_count": 0,        # Successful optimizations
     "error_count": 0,            # Failed optimizations
+    "skipped_count": 0,          # Skipped due to data validation failure
 
     # Results summary
     "last_result": None,         # Last optimization result summary
     "last_completed_at": None,   # Timestamp of last completion
     "best_strategy_found": None, # Best strategy from current session
+
+    # Skipped validations log (for UI investigation)
+    "skipped_validations": [],   # List of skipped combos with reasons
 }
 
 # History of autonomous optimizer runs (kept in memory, most recent first)
@@ -118,18 +139,24 @@ MAX_HISTORY_SIZE = 500  # Keep last 500 runs in memory
 
 # Autonomous optimizer configuration
 AUTONOMOUS_CONFIG = {
+    # Capital settings
     "capital": 1000.0,
     "position_size_pct": 100.0,
 
-    # Priority-ordered: Kraken (GBP) first, then Binance (USDT)
-    "sources": ["kraken", "binance"],
+    # Single source: Binance (via CCXT)
+    # All data is USDT pairs - use BINANCE:SYMBOL on TradingView
+    "sources": ["binance"],
 
+    # USDT pairs only - excellent historical depth
     "pairs": {
-        "binance": ["BTCUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "SOLUSDT", "ADAUSDT"],
-        "kraken": ["BTCGBP", "ETHGBP", "XRPGBP", "ADAGBP", "SOLGBP"],
+        "binance": [
+            "BTCUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT",
+            "SOLUSDT", "ADAUSDT", "DOGEUSDT", "DOTUSDT",
+            "MATICUSDT", "LTCUSDT", "AVAXUSDT", "LINKUSDT"
+        ],
     },
 
-    # Priority order: 1 month first, then expand
+    # Historical periods - Binance has years of data
     "periods": [
         {"label": "1 month", "months": 1.0},
         {"label": "1 week", "months": 0.25},
@@ -138,7 +165,7 @@ AUTONOMOUS_CONFIG = {
         {"label": "12 months", "months": 12.0},
     ],
 
-    # Priority order: 15m first
+    # Timeframes - all Binance supported
     "timeframes": [
         {"label": "15m", "minutes": 15},
         {"label": "5m", "minutes": 5},
@@ -207,10 +234,19 @@ def calculate_data_stats(df: pd.DataFrame) -> dict:
         "daily_trends": daily_trends
     }
 
-# Paths
-DATA_DIR = Path("/app/data")
-OUTPUT_DIR = Path("/app/output")
-FRONTEND_DIR = Path("/app/frontend")
+# Paths - Use relative paths for local dev, absolute for Docker
+BACKEND_DIR = Path(__file__).parent
+PROJECT_DIR = BACKEND_DIR.parent
+
+# Check if running in Docker (look for /app directory)
+if Path("/app").exists():
+    DATA_DIR = Path("/app/data")
+    OUTPUT_DIR = Path("/app/output")
+    FRONTEND_DIR = Path("/app/frontend")
+else:
+    DATA_DIR = PROJECT_DIR / "data"
+    OUTPUT_DIR = PROJECT_DIR / "output"
+    FRONTEND_DIR = PROJECT_DIR / "frontend"
 
 DATA_DIR.mkdir(exist_ok=True)
 OUTPUT_DIR.mkdir(exist_ok=True)
@@ -1629,7 +1665,16 @@ async def validate_strategy(request: ValidateStrategyRequest):
 
         # Extract ALL parameters from the strategy
         params = strategy.get('params', {})
-        symbol = strategy.get('symbol', 'BTCGBP')
+        symbol = strategy.get('symbol', 'BTCUSDT')  # Default to USDT
+
+        # === CHECK FOR SUPPORTED PAIRS (Binance USDT only) ===
+        supported_quotes = ['USDT', 'USDC', 'BUSD']
+        symbol_supported = any(symbol.endswith(q) for q in supported_quotes)
+        if not symbol_supported:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Symbol {symbol} not supported. Only Binance USDT pairs are available."
+            )
 
         # Detect data source from symbol format if not stored
         # Binance symbols: BTCUSDT, ETHUSDT (no hyphen, ends in USDT/BUSD)
@@ -1839,6 +1884,24 @@ async def delete_strategy(strategy_id: int):
         raise HTTPException(status_code=404, detail="Strategy not found")
     except HTTPException:
         raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/db/clear")
+async def clear_database():
+    """Clear all strategies from the database."""
+    if not HAS_DATABASE:
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    try:
+        db = get_strategy_db()
+        strategies = db.get_all_strategies()
+        deleted = 0
+        for s in strategies:
+            if db.delete_strategy(s['id']):
+                deleted += 1
+        return {"message": f"Deleted {deleted} strategies", "deleted": deleted}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -2351,6 +2414,21 @@ async def stop_autonomous():
     return {"status": "stopped", "message": "Autonomous optimizer stopped"}
 
 
+@app.post("/api/autonomous/reset-cycle")
+async def reset_autonomous_cycle():
+    """Reset autonomous optimizer cycle to beginning"""
+    global autonomous_optimizer_status
+
+    autonomous_optimizer_status["cycle_index"] = 0
+    autonomous_optimizer_status["completed_count"] = 0
+    autonomous_optimizer_status["skipped_count"] = 0
+    autonomous_optimizer_status["error_count"] = 0
+    autonomous_optimizer_status["skipped_validations"] = []
+    autonomous_optimizer_status["message"] = "Cycle reset - starting from beginning"
+
+    return {"status": "reset", "message": "Cycle reset to beginning"}
+
+
 @app.get("/api/autonomous/results")
 async def get_autonomous_results():
     """Get summary of autonomous optimization results"""
@@ -2485,6 +2563,30 @@ async def validate_all_strategies_for_elite():
             params = strategy.get('params', {})
             symbol = strategy.get('symbol', 'BTCGBP')
             data_source = strategy.get('data_source')
+
+            # === SKIP NON-USDT PAIRS (Binance only supports USDT now) ===
+            # Old strategies with GBP pairs won't work with Binance-only data fetcher
+            supported_quotes = ['USDT', 'USDC', 'BUSD']
+            symbol_supported = any(symbol.endswith(q) for q in supported_quotes)
+            if not symbol_supported:
+                print(f"[Elite Validation] Skipping {strategy_name} - {symbol} not supported (USDT pairs only)")
+                elite_validation_status["processed"] += 1
+                # Mark as "validated" to prevent infinite retry loops
+                try:
+                    db.update_elite_status(
+                        strategy_id=strategy_id,
+                        elite_status="skipped",
+                        periods_passed=0,
+                        periods_total=0,
+                        validation_data=json.dumps({
+                            "status": "skipped",
+                            "reason": f"Symbol {symbol} not supported - Binance USDT pairs only"
+                        }),
+                        elite_score=0
+                    )
+                except Exception as e:
+                    print(f"[Elite Validation] Error updating skipped strategy: {e}")
+                continue
 
             # Detect data source from symbol format if not stored
             if not data_source:
@@ -2676,6 +2778,91 @@ def build_optimization_combinations():
     return combinations
 
 
+def validate_data_range(df: pd.DataFrame, period: dict, timeframe: dict) -> dict:
+    """
+    Validate that the fetched data covers the expected date range.
+
+    Args:
+        df: DataFrame with 'time' column
+        period: Period config dict with 'label' and 'months' keys
+        timeframe: Timeframe config dict with 'label' and 'minutes' keys
+
+    Returns:
+        dict with validation results:
+        - valid: bool - True if data matches expected range
+        - expected_days: float - Expected days of data
+        - actual_days: float - Actual days of data
+        - coverage_pct: float - Percentage of expected data received
+        - start_date: str - Actual data start date
+        - end_date: str - Actual data end date
+        - message: str - Human readable message
+    """
+    try:
+        if df is None or len(df) == 0:
+            return {
+                "valid": False,
+                "expected_days": 0,
+                "actual_days": 0,
+                "coverage_pct": 0,
+                "start_date": None,
+                "end_date": None,
+                "candles": 0,
+                "message": "No data available"
+            }
+
+        # Calculate expected days from period
+        expected_days = period["months"] * 30  # Approximate
+
+        # Get actual date range from data
+        if 'time' in df.columns:
+            start_time = pd.to_datetime(df['time'].min())
+            end_time = pd.to_datetime(df['time'].max())
+        else:
+            # Try index if time column not present
+            start_time = pd.to_datetime(df.index.min())
+            end_time = pd.to_datetime(df.index.max())
+
+        actual_days = (end_time - start_time).total_seconds() / 86400  # Days
+        coverage_pct = (actual_days / expected_days) * 100 if expected_days > 0 else 0
+
+        # Calculate expected candles
+        candles_per_day = 1440 / timeframe["minutes"]  # Minutes per day / timeframe
+        expected_candles = int(expected_days * candles_per_day)
+        actual_candles = len(df)
+
+        # Validation: Allow 10% tolerance
+        is_valid = coverage_pct >= 90
+
+        # Build message
+        if is_valid:
+            message = f"✓ {actual_days:.1f} days ({actual_candles:,} candles)"
+        else:
+            message = f"⚠ Expected ~{expected_days:.0f} days, got {actual_days:.1f} days ({coverage_pct:.0f}% coverage)"
+
+        return {
+            "valid": is_valid,
+            "expected_days": round(expected_days, 1),
+            "actual_days": round(actual_days, 1),
+            "coverage_pct": round(coverage_pct, 1),
+            "expected_candles": expected_candles,
+            "actual_candles": actual_candles,
+            "start_date": start_time.strftime("%Y-%m-%d %H:%M"),
+            "end_date": end_time.strftime("%Y-%m-%d %H:%M"),
+            "message": message
+        }
+    except Exception as e:
+        return {
+            "valid": False,
+            "expected_days": 0,
+            "actual_days": 0,
+            "coverage_pct": 0,
+            "start_date": None,
+            "end_date": None,
+            "candles": len(df) if df is not None else 0,
+            "message": f"Validation error: {str(e)}"
+        }
+
+
 def run_autonomous_optimization_sync(df, combo, status):
     """
     Synchronous optimization that runs in thread pool.
@@ -2684,8 +2871,8 @@ def run_autonomous_optimization_sync(df, combo, status):
     try:
         config = AUTONOMOUS_CONFIG
 
-        # Determine source currency
-        source_currency = "USD" if "USD" in combo["pair"].upper() else "GBP"
+        # All pairs are USDT - source currency is always USD
+        source_currency = "USD"
 
         # Run strategy finder
         report = run_strategy_finder(
@@ -2694,7 +2881,7 @@ def run_autonomous_optimization_sync(df, combo, status):
             streaming_callback=None,  # No streaming for autonomous
             symbol=combo["pair"],
             timeframe=combo["timeframe"]["label"],
-            exchange=combo["source"].upper(),
+            exchange="BINANCE",  # Always Binance - match on TradingView
             capital=config["capital"],
             position_size_pct=config["position_size_pct"],
             engine="tradingview",  # Use TV engine for consistency
@@ -2702,7 +2889,7 @@ def run_autonomous_optimization_sync(df, combo, status):
             progress_min=30,
             progress_max=95,
             source_currency=source_currency,
-            fx_fetcher=None  # Will use default
+            fx_fetcher=None  # Not needed for USD
         )
 
         status["report"] = report
@@ -2713,10 +2900,12 @@ def run_autonomous_optimization_sync(df, combo, status):
         status["message"] = f"Error: {str(e)}"
 
 
-async def run_autonomous_optimization(combo: dict):
+async def run_autonomous_optimization(combo: dict) -> str:
     """
     Run a single optimization for the given combination.
     Fetches data, runs optimizer, stores results.
+
+    Returns: "completed", "skipped", or "error"
     """
     global autonomous_optimizer_status
 
@@ -2726,16 +2915,16 @@ async def run_autonomous_optimization(combo: dict):
     timeframe = combo["timeframe"]
     granularity = combo["granularity"]
 
-    # Step 1: Fetch data
-    autonomous_optimizer_status["message"] = f"Fetching {pair} data from {source}..."
-    autonomous_optimizer_status["progress"] = 10
+    # Step 1: Fetch data from Binance via CCXT
+    # Single source: Binance USDT pairs - use BINANCE:SYMBOL on TradingView
+    from data_fetcher import BinanceDataFetcher
 
-    if source == "binance":
-        fetcher = BinanceDataFetcher()
-    elif source == "kraken":
-        fetcher = KrakenDataFetcher()
-    else:
-        fetcher = YFinanceDataFetcher()
+    autonomous_optimizer_status["message"] = f"Fetching {pair} from Binance..."
+    autonomous_optimizer_status["progress"] = 5
+    autonomous_optimizer_status["trial_current"] = 0
+    autonomous_optimizer_status["trial_total"] = granularity["n_trials"]
+
+    fetcher = BinanceDataFetcher()
 
     try:
         df = await fetcher.fetch_ohlcv(
@@ -2745,15 +2934,50 @@ async def run_autonomous_optimization(combo: dict):
         )
     except Exception as e:
         autonomous_optimizer_status["message"] = f"Data fetch error: {str(e)}"
-        return
+        autonomous_optimizer_status["data_validation"] = None
+        return "error"
 
     if df is None or len(df) < 100:
         autonomous_optimizer_status["message"] = f"Insufficient data for {pair} ({len(df) if df is not None else 0} candles)"
-        return
+        autonomous_optimizer_status["data_validation"] = None
+        return "error"
+
+    # Step 1.5: Validate data date range
+    autonomous_optimizer_status["progress"] = 10
+    data_validation = validate_data_range(df, period, timeframe)
+    autonomous_optimizer_status["data_validation"] = data_validation
+
+    if not data_validation["valid"]:
+        # SKIP this optimization - data is insufficient
+        skip_reason = data_validation['message']
+        skip_entry = {
+            "timestamp": datetime.now().isoformat(),
+            "source": source,
+            "pair": pair,
+            "period": period["label"],
+            "timeframe": timeframe["label"],
+            "granularity": granularity["label"],
+            "reason": skip_reason,
+            "expected_days": data_validation.get("expected_days", 0),
+            "actual_days": data_validation.get("actual_days", 0),
+            "coverage_pct": data_validation.get("coverage_pct", 0),
+        }
+
+        # Add to skipped log (keep last 100)
+        autonomous_optimizer_status["skipped_validations"].insert(0, skip_entry)
+        if len(autonomous_optimizer_status["skipped_validations"]) > 100:
+            autonomous_optimizer_status["skipped_validations"] = autonomous_optimizer_status["skipped_validations"][:100]
+
+        autonomous_optimizer_status["skipped_count"] += 1
+        autonomous_optimizer_status["message"] = f"⚠ SKIPPED {pair} {period['label']} - {skip_reason}"
+
+        print(f"[Autonomous] SKIPPED {pair} {period['label']} {timeframe['label']}: {skip_reason}")
+        return "skipped"  # Skip to next combination
 
     # Step 2: Run optimization
-    autonomous_optimizer_status["message"] = f"Optimizing {pair} {timeframe['label']} ({granularity['label']})..."
-    autonomous_optimizer_status["progress"] = 30
+    n_trials = granularity["n_trials"]
+    autonomous_optimizer_status["message"] = f"Optimizing {pair} {timeframe['label']} - Trial 0/{n_trials}..."
+    autonomous_optimizer_status["progress"] = 15
 
     # Create a temporary status dict for the optimizer
     temp_status = {
@@ -2763,15 +2987,50 @@ async def run_autonomous_optimization(combo: dict):
         "report": None
     }
 
-    # Run in thread pool (same pattern as manual optimizer)
+    # Background task to update progress from temp_status
+    async def update_progress():
+        while temp_status["running"]:
+            # Map temp_status progress (0-100) to our range (15-95)
+            inner_progress = temp_status.get("progress", 0)
+            mapped_progress = 15 + int(inner_progress * 0.8)  # 15 to 95
+            autonomous_optimizer_status["progress"] = mapped_progress
+
+            # Extract progress info from message if available
+            # Format: "[1/5] RSI_14 LONG | 50,000/400,000 (45.2%) | Found: 3"
+            msg = temp_status.get("message", "")
+            import re
+            # Match pattern like "50/400" or "50,000/400,000" (with optional commas)
+            match = re.search(r'\|\s*([\d,]+)\s*/\s*([\d,]+)\s*\(', msg)
+            if match:
+                current_trial = int(match.group(1).replace(',', ''))
+                total_trials = int(match.group(2).replace(',', ''))
+                autonomous_optimizer_status["trial_current"] = current_trial
+                autonomous_optimizer_status["trial_total"] = total_trials
+                autonomous_optimizer_status["message"] = f"Optimizing {pair} {timeframe['label']} - {current_trial:,}/{total_trials:,}..."
+            elif msg:
+                autonomous_optimizer_status["message"] = f"Optimizing {pair} {timeframe['label']} ({granularity['label']})..."
+
+            await asyncio.sleep(0.5)  # Update every 500ms
+
+    # Run optimization and progress updater concurrently
     loop = asyncio.get_event_loop()
-    await loop.run_in_executor(
-        thread_pool,
-        run_autonomous_optimization_sync,
-        df,
-        combo,
-        temp_status
-    )
+    progress_task = asyncio.create_task(update_progress())
+
+    try:
+        await loop.run_in_executor(
+            thread_pool,
+            run_autonomous_optimization_sync,
+            df,
+            combo,
+            temp_status
+        )
+    finally:
+        temp_status["running"] = False
+        progress_task.cancel()
+        try:
+            await progress_task
+        except asyncio.CancelledError:
+            pass
 
     # Step 3: Process results
     if temp_status.get("report"):
@@ -2820,6 +3079,70 @@ async def run_autonomous_optimization(combo: dict):
     # Trim history if too large
     if len(autonomous_runs_history) > MAX_HISTORY_SIZE:
         autonomous_runs_history = autonomous_runs_history[:MAX_HISTORY_SIZE]
+
+    return "completed"
+
+
+async def wait_for_elite_validation():
+    """
+    Wait for Elite validation to process any pending strategies.
+    This ensures newly generated strategies get validated before we start
+    the next optimization run.
+    """
+    global elite_validation_status, autonomous_optimizer_status
+
+    db = get_strategy_db()
+
+    # Give Elite validation time to detect pending strategies
+    autonomous_optimizer_status["message"] = "Waiting for Elite validation to start..."
+    print("[Autonomous Optimizer] Waiting for Elite validation to process pending strategies...")
+    await asyncio.sleep(3)
+
+    # Check for pending strategies
+    strategies = db.get_all_strategies()
+    pending = [s for s in strategies if s.get('elite_status') in [None, 'pending']]
+
+    if not pending:
+        print("[Autonomous Optimizer] No pending strategies, continuing...")
+        return
+
+    initial_pending = len(pending)
+    autonomous_optimizer_status["message"] = f"Waiting for Elite validation ({initial_pending} pending)..."
+    print(f"[Autonomous Optimizer] Found {initial_pending} pending strategies, waiting for Elite validation...")
+
+    # Wait for Elite validation to complete (with timeout)
+    max_wait = 300  # 5 minute max wait
+    check_interval = 5
+    elapsed = 0
+
+    while elapsed < max_wait:
+        # Check if Elite validation is running
+        if elite_validation_status["running"]:
+            autonomous_optimizer_status["message"] = f"Elite validating: {elite_validation_status['message']}"
+            await asyncio.sleep(check_interval)
+            elapsed += check_interval
+            continue
+
+        # Check if there are still pending strategies
+        strategies = db.get_all_strategies()
+        pending = [s for s in strategies if s.get('elite_status') in [None, 'pending']]
+
+        if len(pending) < initial_pending:
+            # At least some strategies were processed
+            if pending:
+                print(f"[Autonomous Optimizer] {initial_pending - len(pending)} strategies validated, {len(pending)} still pending")
+            else:
+                print(f"[Autonomous Optimizer] All {initial_pending} pending strategies validated!")
+            break
+
+        await asyncio.sleep(check_interval)
+        elapsed += check_interval
+
+    if elapsed >= max_wait:
+        print(f"[Autonomous Optimizer] Timeout waiting for Elite validation (waited {max_wait}s)")
+
+    autonomous_optimizer_status["message"] = "Resuming optimization..."
+    await asyncio.sleep(1)
 
 
 async def start_autonomous_optimizer():
@@ -2883,8 +3206,16 @@ async def start_autonomous_optimizer():
 
             # Run the optimization
             try:
-                await run_autonomous_optimization(combo)
-                autonomous_optimizer_status["completed_count"] += 1
+                result = await run_autonomous_optimization(combo)
+                if result == "completed":
+                    autonomous_optimizer_status["completed_count"] += 1
+                    autonomous_optimizer_status["last_completed_at"] = datetime.now().isoformat()
+                    print(f"[Autonomous Optimizer] Completed {combo['pair']} - waiting for Elite validation...")
+                elif result == "skipped":
+                    # Already logged and counted in run_autonomous_optimization
+                    print(f"[Autonomous Optimizer] Skipped {combo['pair']} - moving to next combination...")
+                elif result == "error":
+                    autonomous_optimizer_status["error_count"] += 1
             except Exception as e:
                 print(f"[Autonomous Optimizer] Error: {e}")
                 autonomous_optimizer_status["error_count"] += 1
@@ -2894,10 +3225,13 @@ async def start_autonomous_optimizer():
             autonomous_optimizer_status["cycle_index"] += 1
             autonomous_optimizer_status["running"] = False
             unified_status["running"] = False  # Allow Elite validation to run
-            autonomous_optimizer_status["last_completed_at"] = datetime.now().isoformat()
 
-            # Brief pause between optimizations (allows Elite validation to interleave)
-            await asyncio.sleep(5)
+            # Wait for Elite validation to process any pending strategies
+            if result == "completed":
+                await wait_for_elite_validation()
+            else:
+                # For skipped/error, just a brief pause
+                await asyncio.sleep(2)
 
         except Exception as e:
             print(f"[Autonomous Optimizer] Loop error: {e}")

@@ -761,6 +761,16 @@
             color: var(--text-secondary);
         }
 
+        /* Period Badge */
+        .period-badge {
+            display: inline-block;
+            padding: 0.2rem 0.4rem;
+            background: rgba(139, 92, 246, 0.2);
+            border-radius: 4px;
+            font-size: 0.8rem;
+            color: #a78bfa;
+        }
+
         /* Elite Strategies Styles */
         .elite-status-bar {
             display: flex;
@@ -876,6 +886,41 @@
             display: flex;
             align-items: center;
         }
+
+        /* Data Validation Styles */
+        .data-validation {
+            display: flex;
+            align-items: flex-start;
+            padding: 0.75rem 1rem;
+            border-radius: 6px;
+            font-size: 0.9rem;
+        }
+        .data-validation.valid {
+            background: rgba(34, 197, 94, 0.1);
+            border: 1px solid rgba(34, 197, 94, 0.3);
+        }
+        .data-validation.warning {
+            background: rgba(245, 158, 11, 0.1);
+            border: 1px solid rgba(245, 158, 11, 0.3);
+        }
+        .data-validation .validation-icon {
+            font-size: 1.2rem;
+            margin-right: 0.75rem;
+            flex-shrink: 0;
+        }
+        .data-validation.valid .validation-icon {
+            color: var(--success);
+        }
+        .data-validation.warning .validation-icon {
+            color: var(--warning);
+        }
+        .data-validation .validation-text {
+            color: var(--text-secondary);
+            line-height: 1.4;
+        }
+        .data-validation .validation-text small {
+            color: var(--text-muted);
+        }
     </style>
 </head>
 <body>
@@ -901,6 +946,9 @@
                 <button class="tab-btn" data-tab="autonomous" onclick="showTab('autonomous')">
                     Auto Optimizer
                 </button>
+                <button class="tab-btn" data-tab="tools" onclick="showTab('tools')">
+                    Tools
+                </button>
             </div>
         </header>
 
@@ -920,10 +968,12 @@
                 
                 <div class="input-group" style="margin-top: 1rem;">
                     <label>Data Source</label>
-                    <select id="sourceSelect" onchange="updatePairOptions()">
-                        <option value="binance" selected>Binance (USDT pairs)</option>
-                        <option value="kraken">Kraken (GBP pairs)</option>
+                    <select id="sourceSelect" disabled style="opacity: 0.8;">
+                        <option value="binance" selected>Binance (USDT) - TradingView Compatible</option>
                     </select>
+                    <small style="color: var(--text-muted); font-size: 0.75rem; margin-top: 0.25rem; display: block;">
+                        Use BINANCE:SYMBOL on TradingView for matching charts
+                    </small>
                 </div>
                 
                 <div class="input-group">
@@ -1238,6 +1288,7 @@
                                 <th class="sortable" data-sort="strategy_name" onclick="sortHistoryTable('strategy_name')">Strategy</th>
                                 <th class="sortable" data-sort="symbol" onclick="sortHistoryTable('symbol')">Symbol</th>
                                 <th class="sortable" data-sort="timeframe" onclick="sortHistoryTable('timeframe')">TF</th>
+                                <th class="sortable" data-sort="period" onclick="sortHistoryTable('period')">Period</th>
                                 <th class="sortable" data-sort="tp_percent" onclick="sortHistoryTable('tp_percent')">TP%</th>
                                 <th class="sortable" data-sort="sl_percent" onclick="sortHistoryTable('sl_percent')">SL%</th>
                                 <th class="sortable active desc" data-sort="composite_score" onclick="sortHistoryTable('composite_score')">Score</th>
@@ -1479,15 +1530,22 @@
                             <div class="stat-value" id="autoCurrentGranularity" style="font-size: 1rem;">-</div>
                         </div>
                     </div>
+
+                    <!-- Data Validation -->
+                    <div id="autoDataValidation" style="margin-top: 1rem; display: none;"></div>
                 </div>
 
                 <!-- Results Summary -->
                 <div id="autonomousResultsSummary" style="margin-top: 1.5rem;">
                     <h3 style="font-size: 1rem; margin-bottom: 1rem; color: var(--text-secondary);">Session Summary</h3>
-                    <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem;">
+                    <div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 1rem;">
                         <div class="stat-item">
                             <div class="stat-value" style="color: var(--success);" id="autoCompletedCount">0</div>
                             <div class="stat-label">Completed</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-value" style="color: #f59e0b;" id="autoSkippedCount">0</div>
+                            <div class="stat-label">Skipped</div>
                         </div>
                         <div class="stat-item">
                             <div class="stat-value" style="color: var(--danger);" id="autoErrorCount">0</div>
@@ -1495,7 +1553,7 @@
                         </div>
                         <div class="stat-item">
                             <div class="stat-value" id="autoTotalCombinations">0</div>
-                            <div class="stat-label">Total Combinations</div>
+                            <div class="stat-label">Total</div>
                         </div>
                         <div class="stat-item">
                             <div class="stat-value" id="autoLastCompleted">-</div>
@@ -1517,6 +1575,34 @@
                     <h4 style="font-size: 0.9rem; margin-bottom: 0.75rem; color: var(--text-secondary);">Last Optimization Result</h4>
                     <div id="autoLastResultDetails">
                         <!-- Populated by JavaScript -->
+                    </div>
+                </div>
+
+                <!-- Skipped Validations Log -->
+                <div id="autoSkippedSection" style="display: none; margin-top: 1.5rem;">
+                    <h3 style="font-size: 1rem; margin-bottom: 1rem; color: #f59e0b;">⚠ Skipped - Insufficient Data</h3>
+                    <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 1rem;">
+                        These combinations were skipped because the data source didn't provide enough historical data.
+                        This keeps the database clean by only storing strategies with valid backtests.
+                    </p>
+                    <div style="overflow-x: auto; max-height: 300px; overflow-y: auto;">
+                        <table class="history-table" id="autoSkippedTable">
+                            <thead>
+                                <tr>
+                                    <th>Time</th>
+                                    <th>Source</th>
+                                    <th>Pair</th>
+                                    <th>Period</th>
+                                    <th>Timeframe</th>
+                                    <th>Expected</th>
+                                    <th>Actual</th>
+                                    <th>Coverage</th>
+                                </tr>
+                            </thead>
+                            <tbody id="autoSkippedTableBody">
+                                <!-- Populated by JavaScript -->
+                            </tbody>
+                        </table>
                     </div>
                 </div>
 
@@ -1548,6 +1634,72 @@
                 </div>
             </div>
         </div><!-- End autonomous-tab -->
+
+        <!-- Tools Tab -->
+        <div id="tools-tab" class="tab-content" style="display: none;">
+            <div class="card" style="max-width: 800px; margin: 0 auto;">
+                <div class="card-header">
+                    <div class="icon">🔧</div>
+                    <h2>Tools</h2>
+                </div>
+                <div class="card-body">
+                    <!-- Database Tools -->
+                    <div style="margin-bottom: 2rem;">
+                        <h3 style="font-size: 1.1rem; margin-bottom: 1rem; color: var(--text-secondary);">Database Management</h3>
+
+                        <div style="background: var(--bg-secondary); padding: 1.5rem; border-radius: 8px; margin-bottom: 1rem;">
+                            <h4 style="margin-bottom: 0.5rem; color: var(--text-primary);">Clear Strategy Database</h4>
+                            <p style="font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 1rem;">
+                                Delete all strategies from the database. This will remove all Strategy History, Elite Strategies,
+                                and validation data. Use this to start fresh with clean data after fixing data issues.
+                            </p>
+                            <p style="font-size: 0.85rem; color: var(--danger); margin-bottom: 1rem;">
+                                ⚠️ This action cannot be undone!
+                            </p>
+                            <button class="btn btn-danger" onclick="clearDatabase()" style="background: var(--danger);">
+                                🗑️ Clear Database
+                            </button>
+                        </div>
+
+                        <div style="background: var(--bg-secondary); padding: 1.5rem; border-radius: 8px;">
+                            <h4 style="margin-bottom: 0.5rem; color: var(--text-primary);">Database Statistics</h4>
+                            <div id="dbStats" style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-top: 1rem;">
+                                <div class="stat-item">
+                                    <div class="stat-value" id="dbTotalStrategies">-</div>
+                                    <div class="stat-label">Total Strategies</div>
+                                </div>
+                                <div class="stat-item">
+                                    <div class="stat-value" id="dbEliteStrategies">-</div>
+                                    <div class="stat-label">Elite Strategies</div>
+                                </div>
+                                <div class="stat-item">
+                                    <div class="stat-value" id="dbPendingValidation">-</div>
+                                    <div class="stat-label">Pending Validation</div>
+                                </div>
+                            </div>
+                            <button class="btn btn-secondary" onclick="refreshDbStats()" style="margin-top: 1rem;">
+                                🔄 Refresh Stats
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Autonomous Optimizer Tools -->
+                    <div>
+                        <h3 style="font-size: 1.1rem; margin-bottom: 1rem; color: var(--text-secondary);">Autonomous Optimizer</h3>
+
+                        <div style="background: var(--bg-secondary); padding: 1.5rem; border-radius: 8px;">
+                            <h4 style="margin-bottom: 0.5rem; color: var(--text-primary);">Reset Cycle Position</h4>
+                            <p style="font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 1rem;">
+                                Reset the autonomous optimizer to start from the beginning of the combination cycle.
+                            </p>
+                            <button class="btn btn-secondary" onclick="resetAutonomousCycle()">
+                                🔄 Reset Cycle
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div><!-- End tools-tab -->
     </div>
 
     <script>
@@ -1600,6 +1752,77 @@
             // Initialize autonomous tab on first view
             if (tabName === 'autonomous' && !autonomousInitialized) {
                 initAutonomousTab();
+            }
+
+            // Initialize tools tab on first view
+            if (tabName === 'tools') {
+                refreshDbStats();
+            }
+        }
+
+        // === TOOLS TAB FUNCTIONS ===
+
+        async function clearDatabase() {
+            if (!confirm('Are you sure you want to delete ALL strategies from the database?\n\nThis will remove:\n- All Strategy History\n- All Elite Strategies\n- All validation data\n\nThis action cannot be undone!')) {
+                return;
+            }
+
+            // Double confirmation
+            if (!confirm('FINAL WARNING: This will permanently delete all strategy data. Continue?')) {
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/db/clear', { method: 'POST' });
+                const result = await response.json();
+
+                if (response.ok) {
+                    alert(`Database cleared successfully!\n\nDeleted ${result.deleted || 0} strategies.`);
+                    refreshDbStats();
+                    // Refresh other tabs if they were loaded
+                    if (historyInitialized) loadHistoryStrategies();
+                    if (eliteInitialized) loadEliteStrategies();
+                } else {
+                    alert('Error clearing database: ' + (result.error || 'Unknown error'));
+                }
+            } catch (e) {
+                alert('Error clearing database: ' + e.message);
+            }
+        }
+
+        async function refreshDbStats() {
+            try {
+                const response = await fetch('/api/db/strategies');
+                const strategies = await response.json();
+
+                const total = strategies.length;
+                const elite = strategies.filter(s => s.elite_status === 'elite').length;
+                const pending = strategies.filter(s => !s.elite_status || s.elite_status === 'pending').length;
+
+                document.getElementById('dbTotalStrategies').textContent = total;
+                document.getElementById('dbEliteStrategies').textContent = elite;
+                document.getElementById('dbPendingValidation').textContent = pending;
+            } catch (e) {
+                console.error('Error fetching db stats:', e);
+            }
+        }
+
+        async function resetAutonomousCycle() {
+            if (!confirm('Reset the autonomous optimizer cycle to the beginning?')) {
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/autonomous/reset-cycle', { method: 'POST' });
+                const result = await response.json();
+
+                if (response.ok) {
+                    alert('Cycle reset successfully! Optimizer will restart from the beginning.');
+                } else {
+                    alert('Error resetting cycle: ' + (result.error || 'Unknown error'));
+                }
+            } catch (e) {
+                alert('Error resetting cycle: ' + e.message);
             }
         }
 
@@ -1680,26 +1903,41 @@
                 // Filter by backtest data DURATION if specified (client-side)
                 // Shows only strategies tested on at least X amount of data
                 if (historyFilters.period) {
-                    // Required duration in days
+                    // Required duration in days (with 10% tolerance)
                     let requiredDays = 0;
+                    let periodLabel = '';
                     switch (historyFilters.period) {
-                        case '1w': requiredDays = 7; break;
-                        case '1m': requiredDays = 30; break;
-                        case '3m': requiredDays = 90; break;
-                        case '6m': requiredDays = 180; break;
-                        case '12m': requiredDays = 365; break;
-                        case '2y': requiredDays = 730; break;
+                        case '1w': requiredDays = 6; periodLabel = '1 week'; break;    // ~7 days with tolerance
+                        case '1m': requiredDays = 27; periodLabel = '1 month'; break;  // ~30 days with tolerance
+                        case '3m': requiredDays = 80; periodLabel = '3 months'; break; // ~90 days with tolerance
+                        case '6m': requiredDays = 160; periodLabel = '6 months'; break; // ~180 days with tolerance
+                        case '12m': requiredDays = 330; periodLabel = '12 months'; break; // ~365 days with tolerance
+                        case '2y': requiredDays = 650; periodLabel = '2 years'; break;  // ~730 days with tolerance
                     }
 
                     historyStrategies = historyStrategies.filter(s => {
-                        // If no date info, show the strategy (legacy data)
-                        if (!s.data_start || !s.data_end) return true;
+                        // If no date info, HIDE the strategy when filter is active
+                        if (!s.data_start || !s.data_end) return false;
+                        // Check for invalid data (numeric indices instead of dates)
+                        if (s.data_start === '0' || s.data_start === 0) return false;
 
-                        const startDate = new Date(s.data_start);
-                        const endDate = new Date(s.data_end);
-                        const durationDays = (endDate - startDate) / (1000 * 60 * 60 * 24);
+                        try {
+                            const startDate = new Date(s.data_start);
+                            const endDate = new Date(s.data_end);
 
-                        return durationDays >= requiredDays;
+                            // Check for invalid dates
+                            if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) return false;
+                            // Check for epoch dates (indicates invalid data)
+                            if (startDate.getFullYear() < 2000 || endDate.getFullYear() < 2000) return false;
+
+                            const durationDays = (endDate - startDate) / (1000 * 60 * 60 * 24);
+                            // Negative or unreasonable days indicates bad data
+                            if (durationDays < 0 || durationDays > 3650) return false;
+
+                            return durationDays >= requiredDays;
+                        } catch (e) {
+                            return false;
+                        }
                     });
                 }
 
@@ -1730,6 +1968,18 @@
             historyStrategies.sort((a, b) => {
                 let aVal = a[historySortBy];
                 let bVal = b[historySortBy];
+
+                // Special handling for period - calculate days from date range
+                if (historySortBy === 'period') {
+                    const getDays = (s) => {
+                        if (!s.data_start || !s.data_end) return 0;
+                        try {
+                            return (new Date(s.data_end) - new Date(s.data_start)) / (1000 * 60 * 60 * 24);
+                        } catch { return 0; }
+                    };
+                    aVal = getDays(a);
+                    bVal = getDays(b);
+                }
 
                 // Handle null/undefined
                 if (aVal === null || aVal === undefined) aVal = historySortOrder === 'desc' ? -Infinity : Infinity;
@@ -1811,11 +2061,13 @@
                 // Show variant count badge if there are variants
                 const variantBadge = hasVariants ? `<span class="variant-badge" style="background: var(--primary); color: white; padding: 0.1rem 0.4rem; border-radius: 10px; font-size: 0.7rem; margin-left: 0.3rem;">${group.length}</span>` : '';
 
+                const periodLabel = calculatePeriodLabel(bestStrategy.data_start, bestStrategy.data_end);
                 row.innerHTML = `
                     <td><span class="expand-icon">${hasVariants ? '▶' : '•'}</span> ${rowIndex}</td>
                     <td title="${bestStrategy.strategy_name}">${truncateText(bestStrategy.strategy_name, 18)}${variantBadge}</td>
                     <td><span class="symbol-badge">${bestStrategy.symbol || '-'}</span></td>
                     <td><span class="tf-badge">${bestStrategy.timeframe || '-'}</span></td>
+                    <td><span class="period-badge">${periodLabel}</span></td>
                     <td style="color: var(--success);">${typeof tpPercent === 'number' ? formatNumber(tpPercent, 1) : tpPercent}</td>
                     <td style="color: var(--danger);">${typeof slPercent === 'number' ? formatNumber(slPercent, 1) : slPercent}</td>
                     <td>${formatNumber(bestStrategy.composite_score, 1)}</td>
@@ -1850,7 +2102,7 @@
                     variantsRow.className = 'variants-row';
                     variantsRow.id = `variants-row-${bestStrategy.id}`;
                     variantsRow.style.display = 'none';
-                    variantsRow.innerHTML = `<td colspan="14" class="variants-cell" style="padding: 0; background: var(--bg-secondary);"></td>`;
+                    variantsRow.innerHTML = `<td colspan="15" class="variants-cell" style="padding: 0; background: var(--bg-secondary);"></td>`;
                     tbody.appendChild(variantsRow);
                 }
             });
@@ -2266,6 +2518,31 @@
             return text.length > maxLength ? text.substring(0, maxLength) + '...' : text;
         }
 
+        function calculatePeriodLabel(dataStart, dataEnd) {
+            if (!dataStart || !dataEnd) return '-';
+            // Check for invalid data (numeric indices instead of dates)
+            if (dataStart === '0' || dataStart === 0 || dataEnd === '0' || dataEnd === 0) return '-';
+            try {
+                const start = new Date(dataStart);
+                const end = new Date(dataEnd);
+                if (isNaN(start.getTime()) || isNaN(end.getTime())) return '-';
+                // Check for epoch dates (indicates invalid data)
+                if (start.getFullYear() < 2000 || end.getFullYear() < 2000) return '-';
+
+                const days = (end - start) / (1000 * 60 * 60 * 24);
+                // Negative or unreasonable days indicates bad data
+                if (days < 0 || days > 3650) return '-';
+
+                if (days <= 10) return '1w';
+                if (days <= 45) return '1m';
+                if (days <= 100) return '3m';
+                if (days <= 200) return '6m';
+                return '12m';
+            } catch (e) {
+                return '-';
+            }
+        }
+
         // Utility functions
         function formatTime() {
             const now = new Date();
@@ -2632,31 +2909,26 @@
             });
         });
 
-        // Data source pair options - comprehensive list
+        // Trading pair options - Binance USDT pairs only
+        // Use BINANCE:SYMBOL on TradingView for matching charts
         const PAIR_OPTIONS = {
             binance: [
-                { value: 'BTCUSDT', label: 'BTC/USDT' },
-                { value: 'ETHUSDT', label: 'ETH/USDT' },
-                { value: 'BNBUSDT', label: 'BNB/USDT' },
-                { value: 'XRPUSDT', label: 'XRP/USDT' },
-                { value: 'DOGEUSDT', label: 'DOGE/USDT' },
-                { value: 'SOLUSDT', label: 'SOL/USDT' },
-                { value: 'TRXUSDT', label: 'TRX/USDT' },
-                { value: 'ADAUSDT', label: 'ADA/USDT' },
-            ],
-            kraken: [
-                { value: 'BTCGBP', label: 'BTC/GBP' },
-                { value: 'ETHGBP', label: 'ETH/GBP' },
-                { value: 'XRPGBP', label: 'XRP/GBP' },
-                { value: 'ADAGBP', label: 'ADA/GBP' },
-                { value: 'SOLGBP', label: 'SOL/GBP' },
-                { value: 'DOGEGBP', label: 'DOGE/GBP' },
+                { value: 'BTCUSDT', label: 'BTC/USDT (Bitcoin)' },
+                { value: 'ETHUSDT', label: 'ETH/USDT (Ethereum)' },
+                { value: 'BNBUSDT', label: 'BNB/USDT (Binance Coin)' },
+                { value: 'XRPUSDT', label: 'XRP/USDT (Ripple)' },
+                { value: 'SOLUSDT', label: 'SOL/USDT (Solana)' },
+                { value: 'ADAUSDT', label: 'ADA/USDT (Cardano)' },
+                { value: 'DOGEUSDT', label: 'DOGE/USDT (Dogecoin)' },
+                { value: 'DOTUSDT', label: 'DOT/USDT (Polkadot)' },
+                { value: 'MATICUSDT', label: 'MATIC/USDT (Polygon)' },
+                { value: 'LTCUSDT', label: 'LTC/USDT (Litecoin)' },
+                { value: 'AVAXUSDT', label: 'AVAX/USDT (Avalanche)' },
+                { value: 'LINKUSDT', label: 'LINK/USDT (Chainlink)' },
             ],
         };
 
-        // Source-specific interval options
-        // Binance: 1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 8h, 12h, 1d
-        // Kraken: 1m, 5m, 15m, 30m, 1h, 4h, 1d
+        // Timeframe options - All Binance supported intervals
         const INTERVAL_OPTIONS = {
             binance: [
                 { value: '1', label: '1 minute' },
@@ -2669,18 +2941,9 @@
                 { value: '240', label: '4 hours' },
                 { value: '1440', label: '1 day' },
             ],
-            kraken: [
-                { value: '1', label: '1 minute' },
-                { value: '5', label: '5 minutes' },
-                { value: '15', label: '15 minutes' },
-                { value: '30', label: '30 minutes' },
-                { value: '60', label: '1 hour' },
-                { value: '240', label: '4 hours' },
-                { value: '1440', label: '1 day' },
-            ],
         };
 
-        // Source-specific period options (Kraken has good historical data)
+        // Historical period options - Binance has years of data
         const PERIOD_OPTIONS = {
             binance: {
                 default: [
@@ -2692,15 +2955,6 @@
                     { value: '24', label: '24 months' },
                 ]
             },
-            kraken: {
-                default: [
-                    { value: '0.25', label: '1 week' },
-                    { value: '1', label: '1 month' },
-                    { value: '3', label: '3 months' },
-                    { value: '6', label: '6 months' },
-                    { value: '12', label: '12 months' },
-                ]
-            }
         };
 
         function updatePairOptions() {
@@ -2765,7 +3019,7 @@
             const btn = document.getElementById('fetchDataBtn');
             const loadingProgress = document.getElementById('dataLoadingProgress');
             
-            const sourceNames = { binance: 'Binance', kraken: 'Kraken', yfinance: 'Yahoo Finance' };
+            const sourceNames = { binance: 'Binance', kraken: 'Kraken', yfinance: 'Yahoo Finance', cryptocompare: 'CryptoCompare' };
             const sourceName = sourceNames[source] || source;
             
             // Show loading UI
@@ -5010,7 +5264,7 @@
 
                 message.textContent = status.message || 'Not running';
 
-                // Update progress
+                // Update progress with trial info
                 const progressContainer = document.getElementById('autonomousProgressContainer');
                 const progressFill = document.getElementById('autonomousProgressFill');
                 const progressText = document.getElementById('autonomousProgressText');
@@ -5019,13 +5273,20 @@
                 if (status.running || status.enabled) {
                     progressContainer.style.display = 'block';
                     progressFill.style.width = `${status.progress || 0}%`;
-                    progressText.textContent = `${status.progress || 0}%`;
-                    cycleProgress.textContent = `${status.cycle_index || 0} / ${status.total_combinations || 0} combinations`;
+
+                    // Show trial progress if available
+                    if (status.trial_current > 0 && status.trial_total > 0) {
+                        progressText.textContent = `Trial ${status.trial_current}/${status.trial_total} (${status.progress || 0}%)`;
+                    } else {
+                        progressText.textContent = `${status.progress || 0}%`;
+                    }
+
+                    cycleProgress.textContent = `${status.completed_count || 0} / ${status.total_combinations || 0} combinations completed`;
                 } else {
                     progressContainer.style.display = 'none';
                 }
 
-                // Update current optimization
+                // Update current optimization with data validation
                 const currentSection = document.getElementById('autonomousCurrentOptimization');
                 if (status.running && status.current_pair) {
                     currentSection.style.display = 'block';
@@ -5034,17 +5295,57 @@
                     document.getElementById('autoCurrentPeriod').textContent = status.current_period || '-';
                     document.getElementById('autoCurrentTimeframe').textContent = status.current_timeframe || '-';
                     document.getElementById('autoCurrentGranularity').textContent = status.current_granularity || '-';
+
+                    // Show data validation info
+                    const dataValidationEl = document.getElementById('autoDataValidation');
+                    if (dataValidationEl && status.data_validation) {
+                        const dv = status.data_validation;
+                        dataValidationEl.style.display = 'block';
+                        dataValidationEl.innerHTML = `
+                            <div class="data-validation ${dv.valid ? 'valid' : 'warning'}">
+                                <span class="validation-icon">${dv.valid ? '✓' : '⚠'}</span>
+                                <span class="validation-text">
+                                    Data: ${dv.actual_days} days (${dv.coverage_pct}% of expected ${dv.expected_days} days)
+                                    <br><small>${dv.start_date} → ${dv.end_date}</small>
+                                </span>
+                            </div>
+                        `;
+                    } else if (dataValidationEl) {
+                        dataValidationEl.style.display = 'none';
+                    }
                 } else {
                     currentSection.style.display = 'none';
                 }
 
                 // Update summary stats
                 document.getElementById('autoCompletedCount').textContent = status.completed_count || 0;
+                document.getElementById('autoSkippedCount').textContent = status.skipped_count || 0;
                 document.getElementById('autoErrorCount').textContent = status.error_count || 0;
                 document.getElementById('autoTotalCombinations').textContent = status.total_combinations || 0;
                 document.getElementById('autoLastCompleted').textContent = status.last_completed_at
                     ? new Date(status.last_completed_at).toLocaleTimeString()
                     : '-';
+
+                // Update skipped validations table
+                const skippedSection = document.getElementById('autoSkippedSection');
+                const skippedTableBody = document.getElementById('autoSkippedTableBody');
+                if (status.skipped_validations && status.skipped_validations.length > 0) {
+                    skippedSection.style.display = 'block';
+                    skippedTableBody.innerHTML = status.skipped_validations.map(skip => `
+                        <tr>
+                            <td>${new Date(skip.timestamp).toLocaleTimeString()}</td>
+                            <td>${(skip.source || '-').toUpperCase()}</td>
+                            <td>${skip.pair || '-'}</td>
+                            <td>${skip.period || '-'}</td>
+                            <td>${skip.timeframe || '-'}</td>
+                            <td>${skip.expected_days || 0} days</td>
+                            <td>${skip.actual_days || 0} days</td>
+                            <td style="color: #f59e0b;">${skip.coverage_pct || 0}%</td>
+                        </tr>
+                    `).join('');
+                } else {
+                    skippedSection.style.display = 'none';
+                }
 
                 // Update best strategy
                 const bestSection = document.getElementById('autoBestStrategySection');

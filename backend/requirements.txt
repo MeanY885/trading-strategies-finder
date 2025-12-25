@@ -9,6 +9,7 @@ jinja2>=3.1.2
 # Data Sources
 yfinance>=0.2.40
 aiohttp>=3.9.0
+ccxt>=4.0.0
 
 # Technical Analysis
 TA-Lib

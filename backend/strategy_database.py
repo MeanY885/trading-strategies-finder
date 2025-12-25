@@ -734,9 +734,23 @@ def _run_migration(db_path: str):
     print("Database migration check complete")
 
 
-def get_strategy_db(db_path: str = "data/strategies.db") -> StrategyDatabase:
+def get_strategy_db(db_path: str = None) -> StrategyDatabase:
     """Get or create the strategy database singleton."""
     global _db_instance
+
+    # Determine proper database path
+    if db_path is None:
+        from pathlib import Path
+        backend_dir = Path(__file__).parent
+        project_dir = backend_dir.parent
+
+        # Check if running in Docker
+        if Path("/app").exists():
+            db_path = "/app/data/strategies.db"
+        else:
+            data_dir = project_dir / "data"
+            data_dir.mkdir(exist_ok=True)
+            db_path = str(data_dir / "strategies.db")
 
     # Always run migration check first
     _run_migration(db_path)
