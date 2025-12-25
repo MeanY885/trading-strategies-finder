@@ -174,11 +174,11 @@ AUTONOMOUS_CONFIG = {
         {"label": "4h", "minutes": 240},
     ],
 
-    # Granularity options - finest to coarsest TP/SL steps
+    # Granularity options - 0.5% first for quick coverage, then finer
     "granularities": [
-        {"label": "0.1%", "n_trials": 10000},  # Finest (exhaustive)
-        {"label": "0.2%", "n_trials": 2500},   # Fine
-        {"label": "0.5%", "n_trials": 400},    # Medium
+        {"label": "0.5%", "n_trials": 400},    # Start here - good balance
+        {"label": "0.2%", "n_trials": 2500},   # Finer detail
+        {"label": "0.1%", "n_trials": 10000},  # Exhaustive
         {"label": "0.7%", "n_trials": 200},    # Coarse
         {"label": "1.0%", "n_trials": 100},    # Coarsest
     ],
@@ -2756,17 +2756,25 @@ async def validate_all_strategies_for_elite():
 def build_optimization_combinations():
     """
     Build priority-ordered list of all optimization combinations.
-    Priority: Source -> Period -> Timeframe -> Granularity -> Pair
-    Starts with: Kraken, 1 month, 15min, 0.5% granularity
+
+    Priority order: Granularity -> Timeframe -> Period -> Pairs
+
+    This means:
+    1. All pairs at 15m/0.5% (1 month period)
+    2. All pairs at 5m/0.5%
+    3. All pairs at 30m/0.5%
+    4. ... continue through all timeframes at 0.5%
+    5. Then all timeframes at 0.2%
+    6. Then all timeframes at 0.1% (exhaustive)
     """
     config = AUTONOMOUS_CONFIG
     combinations = []
 
-    for source in config["sources"]:
-        pairs = config["pairs"].get(source, [])
-        for period in config["periods"]:
-            for timeframe in config["timeframes"]:
-                for granularity in config["granularities"]:
+    for granularity in config["granularities"]:
+        for timeframe in config["timeframes"]:
+            for period in config["periods"]:
+                for source in config["sources"]:
+                    pairs = config["pairs"].get(source, [])
                     for pair in pairs:
                         combinations.append({
                             "source": source,
