@@ -3242,11 +3242,20 @@ async def start_autonomous_optimizer():
 
     while autonomous_optimizer_status["auto_running"] and autonomous_optimizer_status["enabled"]:
         try:
+            # Check if disabled
+            if not autonomous_optimizer_status["enabled"]:
+                break
+
             # Wait for manual optimizer to be idle
             while unified_status["running"]:
+                if not autonomous_optimizer_status["enabled"]:
+                    break
                 autonomous_optimizer_status["paused"] = True
                 autonomous_optimizer_status["message"] = "Paused - waiting for manual optimizer..."
-                await asyncio.sleep(5)
+                await asyncio.sleep(2)  # Check more frequently
+
+            if not autonomous_optimizer_status["enabled"]:
+                break
 
             autonomous_optimizer_status["paused"] = False
 
@@ -3298,6 +3307,10 @@ async def start_autonomous_optimizer():
             autonomous_optimizer_status["running"] = False
             unified_status["running"] = False  # Allow Elite validation to run
 
+            # Check if disabled before waiting
+            if not autonomous_optimizer_status["enabled"]:
+                break
+
             # Wait for Elite validation to process any pending strategies
             if result == "completed":
                 await wait_for_elite_validation()
@@ -3305,14 +3318,22 @@ async def start_autonomous_optimizer():
                 # For skipped/error, just a brief pause
                 await asyncio.sleep(2)
 
+            # Check again after waiting
+            if not autonomous_optimizer_status["enabled"]:
+                break
+
         except Exception as e:
             print(f"[Autonomous Optimizer] Loop error: {e}")
             autonomous_optimizer_status["message"] = f"Error: {str(e)}"
             unified_status["running"] = False
-            await asyncio.sleep(30)  # Wait before retrying
+            await asyncio.sleep(5)  # Shorter wait, check enabled more often
+            if not autonomous_optimizer_status["enabled"]:
+                break
 
+    # Cleanup on exit
     autonomous_optimizer_status["auto_running"] = False
     autonomous_optimizer_status["running"] = False
+    autonomous_optimizer_status["message"] = "Stopped"
     unified_status["running"] = False
     print("[Autonomous Optimizer] Stopped")
 
