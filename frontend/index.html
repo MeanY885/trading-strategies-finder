@@ -1287,8 +1287,8 @@
                                 <th class="sortable" data-sort="rank" onclick="sortHistoryTable('rank')">#</th>
                                 <th class="sortable" data-sort="strategy_name" onclick="sortHistoryTable('strategy_name')">Strategy</th>
                                 <th class="sortable" data-sort="symbol" onclick="sortHistoryTable('symbol')">Symbol</th>
-                                <th class="sortable" data-sort="timeframe" onclick="sortHistoryTable('timeframe')">TF</th>
                                 <th class="sortable" data-sort="period" onclick="sortHistoryTable('period')">Period</th>
+                                <th class="sortable" data-sort="timeframe" onclick="sortHistoryTable('timeframe')">TF</th>
                                 <th class="sortable" data-sort="tp_percent" onclick="sortHistoryTable('tp_percent')">TP%</th>
                                 <th class="sortable" data-sort="sl_percent" onclick="sortHistoryTable('sl_percent')">SL%</th>
                                 <th class="sortable active desc" data-sort="composite_score" onclick="sortHistoryTable('composite_score')">Score</th>
@@ -2066,8 +2066,8 @@
                     <td><span class="expand-icon">${hasVariants ? '▶' : '•'}</span> ${rowIndex}</td>
                     <td title="${bestStrategy.strategy_name}">${truncateText(bestStrategy.strategy_name, 18)}${variantBadge}</td>
                     <td><span class="symbol-badge">${bestStrategy.symbol || '-'}</span></td>
-                    <td><span class="tf-badge">${bestStrategy.timeframe || '-'}</span></td>
                     <td><span class="period-badge">${periodLabel}</span></td>
+                    <td><span class="tf-badge">${bestStrategy.timeframe || '-'}</span></td>
                     <td style="color: var(--success);">${typeof tpPercent === 'number' ? formatNumber(tpPercent, 1) : tpPercent}</td>
                     <td style="color: var(--danger);">${typeof slPercent === 'number' ? formatNumber(slPercent, 1) : slPercent}</td>
                     <td>${formatNumber(bestStrategy.composite_score, 1)}</td>
