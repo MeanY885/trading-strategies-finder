@@ -174,11 +174,12 @@ AUTONOMOUS_CONFIG = {
         {"label": "4h", "minutes": 240},
     ],
 
-    # Granularity options - finer granularity first (lower TP/SL %)
+    # Granularity options - finest to coarsest TP/SL steps
     "granularities": [
-        {"label": "0.5%", "n_trials": 400},    # Start here
-        {"label": "0.1%", "n_trials": 10000},  # Exhaustive (finer)
-        {"label": "0.67%", "n_trials": 225},   # Coarser
+        {"label": "0.1%", "n_trials": 10000},  # Finest (exhaustive)
+        {"label": "0.2%", "n_trials": 2500},   # Fine
+        {"label": "0.5%", "n_trials": 400},    # Medium
+        {"label": "0.7%", "n_trials": 200},    # Coarse
         {"label": "1.0%", "n_trials": 100},    # Coarsest
     ],
 }
