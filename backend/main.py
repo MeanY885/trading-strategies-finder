@@ -174,12 +174,12 @@ AUTONOMOUS_CONFIG = {
         {"label": "4h", "minutes": 240},
     ],
 
-    # Granularity options - cycles through all
+    # Granularity options - finer granularity first (lower TP/SL %)
     "granularities": [
-        {"label": "0.5%", "n_trials": 400},
-        {"label": "0.67%", "n_trials": 225},
-        {"label": "1.0%", "n_trials": 100},
-        {"label": "0.1%", "n_trials": 10000},  # Exhaustive
+        {"label": "0.5%", "n_trials": 400},    # Start here
+        {"label": "0.1%", "n_trials": 10000},  # Exhaustive (finer)
+        {"label": "0.67%", "n_trials": 225},   # Coarser
+        {"label": "1.0%", "n_trials": 100},    # Coarsest
     ],
 }
 
@@ -3085,64 +3085,72 @@ async def run_autonomous_optimization(combo: dict) -> str:
 
 async def wait_for_elite_validation():
     """
-    Wait for Elite validation to process any pending strategies.
+    Wait for Elite validation to process strategies from the last optimization.
     This ensures newly generated strategies get validated before we start
     the next optimization run.
+
+    Strategy: Validate a BATCH of strategies (up to 10) from the most recent
+    optimization before continuing. This prevents the queue from growing forever.
     """
     global elite_validation_status, autonomous_optimizer_status
 
     db = get_strategy_db()
 
-    # Give Elite validation time to detect pending strategies
-    autonomous_optimizer_status["message"] = "Waiting for Elite validation to start..."
-    print("[Autonomous Optimizer] Waiting for Elite validation to process pending strategies...")
-    await asyncio.sleep(3)
-
-    # Check for pending strategies
+    # Get pending strategies
     strategies = db.get_all_strategies()
     pending = [s for s in strategies if s.get('elite_status') in [None, 'pending']]
 
     if not pending:
         print("[Autonomous Optimizer] No pending strategies, continuing...")
+        await asyncio.sleep(2)
         return
 
     initial_pending = len(pending)
-    autonomous_optimizer_status["message"] = f"Waiting for Elite validation ({initial_pending} pending)..."
-    print(f"[Autonomous Optimizer] Found {initial_pending} pending strategies, waiting for Elite validation...")
 
-    # Wait for Elite validation to complete (with timeout)
-    max_wait = 300  # 5 minute max wait
-    check_interval = 5
+    # Validate a batch of strategies (up to 10) before continuing
+    # This ensures Elite validation makes progress between optimizations
+    batch_size = min(10, initial_pending)
+    target_remaining = initial_pending - batch_size
+
+    autonomous_optimizer_status["message"] = f"Elite validation: {initial_pending} pending, validating {batch_size}..."
+    print(f"[Autonomous Optimizer] Waiting for Elite to validate {batch_size} strategies ({initial_pending} pending)...")
+
+    # Wait for Elite validation to process the batch (with timeout)
+    max_wait = 600  # 10 minute max wait for batch
+    check_interval = 3
     elapsed = 0
 
     while elapsed < max_wait:
-        # Check if Elite validation is running
-        if elite_validation_status["running"]:
-            autonomous_optimizer_status["message"] = f"Elite validating: {elite_validation_status['message']}"
-            await asyncio.sleep(check_interval)
-            elapsed += check_interval
-            continue
-
-        # Check if there are still pending strategies
-        strategies = db.get_all_strategies()
-        pending = [s for s in strategies if s.get('elite_status') in [None, 'pending']]
-
-        if len(pending) < initial_pending:
-            # At least some strategies were processed
-            if pending:
-                print(f"[Autonomous Optimizer] {initial_pending - len(pending)} strategies validated, {len(pending)} still pending")
-            else:
-                print(f"[Autonomous Optimizer] All {initial_pending} pending strategies validated!")
-            break
-
+        # Let Elite validation run
         await asyncio.sleep(check_interval)
         elapsed += check_interval
 
+        # Update status message
+        if elite_validation_status["running"]:
+            autonomous_optimizer_status["message"] = f"Elite: {elite_validation_status['message']}"
+
+        # Check progress
+        strategies = db.get_all_strategies()
+        current_pending = len([s for s in strategies if s.get('elite_status') in [None, 'pending']])
+        validated_count = initial_pending - current_pending
+
+        if validated_count >= batch_size:
+            print(f"[Autonomous Optimizer] Elite validated {validated_count} strategies, continuing...")
+            break
+
+        if current_pending == 0:
+            print(f"[Autonomous Optimizer] All strategies validated!")
+            break
+
+        # Progress update every 30 seconds
+        if elapsed % 30 == 0:
+            print(f"[Autonomous Optimizer] Elite progress: {validated_count}/{batch_size} validated, {current_pending} pending")
+
     if elapsed >= max_wait:
-        print(f"[Autonomous Optimizer] Timeout waiting for Elite validation (waited {max_wait}s)")
+        print(f"[Autonomous Optimizer] Timeout after {max_wait}s, continuing anyway...")
 
     autonomous_optimizer_status["message"] = "Resuming optimization..."
-    await asyncio.sleep(1)
+    await asyncio.sleep(2)
 
 
 async def start_autonomous_optimizer():
