@@ -134,6 +134,13 @@ class StrategyDatabase:
             ('short_wins', 'INTEGER DEFAULT 0'),
             ('short_pnl', 'REAL DEFAULT 0'),
             ('flip_count', 'INTEGER DEFAULT 0'),
+            # Elite strategy validation fields
+            ('elite_status', "TEXT DEFAULT 'pending'"),  # 'pending', 'elite', 'failed', 'partial'
+            ('elite_validated_at', 'TEXT'),              # Last validation timestamp
+            ('elite_periods_passed', 'INTEGER DEFAULT 0'),  # Count of periods that passed
+            ('elite_periods_total', 'INTEGER DEFAULT 0'),   # Total periods tested
+            ('elite_validation_data', 'TEXT'),           # JSON with per-period results
+            ('elite_score', 'REAL DEFAULT 0'),           # Consistency score 0-100
         ]
 
         for col_name, col_type in migration_columns:
@@ -572,6 +579,57 @@ class StrategyDatabase:
                 d['equity_curve'] = []
 
         return d
+
+    def update_elite_status(self, strategy_id: int, elite_status: str,
+                             periods_passed: int, periods_total: int,
+                             validation_data: str = None,
+                             elite_score: float = 0) -> bool:
+        """
+        Update elite validation status for a strategy.
+
+        Args:
+            strategy_id: Strategy ID
+            elite_status: 'pending', 'elite', 'partial', 'failed'
+            periods_passed: Number of validation periods that passed
+            periods_total: Total number of testable periods
+            validation_data: JSON string with per-period results
+            elite_score: Consistency score 0-100
+
+        Returns:
+            True if updated, False if strategy not found
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute('''
+            UPDATE strategies
+            SET elite_status = ?,
+                elite_validated_at = ?,
+                elite_periods_passed = ?,
+                elite_periods_total = ?,
+                elite_validation_data = ?,
+                elite_score = ?
+            WHERE id = ?
+        ''', (elite_status, datetime.now().isoformat(), periods_passed,
+              periods_total, validation_data, elite_score, strategy_id))
+
+        updated = cursor.rowcount > 0
+        conn.commit()
+        conn.close()
+
+        return updated
+
+    def get_all_strategies(self) -> List[Dict]:
+        """Get all strategies from the database."""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute('SELECT * FROM strategies ORDER BY id DESC')
+        rows = cursor.fetchall()
+        conn.close()
+
+        return [self._row_to_dict(row) for row in rows]
 
     def delete_strategy(self, strategy_id: int) -> bool:
         """Delete a strategy by ID."""

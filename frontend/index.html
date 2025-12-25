@@ -697,6 +697,11 @@
             border-color: var(--danger);
         }
 
+        .action-btn.validate:hover {
+            background: var(--primary);
+            border-color: var(--primary);
+        }
+
         /* Strategy Detail Panel */
         .detail-stats-grid {
             display: grid;
@@ -755,6 +760,122 @@
             font-size: 0.8rem;
             color: var(--text-secondary);
         }
+
+        /* Elite Strategies Styles */
+        .elite-status-bar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.75rem;
+            align-items: center;
+            padding: 1rem;
+            background: var(--bg-secondary);
+            border-radius: 8px;
+            margin-bottom: 1rem;
+        }
+
+        .elite-badge {
+            display: inline-block;
+            padding: 0.3rem 0.6rem;
+            border-radius: 6px;
+            font-size: 0.85rem;
+            font-weight: 500;
+        }
+
+        .elite-badge.elite-status {
+            background: linear-gradient(135deg, #059669, #10b981);
+            color: white;
+        }
+
+        .elite-badge.partial-status {
+            background: linear-gradient(135deg, #d97706, #f59e0b);
+            color: white;
+        }
+
+        .elite-badge.failed-status {
+            background: linear-gradient(135deg, #dc2626, #ef4444);
+            color: white;
+        }
+
+        .elite-badge.pending-status {
+            background: var(--bg-hover);
+            color: var(--text-secondary);
+        }
+
+        .elite-progress {
+            margin-left: auto;
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            font-style: italic;
+        }
+
+        .elite-progress.running {
+            color: var(--accent-primary);
+            animation: pulse 1.5s infinite;
+        }
+
+        .elite-progress.paused {
+            color: #f59e0b;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
+
+        /* Toggle Switch for Autonomous Optimizer */
+        .toggle-switch {
+            display: inline-flex;
+            align-items: center;
+            cursor: pointer;
+        }
+
+        .toggle-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .toggle-slider {
+            position: relative;
+            width: 50px;
+            height: 26px;
+            background-color: var(--bg-hover);
+            border-radius: 26px;
+            transition: 0.3s;
+        }
+
+        .toggle-slider:before {
+            position: absolute;
+            content: "";
+            height: 20px;
+            width: 20px;
+            left: 3px;
+            bottom: 3px;
+            background-color: var(--text-muted);
+            border-radius: 50%;
+            transition: 0.3s;
+        }
+
+        .toggle-switch input:checked + .toggle-slider {
+            background: linear-gradient(135deg, #f59e0b, #ef4444);
+        }
+
+        .toggle-switch input:checked + .toggle-slider:before {
+            transform: translateX(24px);
+            background-color: white;
+        }
+
+        /* Autonomous Status Panel */
+        .autonomous-status-panel {
+            padding: 1rem;
+            background: var(--bg-secondary);
+            border-radius: 8px;
+        }
+
+        .autonomous-status-bar {
+            display: flex;
+            align-items: center;
+        }
     </style>
 </head>
 <body>
@@ -770,6 +891,15 @@
                 </button>
                 <button class="tab-btn" data-tab="history" onclick="showTab('history')">
                     Strategy History
+                </button>
+                <button class="tab-btn" data-tab="validation" onclick="showTab('validation')">
+                    Validation
+                </button>
+                <button class="tab-btn" data-tab="elite" onclick="showTab('elite')">
+                    Elite Strategies
+                </button>
+                <button class="tab-btn" data-tab="autonomous" onclick="showTab('autonomous')">
+                    Auto Optimizer
                 </button>
             </div>
         </header>
@@ -1149,6 +1279,275 @@
                 </div>
             </div>
         </div><!-- End history-tab -->
+
+        <!-- Validation Tab Content -->
+        <div id="validation-tab" class="tab-content" style="display: none;">
+            <div class="card">
+                <div class="card-header">
+                    <div class="icon">🔬</div>
+                    <h2>Strategy Validation</h2>
+                </div>
+                <p style="color: #888; margin-bottom: 1.5rem;">
+                    Test a winning strategy across different time periods to validate its robustness.
+                    Uses the same parameters (TP%, SL%, entry rule) against fresh data from the same source.
+                    <br><span style="color: #666; font-size: 0.85rem;">💡 Tip: Click the 🔬 button in Strategy History for quick validation.</span>
+                </p>
+
+                <!-- Strategy Selector -->
+                <div class="input-group">
+                    <label>Select Strategy to Validate</label>
+                    <select id="validationStrategySelect" style="width: 100%; padding: 0.75rem;" onchange="onValidationStrategyChange()">
+                        <option value="">-- Select a strategy --</option>
+                    </select>
+                </div>
+
+                <!-- Capital & Position Size Override -->
+                <div class="input-row" style="margin-top: 1rem;">
+                    <div class="input-group" style="flex: 1;">
+                        <label>Starting Capital (£)</label>
+                        <input type="number" id="validationCapital" min="100" max="1000000" step="100" value="1000" placeholder="1000">
+                        <small style="color: #666; font-size: 0.75rem;">Original: <span id="validationOriginalCapital">--</span></small>
+                    </div>
+                    <div class="input-group" style="flex: 1;">
+                        <label>Position Size (%)</label>
+                        <input type="number" id="validationPositionSize" min="1" max="100" step="1" value="75" placeholder="75">
+                        <small style="color: #666; font-size: 0.75rem;">Original: <span id="validationOriginalPosition">--</span></small>
+                    </div>
+                </div>
+
+                <!-- Validate Button -->
+                <button id="validateBtn" onclick="runValidation()" class="btn" style="margin-top: 1rem; width: 100%;">
+                    Run Validation (All Periods)
+                </button>
+
+                <!-- Progress Indicator -->
+                <div id="validationProgress" style="display: none; margin-top: 1rem;">
+                    <div class="progress-bar" style="height: 4px; background: #333; border-radius: 2px;">
+                        <div id="validationProgressBar" style="width: 0%; height: 100%; background: linear-gradient(90deg, #00d4ff, #7b68ee); border-radius: 2px; transition: width 0.3s;"></div>
+                    </div>
+                    <p id="validationProgressText" style="color: #888; font-size: 0.85rem; margin-top: 0.5rem;">Validating...</p>
+                </div>
+            </div>
+
+            <!-- Validation Results -->
+            <div id="validationResults" class="card" style="display: none; margin-top: 1.5rem;">
+                <div class="card-header">
+                    <div class="icon">📊</div>
+                    <h2 id="validationResultsTitle">Validation Results</h2>
+                </div>
+
+                <!-- Strategy Info -->
+                <div id="validationStrategyInfo" style="margin-bottom: 1rem; padding: 1rem; background: #1a1a2e; border-radius: 8px;">
+                    <!-- Populated dynamically -->
+                </div>
+
+                <!-- Results Table -->
+                <div style="overflow-x: auto;">
+                    <table class="history-table" id="validationTable">
+                        <thead>
+                            <tr>
+                                <th>Period</th>
+                                <th>Trades</th>
+                                <th>Win Rate</th>
+                                <th>PnL</th>
+                                <th>Drawdown</th>
+                                <th>Profit Factor</th>
+                                <th>Status</th>
+                            </tr>
+                        </thead>
+                        <tbody id="validationTableBody">
+                            <!-- Populated dynamically -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div><!-- End validation-tab -->
+
+        <!-- Elite Strategies Tab Content -->
+        <div id="elite-tab" class="tab-content" style="display: none;">
+            <div class="card">
+                <div class="card-header">
+                    <div class="icon">🏆</div>
+                    <h2>Elite Strategies</h2>
+                </div>
+                <p style="color: var(--text-secondary); margin-bottom: 1rem;">
+                    Strategies validated across ALL time periods. Elite status means consistent performance.
+                </p>
+
+                <!-- Status Bar -->
+                <div class="elite-status-bar">
+                    <span class="elite-badge elite-status">Elite: <span id="eliteCount">0</span></span>
+                    <span class="elite-badge partial-status">Partial: <span id="partialCount">0</span></span>
+                    <span class="elite-badge failed-status">Failed: <span id="failedCount">0</span></span>
+                    <span class="elite-badge pending-status">Pending: <span id="pendingCount">0</span></span>
+                    <span id="eliteProgress" class="elite-progress"></span>
+                </div>
+                <p style="color: var(--text-muted); font-size: 0.85rem; margin-top: -0.5rem;">
+                    Validation runs automatically in the background. Pauses when optimizer is active.
+                </p>
+
+                <!-- Elite Strategies Table -->
+                <div style="overflow-x: auto; margin-top: 1rem;">
+                    <table class="history-table" id="eliteTable">
+                        <thead>
+                            <tr>
+                                <th>Rank</th>
+                                <th>Score</th>
+                                <th style="text-align: left;">Strategy</th>
+                                <th>1W</th>
+                                <th>1M</th>
+                                <th>3M</th>
+                                <th>6M</th>
+                                <th>1Y</th>
+                                <th>2Y</th>
+                                <th>Status</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="eliteTableBody">
+                            <!-- Populated dynamically -->
+                        </tbody>
+                    </table>
+                    <div id="eliteEmpty" style="text-align: center; padding: 2rem; color: var(--text-secondary);">
+                        No elite strategies found. Run validation to identify consistent strategies.
+                    </div>
+                </div>
+            </div>
+        </div><!-- End elite-tab -->
+
+        <!-- Autonomous Optimizer Tab Content -->
+        <div id="autonomous-tab" class="tab-content" style="display: none;">
+            <div class="card">
+                <div class="card-header">
+                    <div class="icon" style="background: linear-gradient(135deg, #f59e0b, #ef4444);">⚡</div>
+                    <h2>Autonomous Optimizer</h2>
+
+                    <!-- Toggle Switch -->
+                    <label class="toggle-switch" style="margin-left: auto;">
+                        <input type="checkbox" id="autonomousToggle" onchange="toggleAutonomousOptimizer()">
+                        <span class="toggle-slider"></span>
+                        <span id="autonomousToggleLabel" style="margin-left: 0.5rem; color: var(--text-secondary);">OFF</span>
+                    </label>
+                </div>
+
+                <div class="info-box" style="background: linear-gradient(135deg, rgba(245, 158, 11, 0.1), rgba(239, 68, 68, 0.1)); border: 1px solid rgba(245, 158, 11, 0.3); padding: 1rem; border-radius: 8px; margin-bottom: 1rem;">
+                    <strong>How it works:</strong> Automatically cycles through all trading pairs, timeframes, periods, and granularities running optimizations continuously.
+                    Uses Capital: £1000, Position Size: 100%. Pauses when you run manual optimizations.
+                </div>
+
+                <!-- Status Display -->
+                <div id="autonomousStatus" class="autonomous-status-panel">
+                    <div class="autonomous-status-bar">
+                        <span id="autonomousStatusBadge" class="status-badge neutral">Idle</span>
+                        <span id="autonomousStatusMessage" style="color: var(--text-secondary); margin-left: 1rem;">Not running</span>
+                    </div>
+
+                    <!-- Progress -->
+                    <div id="autonomousProgressContainer" style="display: none; margin-top: 1rem;">
+                        <div class="progress-bar" style="height: 8px; background: var(--bg-hover); border-radius: 4px; overflow: hidden;">
+                            <div class="progress-fill" id="autonomousProgressFill" style="width: 0%; height: 100%; background: linear-gradient(90deg, #f59e0b, #ef4444); transition: width 0.3s;"></div>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; margin-top: 0.5rem; font-size: 0.85rem;">
+                            <span id="autonomousProgressText" style="color: var(--text-secondary);">0%</span>
+                            <span id="autonomousCycleProgress" style="color: var(--text-muted);">0 / 0 combinations</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Current Optimization Display -->
+                <div id="autonomousCurrentOptimization" style="display: none; margin-top: 1.5rem;">
+                    <h3 style="font-size: 1rem; margin-bottom: 1rem; color: var(--text-secondary);">Currently Optimizing</h3>
+                    <div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 1rem;">
+                        <div class="stat-item">
+                            <div class="stat-label">Source</div>
+                            <div class="stat-value" id="autoCurrentSource" style="font-size: 1rem;">-</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-label">Pair</div>
+                            <div class="stat-value" id="autoCurrentPair" style="font-size: 1rem;">-</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-label">Period</div>
+                            <div class="stat-value" id="autoCurrentPeriod" style="font-size: 1rem;">-</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-label">Timeframe</div>
+                            <div class="stat-value" id="autoCurrentTimeframe" style="font-size: 1rem;">-</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-label">Granularity</div>
+                            <div class="stat-value" id="autoCurrentGranularity" style="font-size: 1rem;">-</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Results Summary -->
+                <div id="autonomousResultsSummary" style="margin-top: 1.5rem;">
+                    <h3 style="font-size: 1rem; margin-bottom: 1rem; color: var(--text-secondary);">Session Summary</h3>
+                    <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem;">
+                        <div class="stat-item">
+                            <div class="stat-value" style="color: var(--success);" id="autoCompletedCount">0</div>
+                            <div class="stat-label">Completed</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-value" style="color: var(--danger);" id="autoErrorCount">0</div>
+                            <div class="stat-label">Errors</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-value" id="autoTotalCombinations">0</div>
+                            <div class="stat-label">Total Combinations</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-value" id="autoLastCompleted">-</div>
+                            <div class="stat-label">Last Completed</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Best Strategy Found -->
+                <div id="autoBestStrategySection" style="display: none; margin-top: 1.5rem; padding: 1rem; background: rgba(34, 197, 94, 0.1); border: 1px solid var(--success); border-radius: 8px;">
+                    <h3 style="font-size: 1rem; margin-bottom: 1rem; color: var(--success);">🏆 Best Strategy Found</h3>
+                    <div id="autoBestStrategyDetails" style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 1rem;">
+                        <!-- Populated by JavaScript -->
+                    </div>
+                </div>
+
+                <!-- Last Result -->
+                <div id="autoLastResultSection" style="display: none; margin-top: 1rem; padding: 1rem; background: var(--bg-secondary); border-radius: 8px;">
+                    <h4 style="font-size: 0.9rem; margin-bottom: 0.75rem; color: var(--text-secondary);">Last Optimization Result</h4>
+                    <div id="autoLastResultDetails">
+                        <!-- Populated by JavaScript -->
+                    </div>
+                </div>
+
+                <!-- Optimization History -->
+                <div id="autoHistorySection" style="margin-top: 1.5rem;">
+                    <h3 style="font-size: 1rem; margin-bottom: 1rem; color: var(--text-secondary);">Optimization History</h3>
+                    <div style="overflow-x: auto;">
+                        <table class="history-table" id="autoHistoryTable">
+                            <thead>
+                                <tr>
+                                    <th>Last Updated</th>
+                                    <th>Source</th>
+                                    <th>Pair</th>
+                                    <th>Period</th>
+                                    <th>Timeframe</th>
+                                    <th>Granularity</th>
+                                    <th>Strategies</th>
+                                    <th>Best PnL</th>
+                                </tr>
+                            </thead>
+                            <tbody id="autoHistoryTableBody">
+                                <!-- Populated dynamically -->
+                            </tbody>
+                        </table>
+                        <div id="autoHistoryEmpty" style="text-align: center; padding: 2rem; color: var(--text-secondary);">
+                            No optimization runs yet. Enable the autonomous optimizer to start.
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div><!-- End autonomous-tab -->
     </div>
 
     <script>
@@ -1162,6 +1561,10 @@
             period: ''
         };
         let historyInitialized = false;
+        let validationInitialized = false;
+        let eliteInitialized = false;
+        let autonomousInitialized = false;
+        let autonomousPollingInterval = null;
 
         // Tab Navigation
         function showTab(tabName) {
@@ -1182,6 +1585,21 @@
             // Initialize history tab on first view
             if (tabName === 'history' && !historyInitialized) {
                 initHistoryTab();
+            }
+
+            // Initialize validation tab on first view
+            if (tabName === 'validation' && !validationInitialized) {
+                initValidationTab();
+            }
+
+            // Initialize elite tab on first view
+            if (tabName === 'elite' && !eliteInitialized) {
+                initEliteTab();
+            }
+
+            // Initialize autonomous tab on first view
+            if (tabName === 'autonomous' && !autonomousInitialized) {
+                initAutonomousTab();
             }
         }
 
@@ -1411,6 +1829,7 @@
                         <div class="action-btn-group">
                             <button class="action-btn" onclick="event.stopPropagation(); copyPineScript(${bestStrategy.id})" title="Copy Pine Script">📋</button>
                             <button class="action-btn" onclick="event.stopPropagation(); downloadPineScript(${bestStrategy.id}, '${bestStrategy.strategy_name}')" title="Download Pine Script">📜</button>
+                            <button class="action-btn validate" onclick="event.stopPropagation(); validateFromHistory(${bestStrategy.id})" title="Validate Strategy">🔬</button>
                             <button class="action-btn danger" onclick="event.stopPropagation(); deleteStrategy(${bestStrategy.id}, '${bestStrategy.strategy_name}')" title="Delete">🗑️</button>
                         </div>
                     </td>
@@ -1503,6 +1922,7 @@
                             <td style="padding: 0.4rem; text-align: center;">
                                 <button class="action-btn" onclick="event.stopPropagation(); copyPineScript(${variant.id})" title="Copy Pine Script">📋</button>
                                 <button class="action-btn" onclick="event.stopPropagation(); downloadPineScript(${variant.id}, '${variant.strategy_name}')" title="Download">📜</button>
+                                <button class="action-btn validate" onclick="event.stopPropagation(); validateFromHistory(${variant.id})" title="Validate">🔬</button>
                                 <button class="action-btn danger" onclick="event.stopPropagation(); deleteStrategy(${variant.id}, '${variant.strategy_name}')" title="Delete">🗑️</button>
                             </td>
                         </tr>`;
@@ -3851,6 +4271,895 @@
                 console.error('Initial status fetch failed:', e);
             }
         });
+
+        // =====================================================
+        // VALIDATION TAB FUNCTIONS
+        // =====================================================
+
+        // Initialize Validation Tab
+        async function initValidationTab() {
+            validationInitialized = true;
+            try {
+                const response = await fetch('/api/db/strategies?limit=500');
+                const strategies = await response.json();
+
+                const select = document.getElementById('validationStrategySelect');
+                select.innerHTML = '<option value="">-- Select a strategy --</option>';
+
+                // Store strategies globally for lookup
+                window.validationStrategies = strategies;
+
+                // Group by strategy name for easier selection
+                strategies.forEach(strategy => {
+                    const option = document.createElement('option');
+                    option.value = strategy.id;
+                    const pnl = strategy.total_pnl >= 0 ? `+${strategy.total_pnl.toFixed(2)}` : strategy.total_pnl.toFixed(2);
+                    option.textContent = `${strategy.strategy_name} (${strategy.symbol} ${strategy.timeframe}) - ${strategy.win_rate.toFixed(1)}% WR, ${pnl}`;
+                    select.appendChild(option);
+                });
+            } catch (e) {
+                console.error('Failed to load strategies for validation:', e);
+            }
+        }
+
+        // Handle strategy selection change - show original values
+        async function onValidationStrategyChange() {
+            const strategyId = document.getElementById('validationStrategySelect').value;
+            const origCapitalEl = document.getElementById('validationOriginalCapital');
+            const origPositionEl = document.getElementById('validationOriginalPosition');
+            const capitalInput = document.getElementById('validationCapital');
+            const positionInput = document.getElementById('validationPositionSize');
+
+            if (!strategyId) {
+                origCapitalEl.textContent = '--';
+                origPositionEl.textContent = '--';
+                return;
+            }
+
+            // Try to get original values from optimization run
+            try {
+                const strategy = window.validationStrategies?.find(s => s.id == strategyId);
+                if (strategy && strategy.optimization_run_id) {
+                    const runResponse = await fetch(`/api/db/runs`);
+                    const runs = await runResponse.json();
+                    const run = runs.find(r => r.id == strategy.optimization_run_id);
+                    if (run) {
+                        const origCapital = run.capital || 1000;
+                        const origPosition = run.risk_percent || 75;
+                        origCapitalEl.textContent = `£${origCapital}`;
+                        origPositionEl.textContent = `${origPosition}%`;
+                        // Pre-fill with original values
+                        capitalInput.value = origCapital;
+                        positionInput.value = origPosition;
+                        return;
+                    }
+                }
+            } catch (e) {
+                console.error('Failed to get original settings:', e);
+            }
+
+            origCapitalEl.textContent = '£1000 (default)';
+            origPositionEl.textContent = '75% (default)';
+        }
+
+        // Run Validation
+        async function runValidation() {
+            const strategyId = document.getElementById('validationStrategySelect').value;
+            if (!strategyId) {
+                alert('Please select a strategy to validate');
+                return;
+            }
+
+            const btn = document.getElementById('validateBtn');
+            const progress = document.getElementById('validationProgress');
+            const progressBar = document.getElementById('validationProgressBar');
+            const progressText = document.getElementById('validationProgressText');
+            const results = document.getElementById('validationResults');
+
+            btn.disabled = true;
+            btn.textContent = 'Validating...';
+            progress.style.display = 'block';
+            progressBar.style.width = '10%';
+            progressText.textContent = 'Fetching exchange rate...';
+            results.style.display = 'none';
+
+            try {
+                // Fetch live exchange rate
+                try {
+                    const fxResponse = await fetch('/api/exchange-rate');
+                    const fxData = await fxResponse.json();
+                    window.liveExchangeRate = fxData.usd_to_gbp;
+                    console.log(`Live USD/GBP rate: ${fxData.usd_to_gbp} (${fxData.source})`);
+                } catch (e) {
+                    console.warn('Failed to fetch exchange rate, using fallback');
+                    window.liveExchangeRate = 0.79;
+                }
+
+                progressBar.style.width = '20%';
+                progressText.textContent = 'Fetching strategy details...';
+                progressBar.style.width = '40%';
+                progressText.textContent = 'Running validation across all periods...';
+
+                // Get capital and position size from inputs
+                const capital = parseFloat(document.getElementById('validationCapital').value) || 1000;
+                const positionSize = parseFloat(document.getElementById('validationPositionSize').value) || 75;
+
+                const response = await fetch('/api/validate-strategy', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        strategy_id: parseInt(strategyId),
+                        capital: capital,
+                        position_size_pct: positionSize
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error(`Validation failed: ${response.statusText}`);
+                }
+
+                const data = await response.json();
+
+                progressBar.style.width = '100%';
+                progressText.textContent = 'Validation complete!';
+
+                // Render results
+                renderValidationResults(data);
+                results.style.display = 'block';
+
+            } catch (e) {
+                console.error('Validation failed:', e);
+                progressText.textContent = `Error: ${e.message}`;
+                progressBar.style.background = '#ff4444';
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Run Validation (All Periods)';
+                setTimeout(() => {
+                    progress.style.display = 'none';
+                    progressBar.style.width = '0%';
+                    progressBar.style.background = 'linear-gradient(90deg, #00d4ff, #7b68ee)';
+                }, 2000);
+            }
+        }
+
+        // Render Validation Results
+        function renderValidationResults(data) {
+            // Update title
+            document.getElementById('validationResultsTitle').textContent =
+                `Validation: ${data.strategy.name}`;
+
+            // Strategy info
+            const infoDiv = document.getElementById('validationStrategyInfo');
+            infoDiv.innerHTML = `
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1rem;">
+                    <div>
+                        <span style="color: #888; font-size: 0.8rem;">Symbol</span>
+                        <div style="font-weight: 600;">${data.strategy.symbol}</div>
+                    </div>
+                    <div>
+                        <span style="color: #888; font-size: 0.8rem;">Timeframe</span>
+                        <div style="font-weight: 600;">${data.strategy.timeframe}</div>
+                    </div>
+                    <div>
+                        <span style="color: #888; font-size: 0.8rem;">Data Source</span>
+                        <div style="font-weight: 600;">${data.strategy.data_source || 'Unknown'}</div>
+                    </div>
+                    <div>
+                        <span style="color: #888; font-size: 0.8rem;">Entry Rule</span>
+                        <div style="font-weight: 600;">${data.strategy.entry_rule}</div>
+                    </div>
+                    <div>
+                        <span style="color: #888; font-size: 0.8rem;">Direction</span>
+                        <div style="font-weight: 600; color: ${data.strategy.direction === 'long' ? '#4ade80' : '#f87171'};">
+                            ${data.strategy.direction.toUpperCase()}
+                        </div>
+                    </div>
+                    <div>
+                        <span style="color: #888; font-size: 0.8rem;">TP% / SL%</span>
+                        <div style="font-weight: 600;">${data.strategy.tp_percent}% / ${data.strategy.sl_percent}%</div>
+                    </div>
+                    <div>
+                        <span style="color: #888; font-size: 0.8rem;">Capital</span>
+                        <div style="font-weight: 600;">£${data.strategy.capital?.toLocaleString() || 1000}</div>
+                    </div>
+                    <div>
+                        <span style="color: #888; font-size: 0.8rem;">Position Size</span>
+                        <div style="font-weight: 600;">${data.strategy.position_size_pct || 75}%</div>
+                    </div>
+                    <div>
+                        <span style="color: #888; font-size: 0.8rem;">Optimized On</span>
+                        <div style="font-weight: 600; color: #7b68ee;">${data.original.period || 'unknown'}</div>
+                    </div>
+                </div>
+            `;
+
+            // Build table rows
+            const tbody = document.getElementById('validationTableBody');
+            tbody.innerHTML = '';
+
+            // Validation rows only (no original baseline row)
+            data.validations.forEach(v => {
+                const row = document.createElement('tr');
+
+                let statusHtml = '';
+                let statusColor = '';
+
+                switch(v.status) {
+                    case 'consistent':
+                        statusHtml = '<span style="color: #4ade80;">✓ Consistent</span>';
+                        break;
+                    case 'minor_drop':
+                        statusHtml = '<span style="color: #fbbf24;">⚠ Minor drop</span>';
+                        break;
+                    case 'degraded':
+                        statusHtml = '<span style="color: #f87171;">✗ Degraded</span>';
+                        break;
+                    case 'no_trades':
+                        statusHtml = '<span style="color: #888;">⚠ No trades</span>';
+                        break;
+                    case 'limit_exceeded':
+                        statusHtml = '<span style="color: #666;">⛔ Limit exceeded</span>';
+                        break;
+                    case 'insufficient_data':
+                        statusHtml = '<span style="color: #666;">⚠ Insufficient data</span>';
+                        break;
+                    case 'error':
+                        statusHtml = '<span style="color: #f87171;">✗ Error</span>';
+                        break;
+                    default:
+                        statusHtml = '<span style="color: #888;">Unknown</span>';
+                }
+
+                if (v.metrics) {
+                    const pnlChange = calcChange(data.original.total_pnl, v.metrics.total_pnl);
+                    const wrChange = calcChange(data.original.win_rate, v.metrics.win_rate);
+
+                    // Determine currency from symbol and show both $ and £
+                    const symbol = data.strategy.symbol.toUpperCase();
+                    const isUSD = symbol.includes('USD') || symbol.includes('USDT');
+                    const isGBP = symbol.includes('GBP');
+                    const usdToGbp = window.liveExchangeRate || 0.79; // Live rate or fallback
+
+                    const pnl = v.metrics.total_pnl;
+                    const drawdown = v.metrics.max_drawdown || 0;
+                    const pnlColor = pnl >= 0 ? '#4ade80' : '#f87171';
+
+                    let pnlFormatted, drawdownFormatted;
+                    const pnlSign = pnl >= 0 ? '+' : '-';
+                    const ddSign = '-';
+
+                    if (isUSD) {
+                        const pnlGbp = Math.abs(pnl * usdToGbp);
+                        const ddGbp = Math.abs(drawdown * usdToGbp);
+                        pnlFormatted = `${pnlSign}$${Math.abs(pnl).toFixed(2)} / ${pnlSign}£${pnlGbp.toFixed(2)}`;
+                        drawdownFormatted = `${ddSign}$${Math.abs(drawdown).toFixed(2)} / ${ddSign}£${ddGbp.toFixed(2)}`;
+                    } else if (isGBP) {
+                        const pnlUsd = Math.abs(pnl / usdToGbp);
+                        const ddUsd = Math.abs(drawdown / usdToGbp);
+                        pnlFormatted = `${pnlSign}£${Math.abs(pnl).toFixed(2)} / ${pnlSign}$${pnlUsd.toFixed(2)}`;
+                        drawdownFormatted = `${ddSign}£${Math.abs(drawdown).toFixed(2)} / ${ddSign}$${ddUsd.toFixed(2)}`;
+                    } else {
+                        pnlFormatted = `${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}`;
+                        drawdownFormatted = `-${Math.abs(drawdown).toFixed(2)}`;
+                    }
+
+                    row.innerHTML = `
+                        <td>${v.period}</td>
+                        <td>${v.metrics.total_trades}</td>
+                        <td>
+                            ${v.metrics.win_rate.toFixed(1)}%
+                            <span style="font-size: 0.75rem; color: ${wrChange >= 0 ? '#4ade80' : '#f87171'};">
+                                (${wrChange >= 0 ? '+' : ''}${wrChange.toFixed(1)}%)
+                            </span>
+                        </td>
+                        <td style="color: ${pnlColor};">
+                            ${pnlFormatted}
+                        </td>
+                        <td style="color: #f87171;">
+                            ${drawdownFormatted}
+                        </td>
+                        <td>${v.metrics.profit_factor.toFixed(2)}</td>
+                        <td>${statusHtml}</td>
+                    `;
+                } else {
+                    row.innerHTML = `
+                        <td>${v.period}</td>
+                        <td>--</td>
+                        <td>--</td>
+                        <td>--</td>
+                        <td>--</td>
+                        <td>--</td>
+                        <td>${statusHtml}${v.message ? `<br><span style="font-size: 0.75rem; color: #666;">${v.message}</span>` : ''}</td>
+                    `;
+                }
+
+                tbody.appendChild(row);
+            });
+        }
+
+        // Calculate percentage change
+        function calcChange(original, current) {
+            if (original === 0) return current === 0 ? 0 : 100;
+            return ((current - original) / Math.abs(original)) * 100;
+        }
+
+        // Validate from History - switch to validation tab and auto-run
+        async function validateFromHistory(strategyId) {
+            // Switch to validation tab
+            showTab('validation');
+
+            // Wait for tab to initialize if needed
+            if (!validationInitialized) {
+                await initValidationTab();
+            }
+
+            // Select the strategy in dropdown
+            const select = document.getElementById('validationStrategySelect');
+            select.value = strategyId;
+
+            // Trigger change handler to pre-fill original capital/position size
+            await onValidationStrategyChange();
+
+            // Auto-run validation
+            setTimeout(() => {
+                runValidation();
+            }, 100);
+        }
+
+        // =====================================================================
+        // ELITE STRATEGIES TAB
+        // =====================================================================
+
+        let elitePolling = false;
+
+        async function initEliteTab() {
+            eliteInitialized = true;
+            await loadEliteData();
+            // Start continuous polling since validation runs automatically
+            startElitePolling();
+        }
+
+        // Track expanded elite group to preserve state on re-render
+        let expandedEliteGroupKey = null;
+
+        async function loadEliteData() {
+            try {
+                const [statusRes, strategiesRes] = await Promise.all([
+                    fetch('/api/elite/status'),
+                    fetch('/api/elite/strategies')
+                ]);
+
+                const status = await statusRes.json();
+                const strategies = await strategiesRes.json();
+
+                // Update status counts
+                document.getElementById('eliteCount').textContent = status.elite;
+                document.getElementById('partialCount').textContent = status.partial;
+                document.getElementById('failedCount').textContent = status.failed;
+                document.getElementById('pendingCount').textContent = status.pending;
+
+                // Update progress indicator
+                updateEliteProgress(status);
+
+                // Render table (show all validated strategies, not just elite)
+                await renderEliteTable(strategies, status);
+
+            } catch (error) {
+                console.error('Failed to load elite data:', error);
+            }
+        }
+
+        function updateEliteProgress(status) {
+            const progressEl = document.getElementById('eliteProgress');
+
+            if (status.validation_running) {
+                if (status.validation_paused) {
+                    progressEl.textContent = `⏸ Paused (optimizer running) - ${status.validation_processed}/${status.validation_total}`;
+                    progressEl.className = 'elite-progress paused';
+                } else {
+                    progressEl.textContent = `⚡ ${status.validation_message || 'Validating...'} (${status.validation_processed}/${status.validation_total})`;
+                    progressEl.className = 'elite-progress running';
+                }
+            } else if (status.validation_message) {
+                progressEl.textContent = `✓ ${status.validation_message}`;
+                progressEl.className = 'elite-progress';
+            } else {
+                progressEl.textContent = '✓ Auto-validation active';
+                progressEl.className = 'elite-progress';
+            }
+        }
+
+        function startElitePolling() {
+            // Poll every 5 seconds to show live status
+            setInterval(async () => {
+                // Only poll if elite tab is visible
+                const eliteTab = document.getElementById('elite-tab');
+                if (eliteTab && eliteTab.style.display !== 'none') {
+                    await loadEliteData();
+                }
+            }, 5000);
+        }
+
+        async function renderEliteTable(eliteStrategies, status) {
+            const tbody = document.getElementById('eliteTableBody');
+            const emptyMsg = document.getElementById('eliteEmpty');
+            const table = document.getElementById('eliteTable');
+
+            const validatedStrategies = eliteStrategies || [];
+
+            if (validatedStrategies.length === 0) {
+                table.style.display = 'none';
+                emptyMsg.style.display = 'block';
+                return;
+            }
+
+            table.style.display = 'table';
+            emptyMsg.style.display = 'none';
+            tbody.innerHTML = '';
+
+            // Helper to format P&L cell
+            function formatPnL(periodData) {
+                if (!periodData) return '<span style="color: var(--text-muted);">--</span>';
+                if (periodData.status === 'limit_exceeded') return '<span style="color: var(--text-muted);">N/A</span>';
+                if (periodData.status === 'no_trades') return '<span style="color: var(--text-muted);">0</span>';
+                if (periodData.status === 'error') return '<span style="color: var(--text-muted);">err</span>';
+                if (periodData.pnl === undefined) return '<span style="color: var(--text-muted);">--</span>';
+
+                const pnl = periodData.pnl;
+                const sign = pnl >= 0 ? '+' : '';
+                const colorClass = pnl >= 0 ? 'success' : 'danger';
+                return `<span class="${colorClass}">£${sign}${pnl.toFixed(0)}</span>`;
+            }
+
+            // Group strategies by name+symbol+timeframe+direction
+            const groups = {};
+            validatedStrategies.forEach(s => {
+                const direction = s.params?.direction || s.trade_mode || 'long';
+                const key = `${s.strategy_name}|${s.symbol}|${s.timeframe}|${direction}`;
+                if (!groups[key]) groups[key] = [];
+                groups[key].push(s);
+            });
+
+            // Sort each group by elite_score descending (best first)
+            Object.values(groups).forEach(group => {
+                group.sort((a, b) => (b.elite_score || 0) - (a.elite_score || 0));
+            });
+
+            // Sort groups by best strategy's score
+            const sortedGroups = Object.values(groups).sort((a, b) => {
+                return (b[0].elite_score || 0) - (a[0].elite_score || 0);
+            });
+
+            let rank = 0;
+            sortedGroups.forEach(group => {
+                const best = group[0];
+                const hasVariants = group.length > 1;
+                rank++;
+
+                const direction = best.params?.direction || best.trade_mode || 'long';
+                const dirClass = direction === 'short' ? 'danger' : 'success';
+                const score = (best.elite_score || 0).toFixed(2);
+
+                // Score color
+                let scoreClass = 'danger';
+                if (score >= 5) scoreClass = 'success';
+                else if (score >= 3) scoreClass = 'warning';
+
+                // Medal for top 3
+                let medal = '';
+                if (rank === 1) medal = '🥇';
+                else if (rank === 2) medal = '🥈';
+                else if (rank === 3) medal = '🥉';
+
+                // Status badge
+                let statusBadge = '';
+                if (best.elite_status === 'elite') {
+                    statusBadge = '<span class="elite-badge elite-status">ELITE</span>';
+                } else if (best.elite_status === 'partial') {
+                    statusBadge = '<span class="elite-badge partial-status">PARTIAL</span>';
+                } else if (best.elite_status === 'failed') {
+                    statusBadge = '<span class="elite-badge failed-status">FAILED</span>';
+                }
+
+                // Parse validation data for best strategy
+                let periodData = {};
+                try {
+                    const validationResults = JSON.parse(best.elite_validation_data || '[]');
+                    validationResults.forEach(r => { periodData[r.period] = r; });
+                } catch (e) {}
+
+                // TP/SL for best
+                const tp = best.tp_percent || best.params?.tp_percent || '--';
+                const sl = best.sl_percent || best.params?.sl_percent || '--';
+
+                // Variant badge
+                const variantBadge = hasVariants ? `<span style="background: var(--primary); color: white; padding: 0.1rem 0.4rem; border-radius: 10px; font-size: 0.7rem; margin-left: 0.3rem;">${group.length}</span>` : '';
+
+                const row = document.createElement('tr');
+                row.className = 'elite-row';
+                row.dataset.groupKey = `${best.strategy_name}|${best.symbol}|${best.timeframe}|${direction}`;
+                row.style.cursor = hasVariants ? 'pointer' : 'default';
+
+                row.innerHTML = `
+                    <td><span class="expand-icon">${hasVariants ? '▶' : '•'}</span> ${medal}#${rank}</td>
+                    <td class="${scoreClass}"><strong>${score}</strong></td>
+                    <td style="text-align: left;">
+                        <div style="display: flex; align-items: center; gap: 0.5rem;">
+                            <span class="status-badge ${dirClass}" style="font-size: 0.65rem; padding: 0.1rem 0.35rem;">
+                                ${direction.toUpperCase()}
+                            </span>
+                            <strong>${best.strategy_name}</strong>${variantBadge}
+                        </div>
+                        <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.2rem;">
+                            ${best.symbol || 'BTCUSDT'} · ${best.timeframe || '15m'} · TP ${tp}% / SL ${sl}%
+                        </div>
+                    </td>
+                    <td>${formatPnL(periodData['1 week'])}</td>
+                    <td>${formatPnL(periodData['1 month'])}</td>
+                    <td>${formatPnL(periodData['3 months'])}</td>
+                    <td>${formatPnL(periodData['6 months'])}</td>
+                    <td>${formatPnL(periodData['1 year'])}</td>
+                    <td>${formatPnL(periodData['2 years'])}</td>
+                    <td>${statusBadge}</td>
+                    <td>
+                        <button class="btn btn-small" onclick="event.stopPropagation(); showPineScript(${best.id})" title="Pine Script">📋</button>
+                        <button class="btn btn-small" onclick="event.stopPropagation(); validateFromHistory(${best.id})" title="Re-validate">🔬</button>
+                    </td>
+                `;
+
+                if (hasVariants) {
+                    row.addEventListener('click', () => toggleEliteVariants(row, group, formatPnL));
+                }
+
+                tbody.appendChild(row);
+
+                // Create variants container row (hidden by default)
+                if (hasVariants) {
+                    const variantsRow = document.createElement('tr');
+                    variantsRow.className = 'elite-variants-row';
+                    variantsRow.id = `elite-variants-${best.id}`;
+                    variantsRow.style.display = 'none';
+                    variantsRow.innerHTML = `<td colspan="11" style="padding: 0; background: var(--bg-secondary);"></td>`;
+                    tbody.appendChild(variantsRow);
+
+                    // Restore expanded state if this was the previously expanded group
+                    const groupKey = `${best.strategy_name}|${best.symbol}|${best.timeframe}|${direction}`;
+                    if (expandedEliteGroupKey === groupKey) {
+                        // Re-expand this group
+                        setTimeout(() => toggleEliteVariants(row, group, formatPnL), 0);
+                    }
+                }
+            });
+        }
+
+        // Toggle elite variants dropdown
+        function toggleEliteVariants(rowElement, group, formatPnL) {
+            const best = group[0];
+            const direction = best.params?.direction || best.trade_mode || 'long';
+            const groupKey = `${best.strategy_name}|${best.symbol}|${best.timeframe}|${direction}`;
+            const variantsRow = document.getElementById(`elite-variants-${best.id}`);
+            const expandIcon = rowElement.querySelector('.expand-icon');
+
+            if (!variantsRow) return;
+
+            // Close all other expanded rows
+            document.querySelectorAll('.elite-variants-row').forEach(r => {
+                if (r.id !== `elite-variants-${best.id}`) {
+                    r.style.display = 'none';
+                }
+            });
+            document.querySelectorAll('.elite-row').forEach(r => {
+                if (r !== rowElement) {
+                    r.classList.remove('expanded');
+                    const icon = r.querySelector('.expand-icon');
+                    if (icon && icon.textContent === '▼') icon.textContent = '▶';
+                }
+            });
+
+            // Toggle current row
+            if (variantsRow.style.display === 'none') {
+                variantsRow.style.display = 'table-row';
+                rowElement.classList.add('expanded');
+                expandIcon.textContent = '▼';
+                expandedEliteGroupKey = groupKey;  // Track expanded state
+
+                // Build variants table
+                const variantsCell = variantsRow.querySelector('td');
+                let html = `<div style="padding: 0.5rem 1rem 0.5rem 2rem;">
+                    <table style="width: 100%; font-size: 0.85rem; border-collapse: collapse;">
+                        <thead>
+                            <tr style="background: var(--bg-card);">
+                                <th style="padding: 0.3rem; text-align: left; color: var(--text-muted);">TP%</th>
+                                <th style="padding: 0.3rem; text-align: left; color: var(--text-muted);">SL%</th>
+                                <th style="padding: 0.3rem; text-align: left; color: var(--text-muted);">Score</th>
+                                <th style="padding: 0.3rem; text-align: center; color: var(--text-muted);">1W</th>
+                                <th style="padding: 0.3rem; text-align: center; color: var(--text-muted);">1M</th>
+                                <th style="padding: 0.3rem; text-align: center; color: var(--text-muted);">3M</th>
+                                <th style="padding: 0.3rem; text-align: center; color: var(--text-muted);">6M</th>
+                                <th style="padding: 0.3rem; text-align: center; color: var(--text-muted);">1Y</th>
+                                <th style="padding: 0.3rem; text-align: center; color: var(--text-muted);">2Y</th>
+                                <th style="padding: 0.3rem; text-align: center; color: var(--text-muted);">Status</th>
+                                <th style="padding: 0.3rem; text-align: center; color: var(--text-muted);">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>`;
+
+                group.forEach((variant, idx) => {
+                    const tp = variant.tp_percent || variant.params?.tp_percent || '--';
+                    const sl = variant.sl_percent || variant.params?.sl_percent || '--';
+                    const score = (variant.elite_score || 0).toFixed(2);
+                    const isBest = idx === 0;
+
+                    // Parse period data for this variant
+                    let periodData = {};
+                    try {
+                        const validationResults = JSON.parse(variant.elite_validation_data || '[]');
+                        validationResults.forEach(r => { periodData[r.period] = r; });
+                    } catch (e) {}
+
+                    // Status badge
+                    let statusBadge = '';
+                    if (variant.elite_status === 'elite') {
+                        statusBadge = '<span class="elite-badge elite-status" style="font-size: 0.7rem; padding: 0.15rem 0.4rem;">ELITE</span>';
+                    } else if (variant.elite_status === 'partial') {
+                        statusBadge = '<span class="elite-badge partial-status" style="font-size: 0.7rem; padding: 0.15rem 0.4rem;">PARTIAL</span>';
+                    } else if (variant.elite_status === 'failed') {
+                        statusBadge = '<span class="elite-badge failed-status" style="font-size: 0.7rem; padding: 0.15rem 0.4rem;">FAILED</span>';
+                    }
+
+                    html += `
+                        <tr style="border-bottom: 1px solid var(--border-subtle); ${isBest ? 'background: rgba(34, 197, 94, 0.1);' : ''}">
+                            <td style="padding: 0.4rem; color: var(--success);">${tp}${isBest ? ' <span style="color: var(--success); font-size: 0.7rem;">★ Best</span>' : ''}</td>
+                            <td style="padding: 0.4rem; color: var(--danger);">${sl}</td>
+                            <td style="padding: 0.4rem;">${score}</td>
+                            <td style="padding: 0.4rem; text-align: center;">${formatPnL(periodData['1 week'])}</td>
+                            <td style="padding: 0.4rem; text-align: center;">${formatPnL(periodData['1 month'])}</td>
+                            <td style="padding: 0.4rem; text-align: center;">${formatPnL(periodData['3 months'])}</td>
+                            <td style="padding: 0.4rem; text-align: center;">${formatPnL(periodData['6 months'])}</td>
+                            <td style="padding: 0.4rem; text-align: center;">${formatPnL(periodData['1 year'])}</td>
+                            <td style="padding: 0.4rem; text-align: center;">${formatPnL(periodData['2 years'])}</td>
+                            <td style="padding: 0.4rem; text-align: center;">${statusBadge}</td>
+                            <td style="padding: 0.4rem; text-align: center;">
+                                <button class="btn btn-small" onclick="event.stopPropagation(); showPineScript(${variant.id})" title="Pine Script">📋</button>
+                                <button class="btn btn-small" onclick="event.stopPropagation(); validateFromHistory(${variant.id})" title="Re-validate">🔬</button>
+                            </td>
+                        </tr>`;
+                });
+
+                html += `</tbody></table></div>`;
+                variantsCell.innerHTML = html;
+            } else {
+                variantsRow.style.display = 'none';
+                rowElement.classList.remove('expanded');
+                expandIcon.textContent = '▶';
+                expandedEliteGroupKey = null;  // Clear expanded state
+            }
+        }
+
+
+        // =====================================================
+        // AUTONOMOUS OPTIMIZER
+        // =====================================================
+
+        async function initAutonomousTab() {
+            autonomousInitialized = true;
+            updateAutonomousStatus();
+            startAutonomousPolling();
+        }
+
+        async function toggleAutonomousOptimizer() {
+            const toggle = document.getElementById('autonomousToggle');
+            const label = document.getElementById('autonomousToggleLabel');
+
+            try {
+                const response = await fetch('/api/autonomous/toggle', { method: 'POST' });
+                const data = await response.json();
+
+                if (data.status === 'enabled') {
+                    label.textContent = 'ON';
+                    label.style.color = 'var(--success)';
+                    addLog('Autonomous optimizer enabled', 'normal');
+                } else {
+                    label.textContent = 'OFF';
+                    label.style.color = 'var(--text-secondary)';
+                    addLog('Autonomous optimizer disabled', 'normal');
+                }
+
+                updateAutonomousStatus();
+            } catch (error) {
+                console.error('Failed to toggle autonomous optimizer:', error);
+                toggle.checked = !toggle.checked;  // Revert toggle
+            }
+        }
+
+        function startAutonomousPolling() {
+            if (autonomousPollingInterval) return;
+
+            autonomousPollingInterval = setInterval(updateAutonomousStatus, 3000);
+        }
+
+        function stopAutonomousPolling() {
+            if (autonomousPollingInterval) {
+                clearInterval(autonomousPollingInterval);
+                autonomousPollingInterval = null;
+            }
+        }
+
+        async function updateAutonomousStatus() {
+            try {
+                const response = await fetch('/api/autonomous/status');
+                const status = await response.json();
+
+                // Update badge
+                const badge = document.getElementById('autonomousStatusBadge');
+                const message = document.getElementById('autonomousStatusMessage');
+
+                if (status.running) {
+                    badge.className = 'status-badge success';
+                    badge.textContent = 'Running';
+                } else if (status.paused) {
+                    badge.className = 'status-badge warning';
+                    badge.textContent = 'Paused';
+                } else if (status.enabled && status.auto_running) {
+                    badge.className = 'status-badge success';
+                    badge.textContent = 'Active';
+                } else {
+                    badge.className = 'status-badge neutral';
+                    badge.textContent = 'Idle';
+                }
+
+                message.textContent = status.message || 'Not running';
+
+                // Update progress
+                const progressContainer = document.getElementById('autonomousProgressContainer');
+                const progressFill = document.getElementById('autonomousProgressFill');
+                const progressText = document.getElementById('autonomousProgressText');
+                const cycleProgress = document.getElementById('autonomousCycleProgress');
+
+                if (status.running || status.enabled) {
+                    progressContainer.style.display = 'block';
+                    progressFill.style.width = `${status.progress || 0}%`;
+                    progressText.textContent = `${status.progress || 0}%`;
+                    cycleProgress.textContent = `${status.cycle_index || 0} / ${status.total_combinations || 0} combinations`;
+                } else {
+                    progressContainer.style.display = 'none';
+                }
+
+                // Update current optimization
+                const currentSection = document.getElementById('autonomousCurrentOptimization');
+                if (status.running && status.current_pair) {
+                    currentSection.style.display = 'block';
+                    document.getElementById('autoCurrentSource').textContent = (status.current_source || '-').toUpperCase();
+                    document.getElementById('autoCurrentPair').textContent = status.current_pair || '-';
+                    document.getElementById('autoCurrentPeriod').textContent = status.current_period || '-';
+                    document.getElementById('autoCurrentTimeframe').textContent = status.current_timeframe || '-';
+                    document.getElementById('autoCurrentGranularity').textContent = status.current_granularity || '-';
+                } else {
+                    currentSection.style.display = 'none';
+                }
+
+                // Update summary stats
+                document.getElementById('autoCompletedCount').textContent = status.completed_count || 0;
+                document.getElementById('autoErrorCount').textContent = status.error_count || 0;
+                document.getElementById('autoTotalCombinations').textContent = status.total_combinations || 0;
+                document.getElementById('autoLastCompleted').textContent = status.last_completed_at
+                    ? new Date(status.last_completed_at).toLocaleTimeString()
+                    : '-';
+
+                // Update best strategy
+                const bestSection = document.getElementById('autoBestStrategySection');
+                if (status.best_strategy_found) {
+                    bestSection.style.display = 'block';
+                    const best = status.best_strategy_found;
+                    document.getElementById('autoBestStrategyDetails').innerHTML = `
+                        <div class="stat-item">
+                            <div class="stat-label">Pair</div>
+                            <div class="stat-value">${best.pair || '-'}</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-label">Timeframe</div>
+                            <div class="stat-value">${best.timeframe || '-'}</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-label">Period</div>
+                            <div class="stat-value">${best.period || '-'}</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-label">Strategy</div>
+                            <div class="stat-value">${best.strategy || '-'}</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-label">PnL</div>
+                            <div class="stat-value" style="color: var(--success);">£${(best.pnl || 0).toFixed(2)}</div>
+                        </div>
+                    `;
+                } else {
+                    bestSection.style.display = 'none';
+                }
+
+                // Update last result
+                const lastSection = document.getElementById('autoLastResultSection');
+                if (status.last_result) {
+                    lastSection.style.display = 'block';
+                    const last = status.last_result;
+                    const pnlColor = (last.pnl || 0) >= 0 ? 'var(--success)' : 'var(--danger)';
+                    document.getElementById('autoLastResultDetails').innerHTML = `
+                        <span style="color: var(--text-primary);">${last.pair || '-'}</span>
+                        <span style="color: var(--text-muted);"> ${last.timeframe || '-'} (${last.period || '-'})</span>
+                        <span style="margin-left: 1rem;">→</span>
+                        <span style="margin-left: 0.5rem; color: var(--accent-primary);">${last.strategy || '-'}</span>
+                        <span style="margin-left: 1rem; color: ${pnlColor};">£${(last.pnl || 0).toFixed(2)}</span>
+                        <span style="margin-left: 0.5rem; color: var(--text-muted);">(${(last.win_rate || 0).toFixed(1)}% WR)</span>
+                    `;
+                } else {
+                    lastSection.style.display = 'none';
+                }
+
+                // Update toggle state
+                const toggle = document.getElementById('autonomousToggle');
+                const toggleLabel = document.getElementById('autonomousToggleLabel');
+                if (toggle && toggleLabel) {
+                    toggle.checked = status.enabled || false;
+                    toggleLabel.textContent = status.enabled ? 'ON' : 'OFF';
+                    toggleLabel.style.color = status.enabled ? 'var(--success)' : 'var(--text-secondary)';
+                }
+
+                // Update history table
+                await updateAutonomousHistory();
+
+            } catch (error) {
+                console.error('Failed to update autonomous status:', error);
+            }
+        }
+
+        async function updateAutonomousHistory() {
+            try {
+                const response = await fetch('/api/autonomous/history?limit=50');
+                const data = await response.json();
+
+                const tableBody = document.getElementById('autoHistoryTableBody');
+                const emptyMessage = document.getElementById('autoHistoryEmpty');
+                const table = document.getElementById('autoHistoryTable');
+
+                if (!data.history || data.history.length === 0) {
+                    tableBody.innerHTML = '';
+                    emptyMessage.style.display = 'block';
+                    table.style.display = 'none';
+                    return;
+                }
+
+                emptyMessage.style.display = 'none';
+                table.style.display = 'table';
+
+                tableBody.innerHTML = data.history.map(run => {
+                    const pnlColor = (run.best_pnl || 0) >= 0 ? 'var(--success)' : 'var(--danger)';
+                    const statusColor = run.status === 'success' ? 'var(--success)' : 'var(--text-muted)';
+                    const completedAt = new Date(run.completed_at);
+                    const timeStr = completedAt.toLocaleString('en-GB', {
+                        day: '2-digit',
+                        month: 'short',
+                        hour: '2-digit',
+                        minute: '2-digit'
+                    });
+
+                    return `
+                        <tr>
+                            <td style="white-space: nowrap;">${timeStr}</td>
+                            <td>${(run.source || '-').toUpperCase()}</td>
+                            <td><strong>${run.pair || '-'}</strong></td>
+                            <td>${run.period || '-'}</td>
+                            <td>${run.timeframe || '-'}</td>
+                            <td>${run.granularity || '-'}</td>
+                            <td style="color: ${statusColor};">${run.strategies_found || 0}</td>
+                            <td style="color: ${pnlColor}; font-weight: 600;">£${(run.best_pnl || 0).toFixed(2)}</td>
+                        </tr>
+                    `;
+                }).join('');
+
+            } catch (error) {
+                console.error('Failed to update autonomous history:', error);
+            }
+        }
     </script>
 
     <!-- Pine Script Modal -->
