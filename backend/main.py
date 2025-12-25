@@ -3162,6 +3162,54 @@ async def wait_for_elite_validation():
     await asyncio.sleep(2)
 
 
+def find_resume_index(combinations: list, db) -> int:
+    """
+    Find the index to resume from by checking which combinations
+    have already been optimized (have strategies in the database).
+
+    Returns the index of the first un-optimized combination.
+    """
+    strategies = db.get_all_strategies()
+
+    # Build a set of already-optimized combinations
+    # Key: (pair, timeframe, period_label)
+    # We consider a combination "done" if there are strategies for it
+    optimized = set()
+    for s in strategies:
+        pair = s.get('symbol', '')
+        tf = s.get('timeframe', '')
+        # Calculate period from data_start/data_end
+        data_start = s.get('data_start')
+        data_end = s.get('data_end')
+        if data_start and data_end:
+            try:
+                start = pd.to_datetime(data_start)
+                end = pd.to_datetime(data_end)
+                days = (end - start).days
+                if days <= 10:
+                    period = "1 week"
+                elif days <= 45:
+                    period = "1 month"
+                elif days <= 100:
+                    period = "3 months"
+                elif days <= 200:
+                    period = "6 months"
+                else:
+                    period = "12 months"
+                optimized.add((pair, tf, period))
+            except:
+                pass
+
+    # Find first combination not in optimized set
+    for i, combo in enumerate(combinations):
+        key = (combo['pair'], combo['timeframe']['label'], combo['period']['label'])
+        if key not in optimized:
+            return i
+
+    # All combinations done, start from beginning
+    return 0
+
+
 async def start_autonomous_optimizer():
     """
     Continuous background loop that automatically optimizes strategies
@@ -3181,9 +3229,16 @@ async def start_autonomous_optimizer():
     # Build the full combination list with priority ordering
     combinations = build_optimization_combinations()
     autonomous_optimizer_status["total_combinations"] = len(combinations)
-    autonomous_optimizer_status["cycle_index"] = 0
 
-    print(f"[Autonomous Optimizer] Built {len(combinations)} combinations to process")
+    # Smart resume: Find first un-optimized combination
+    db = get_strategy_db()
+    start_index = find_resume_index(combinations, db)
+    autonomous_optimizer_status["cycle_index"] = start_index
+
+    if start_index > 0:
+        print(f"[Autonomous Optimizer] Resuming from combination {start_index+1}/{len(combinations)} (skipping {start_index} already done)")
+    else:
+        print(f"[Autonomous Optimizer] Starting fresh with {len(combinations)} combinations")
 
     while autonomous_optimizer_status["auto_running"] and autonomous_optimizer_status["enabled"]:
         try:
