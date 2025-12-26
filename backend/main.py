@@ -2706,6 +2706,138 @@ async def clear_priority():
 
 
 # =============================================================================
+# NEW 3-LIST PRIORITY SYSTEM ENDPOINTS
+# =============================================================================
+
+@app.get("/api/priority/lists")
+async def get_priority_lists():
+    """Get all three priority lists and settings."""
+    if not HAS_DATABASE:
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    db = get_strategy_db()
+    config = AUTONOMOUS_CONFIG
+
+    # Check if lists are populated, if not populate with defaults
+    if not db.has_priority_lists_populated():
+        db.reset_priority_pairs(config["pairs"].get("binance", []))
+        db.reset_priority_periods(config["periods"])
+        db.reset_priority_timeframes(config["timeframes"])
+        db.set_priority_setting("granularity", "0.5%")
+
+    pairs = db.get_priority_pairs()
+    periods = db.get_priority_periods()
+    timeframes = db.get_priority_timeframes()
+
+    # Convert enabled to bool
+    for p in pairs:
+        p['enabled'] = bool(p['enabled'])
+    for p in periods:
+        p['enabled'] = bool(p['enabled'])
+    for t in timeframes:
+        t['enabled'] = bool(t['enabled'])
+
+    return {
+        "pairs": pairs,
+        "periods": periods,
+        "timeframes": timeframes,
+        "granularity": db.get_priority_setting("granularity") or "0.5%"
+    }
+
+
+class PriorityListReorderRequest(BaseModel):
+    order: List[int]
+
+
+@app.post("/api/priority/{list_type}/reorder")
+async def reorder_priority_list(list_type: str, request: PriorityListReorderRequest):
+    """Reorder items in a specific list."""
+    if list_type not in ['pairs', 'periods', 'timeframes']:
+        raise HTTPException(status_code=400, detail="Invalid list type")
+
+    if not HAS_DATABASE:
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    db = get_strategy_db()
+    success = db.reorder_priority_list_new(list_type, request.order)
+
+    return {"success": success}
+
+
+@app.patch("/api/priority/{list_type}/{item_id}/toggle")
+async def toggle_priority_list_item(list_type: str, item_id: int):
+    """Toggle enabled status in a specific list."""
+    if list_type not in ['pairs', 'periods', 'timeframes']:
+        raise HTTPException(status_code=400, detail="Invalid list type")
+
+    if not HAS_DATABASE:
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    db = get_strategy_db()
+    new_status = db.toggle_priority_list_item(list_type, item_id)
+
+    if new_status is None:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    return {"success": True, "enabled": new_status}
+
+
+class GranularityRequest(BaseModel):
+    granularity: str
+
+
+@app.post("/api/priority/granularity")
+async def set_priority_granularity(request: GranularityRequest):
+    """Set the global granularity setting."""
+    if not HAS_DATABASE:
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    db = get_strategy_db()
+    db.set_priority_setting("granularity", request.granularity)
+
+    return {"success": True}
+
+
+@app.post("/api/priority/reset-defaults")
+async def reset_priority_defaults():
+    """Reset all priority settings to defaults."""
+    if not HAS_DATABASE:
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    db = get_strategy_db()
+    config = AUTONOMOUS_CONFIG
+
+    db.reset_priority_pairs(config["pairs"].get("binance", []))
+    db.reset_priority_periods(config["periods"])
+    db.reset_priority_timeframes(config["timeframes"])
+    db.set_priority_setting("granularity", "0.5%")
+
+    return {"success": True}
+
+
+@app.post("/api/priority/enable-all")
+async def enable_all_priority():
+    """Enable all items in all lists."""
+    if not HAS_DATABASE:
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    db = get_strategy_db()
+    db.enable_all_priority_items()
+    return {"success": True}
+
+
+@app.post("/api/priority/disable-all")
+async def disable_all_priority():
+    """Disable all items in all lists."""
+    if not HAS_DATABASE:
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    db = get_strategy_db()
+    db.disable_all_priority_items()
+    return {"success": True}
+
+
+# =============================================================================
 # AUTO-VALIDATION LOOP - Runs continuously in background
 # =============================================================================
 
@@ -3060,19 +3192,58 @@ def build_optimization_combinations():
     """
     Build priority-ordered list of all optimization combinations.
 
-    Uses priority queue from database if available, otherwise falls back
-    to hardcoded order: Granularity -> Timeframe -> Period -> Pairs
+    Priority order:
+    1. NEW 3-list system (pairs × periods × timeframes from separate priority lists)
+    2. Legacy priority queue (single list of combinations)
+    3. Fallback: Hardcoded order (Granularity -> Timeframe -> Period -> Pairs)
     """
     config = AUTONOMOUS_CONFIG
 
-    # Try to get priority list from database
     if HAS_DATABASE:
         try:
             db = get_strategy_db()
-            priority_combos = db.get_enabled_priority_combinations()
 
+            # Try NEW 3-list priority system first
+            if db.has_priority_lists_populated():
+                pairs = db.get_enabled_priority_pairs()
+                periods = db.get_enabled_priority_periods()
+                timeframes = db.get_enabled_priority_timeframes()
+                granularity_label = db.get_priority_setting("granularity") or "0.5%"
+
+                # Find granularity config
+                granularity = next(
+                    (g for g in config["granularities"] if g["label"] == granularity_label),
+                    config["granularities"][0]
+                )
+
+                if pairs and periods and timeframes:
+                    combinations = []
+
+                    # Generate combinations in priority order:
+                    # Pair #1 × Period #1 × TF #1, Pair #1 × Period #1 × TF #2, etc.
+                    for pair in pairs:
+                        for period in periods:
+                            for tf in timeframes:
+                                combinations.append({
+                                    "source": "binance",
+                                    "pair": pair["value"],
+                                    "period": {
+                                        "label": period["label"],
+                                        "months": period["months"]
+                                    },
+                                    "timeframe": {
+                                        "label": tf["label"],
+                                        "minutes": tf["minutes"]
+                                    },
+                                    "granularity": granularity
+                                })
+
+                    print(f"[Autonomous Optimizer] Built {len(combinations)} combinations from 3-list priority system")
+                    return combinations
+
+            # Try legacy single priority list
+            priority_combos = db.get_enabled_priority_combinations()
             if priority_combos:
-                # Use priority list directly (already includes granularity)
                 combinations = []
                 for combo in priority_combos:
                     combinations.append({
@@ -3083,8 +3254,9 @@ def build_optimization_combinations():
                         "granularity": combo["granularity"],
                     })
 
-                print(f"[Autonomous Optimizer] Using {len(combinations)} priority items from database")
+                print(f"[Autonomous Optimizer] Using {len(combinations)} priority items from legacy database")
                 return combinations
+
         except Exception as e:
             print(f"[Autonomous Optimizer] Error loading priority list: {e}, using defaults")
 

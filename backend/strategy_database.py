@@ -693,7 +693,7 @@ class StrategyDatabase:
     # =========================================================================
 
     def _init_priority_table(self):
-        """Create priority_items table if it doesn't exist."""
+        """Create priority_items table if it doesn't exist (legacy)."""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
@@ -719,8 +719,65 @@ class StrategyDatabase:
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_priority_position ON priority_items(position)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_priority_enabled ON priority_items(enabled)')
 
+        # Initialize new 3-list priority tables
+        self._init_priority_lists_tables(cursor)
+
         conn.commit()
         conn.close()
+
+    def _init_priority_lists_tables(self, cursor):
+        """Create separate priority tables for pairs, periods, and timeframes."""
+        # Trading Pairs priority
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS priority_pairs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                position INTEGER NOT NULL,
+                value TEXT NOT NULL UNIQUE,
+                label TEXT NOT NULL,
+                enabled INTEGER DEFAULT 1,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
+        # Historical Periods priority
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS priority_periods (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                position INTEGER NOT NULL,
+                value TEXT NOT NULL UNIQUE,
+                label TEXT NOT NULL,
+                months REAL NOT NULL,
+                enabled INTEGER DEFAULT 1,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
+        # Timeframes priority
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS priority_timeframes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                position INTEGER NOT NULL,
+                value TEXT NOT NULL UNIQUE,
+                label TEXT NOT NULL,
+                minutes INTEGER NOT NULL,
+                enabled INTEGER DEFAULT 1,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
+        # Global priority settings (granularity, etc.)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS priority_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
+        # Create indexes
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_pairs_position ON priority_pairs(position)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_periods_position ON priority_periods(position)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_timeframes_position ON priority_timeframes(position)')
 
     def get_priority_list(self) -> List[Dict]:
         """Get all priority items ordered by position."""
@@ -862,6 +919,213 @@ class StrategyDatabase:
             }
             for item in items if item['enabled']
         ]
+
+    # =========================================================================
+    # NEW 3-LIST PRIORITY SYSTEM
+    # =========================================================================
+
+    def get_priority_pairs(self) -> List[Dict]:
+        """Get all trading pairs ordered by position."""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM priority_pairs ORDER BY position ASC')
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(row) for row in rows]
+
+    def get_priority_periods(self) -> List[Dict]:
+        """Get all historical periods ordered by position."""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM priority_periods ORDER BY position ASC')
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(row) for row in rows]
+
+    def get_priority_timeframes(self) -> List[Dict]:
+        """Get all timeframes ordered by position."""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM priority_timeframes ORDER BY position ASC')
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(row) for row in rows]
+
+    def get_enabled_priority_pairs(self) -> List[Dict]:
+        """Get enabled trading pairs ordered by position."""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM priority_pairs WHERE enabled = 1 ORDER BY position ASC')
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(row) for row in rows]
+
+    def get_enabled_priority_periods(self) -> List[Dict]:
+        """Get enabled historical periods ordered by position."""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM priority_periods WHERE enabled = 1 ORDER BY position ASC')
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(row) for row in rows]
+
+    def get_enabled_priority_timeframes(self) -> List[Dict]:
+        """Get enabled timeframes ordered by position."""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM priority_timeframes WHERE enabled = 1 ORDER BY position ASC')
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(row) for row in rows]
+
+    def get_priority_setting(self, key: str) -> Optional[str]:
+        """Get a priority setting value."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('SELECT value FROM priority_settings WHERE key = ?', (key,))
+        row = cursor.fetchone()
+        conn.close()
+        return row[0] if row else None
+
+    def set_priority_setting(self, key: str, value: str):
+        """Set a priority setting value."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO priority_settings (key, value, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = ?
+        ''', (key, value, datetime.now().isoformat(), value, datetime.now().isoformat()))
+        conn.commit()
+        conn.close()
+
+    def reorder_priority_list_new(self, list_type: str, id_order: List[int]) -> bool:
+        """Reorder items in a specific priority list."""
+        table_map = {
+            'pairs': 'priority_pairs',
+            'periods': 'priority_periods',
+            'timeframes': 'priority_timeframes'
+        }
+        table = table_map.get(list_type)
+        if not table:
+            return False
+
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        for position, item_id in enumerate(id_order, start=1):
+            cursor.execute(f'UPDATE {table} SET position = ? WHERE id = ?', (position, item_id))
+
+        conn.commit()
+        conn.close()
+        return True
+
+    def toggle_priority_list_item(self, list_type: str, item_id: int) -> Optional[bool]:
+        """Toggle enabled status in a specific list. Returns new status."""
+        table_map = {
+            'pairs': 'priority_pairs',
+            'periods': 'priority_periods',
+            'timeframes': 'priority_timeframes'
+        }
+        table = table_map.get(list_type)
+        if not table:
+            return None
+
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute(f'SELECT enabled FROM {table} WHERE id = ?', (item_id,))
+        row = cursor.fetchone()
+        if not row:
+            conn.close()
+            return None
+
+        new_status = 0 if row[0] else 1
+        cursor.execute(f'UPDATE {table} SET enabled = ? WHERE id = ?', (new_status, item_id))
+
+        conn.commit()
+        conn.close()
+        return bool(new_status)
+
+    def reset_priority_pairs(self, pairs: List[str]):
+        """Reset trading pairs to defaults."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM priority_pairs')
+
+        for pos, pair in enumerate(pairs, start=1):
+            cursor.execute('''
+                INSERT INTO priority_pairs (position, value, label, enabled)
+                VALUES (?, ?, ?, 1)
+            ''', (pos, pair, pair))
+
+        conn.commit()
+        conn.close()
+
+    def reset_priority_periods(self, periods: List[Dict]):
+        """Reset historical periods to defaults."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM priority_periods')
+
+        for pos, period in enumerate(periods, start=1):
+            cursor.execute('''
+                INSERT INTO priority_periods (position, value, label, months, enabled)
+                VALUES (?, ?, ?, ?, 1)
+            ''', (pos, period['label'], period['label'], period['months']))
+
+        conn.commit()
+        conn.close()
+
+    def reset_priority_timeframes(self, timeframes: List[Dict]):
+        """Reset timeframes to defaults."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM priority_timeframes')
+
+        for pos, tf in enumerate(timeframes, start=1):
+            cursor.execute('''
+                INSERT INTO priority_timeframes (position, value, label, minutes, enabled)
+                VALUES (?, ?, ?, ?, 1)
+            ''', (pos, tf['label'], tf['label'], tf['minutes']))
+
+        conn.commit()
+        conn.close()
+
+    def enable_all_priority_items(self):
+        """Enable all items in all priority lists."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('UPDATE priority_pairs SET enabled = 1')
+        cursor.execute('UPDATE priority_periods SET enabled = 1')
+        cursor.execute('UPDATE priority_timeframes SET enabled = 1')
+        conn.commit()
+        conn.close()
+
+    def disable_all_priority_items(self):
+        """Disable all items in all priority lists."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('UPDATE priority_pairs SET enabled = 0')
+        cursor.execute('UPDATE priority_periods SET enabled = 0')
+        cursor.execute('UPDATE priority_timeframes SET enabled = 0')
+        conn.commit()
+        conn.close()
+
+    def has_priority_lists_populated(self) -> bool:
+        """Check if the new priority lists have any data."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('SELECT COUNT(*) FROM priority_pairs')
+        count = cursor.fetchone()[0]
+        conn.close()
+        return count > 0
 
 
 # Singleton instance for easy access
