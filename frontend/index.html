@@ -931,6 +931,74 @@
             50% { opacity: 0.6; }
         }
 
+        /* Elite Table Compact Layout */
+        .elite-table {
+            font-size: 0.85rem;
+        }
+
+        .elite-table th,
+        .elite-table td {
+            padding: 0.5rem 0.4rem;
+            text-align: center;
+            white-space: nowrap;
+        }
+
+        .elite-table th:nth-child(3),
+        .elite-table td:nth-child(3) {
+            text-align: left;
+            min-width: 180px;
+        }
+
+        /* Period columns - compact with two-line £/% display */
+        .elite-table th:nth-child(n+4):nth-child(-n+13),
+        .elite-table td:nth-child(n+4):nth-child(-n+13) {
+            min-width: 55px;
+            max-width: 70px;
+            font-size: 0.8rem;
+        }
+
+        .elite-table td:nth-child(n+4):nth-child(-n+13) small {
+            display: block;
+            font-size: 0.7rem;
+            opacity: 0.8;
+        }
+
+        /* Status column */
+        .elite-table th:nth-child(14),
+        .elite-table td:nth-child(14) {
+            min-width: 70px;
+        }
+
+        /* Updated column */
+        .elite-table th:nth-child(15),
+        .elite-table td:nth-child(15) {
+            min-width: 70px;
+            font-size: 0.75rem;
+        }
+
+        /* Actions column */
+        .elite-table th:nth-child(16),
+        .elite-table td:nth-child(16) {
+            min-width: 80px;
+        }
+
+        .elite-table .btn-small {
+            padding: 0.25rem 0.4rem;
+            font-size: 0.75rem;
+        }
+
+        /* Responsive: scroll horizontally on smaller screens */
+        @media (max-width: 1400px) {
+            .elite-table {
+                font-size: 0.8rem;
+            }
+            .elite-table th:nth-child(n+4):nth-child(-n+13),
+            .elite-table td:nth-child(n+4):nth-child(-n+13) {
+                min-width: 50px;
+                max-width: 60px;
+            }
+        }
+
         /* Toggle Switch for Autonomous Optimizer */
         .toggle-switch {
             display: inline-flex;
@@ -2024,26 +2092,64 @@
                     Validation runs automatically in the background. Pauses when optimizer is active.
                 </p>
 
+                <!-- Elite Filter Controls -->
+                <div class="filter-controls" style="margin-top: 1rem;">
+                    <div class="input-group">
+                        <label>Search Strategy</label>
+                        <input type="text" id="elite-filter-search" placeholder="Search name..." oninput="applyEliteFilters()">
+                    </div>
+
+                    <div class="input-group">
+                        <label>Trading Pair</label>
+                        <select id="elite-filter-symbol" onchange="applyEliteFilters()">
+                            <option value="">All Pairs</option>
+                        </select>
+                    </div>
+
+                    <div class="input-group">
+                        <label>Status</label>
+                        <select id="elite-filter-status" onchange="applyEliteFilters()">
+                            <option value="">All Status</option>
+                            <option value="elite">Elite Only</option>
+                            <option value="partial">Partial Only</option>
+                            <option value="failed">Failed Only</option>
+                        </select>
+                    </div>
+
+                    <div class="input-group">
+                        <label>Direction</label>
+                        <select id="elite-filter-direction" onchange="applyEliteFilters()">
+                            <option value="">All</option>
+                            <option value="long">Long Only</option>
+                            <option value="short">Short Only</option>
+                        </select>
+                    </div>
+
+                    <button class="btn btn-secondary" onclick="resetEliteFilters()" style="margin-top: 1.5rem;">
+                        Reset Filters
+                    </button>
+                </div>
+
                 <!-- Elite Strategies Table -->
                 <div style="overflow-x: auto; margin-top: 1rem;">
-                    <table class="history-table" id="eliteTable">
+                    <table class="history-table elite-table" id="eliteTable">
                         <thead>
                             <tr>
-                                <th>Rank</th>
-                                <th>Score</th>
-                                <th style="text-align: left;">Strategy</th>
-                                <th>1W</th>
-                                <th>2W</th>
-                                <th>1M</th>
-                                <th>3M</th>
-                                <th>6M</th>
-                                <th>9M</th>
-                                <th>1Y</th>
-                                <th>2Y</th>
-                                <th>3Y</th>
-                                <th>5Y</th>
-                                <th>Status</th>
-                                <th>Last Updated</th>
+                                <th class="sortable" data-sort="rank" onclick="sortEliteTable('rank')">#</th>
+                                <th class="sortable active desc" data-sort="score" onclick="sortEliteTable('score')">Score</th>
+                                <th class="sortable" data-sort="strategy" onclick="sortEliteTable('strategy')" style="text-align: left;">Strategy</th>
+                                <th class="sortable" data-sort="1w" onclick="sortEliteTable('1w')">1W</th>
+                                <th class="sortable" data-sort="2w" onclick="sortEliteTable('2w')">2W</th>
+                                <th class="sortable" data-sort="1m" onclick="sortEliteTable('1m')">1M</th>
+                                <th class="sortable" data-sort="3m" onclick="sortEliteTable('3m')">3M</th>
+                                <th class="sortable" data-sort="6m" onclick="sortEliteTable('6m')">6M</th>
+                                <th class="sortable" data-sort="9m" onclick="sortEliteTable('9m')">9M</th>
+                                <th class="sortable" data-sort="1y" onclick="sortEliteTable('1y')">1Y</th>
+                                <th class="sortable" data-sort="2y" onclick="sortEliteTable('2y')">2Y</th>
+                                <th class="sortable" data-sort="3y" onclick="sortEliteTable('3y')">3Y</th>
+                                <th class="sortable" data-sort="5y" onclick="sortEliteTable('5y')">5Y</th>
+                                <th class="sortable" data-sort="status" onclick="sortEliteTable('status')">Status</th>
+                                <th class="sortable" data-sort="updated" onclick="sortEliteTable('updated')">Updated</th>
                                 <th>Actions</th>
                             </tr>
                         </thead>
@@ -2388,6 +2494,18 @@
         let historyInitialized = false;
         let validationInitialized = false;
         let eliteInitialized = false;
+
+        // Elite Strategies State
+        let eliteStrategiesData = [];
+        let eliteFilteredData = [];
+        let eliteSortBy = 'score';
+        let eliteSortOrder = 'desc';
+        let eliteFilters = {
+            search: '',
+            symbol: '',
+            status: '',
+            direction: ''
+        };
         let autonomousInitialized = false;
         let autonomousPollingInterval = null;
 
@@ -3216,6 +3334,111 @@
             historyFilters = { symbol: '', timeframe: '', period: '' };
             loadHistoryStrategies();
         }
+
+        // ========== ELITE STRATEGIES SORTING & FILTERING ==========
+
+        // Sort elite table
+        function sortEliteTable(column) {
+            if (eliteSortBy === column) {
+                eliteSortOrder = eliteSortOrder === 'desc' ? 'asc' : 'desc';
+            } else {
+                eliteSortBy = column;
+                eliteSortOrder = 'desc';
+            }
+
+            updateEliteSortIndicators();
+            applyEliteSortAndFilter();
+        }
+
+        // Update sort indicators on elite headers
+        function updateEliteSortIndicators() {
+            document.querySelectorAll('.elite-table .sortable').forEach(th => {
+                th.classList.remove('active', 'asc', 'desc');
+                if (th.dataset.sort === eliteSortBy) {
+                    th.classList.add('active', eliteSortOrder);
+                }
+            });
+        }
+
+        // Apply filters
+        function applyEliteFilters() {
+            eliteFilters.search = document.getElementById('elite-filter-search').value.toLowerCase();
+            eliteFilters.symbol = document.getElementById('elite-filter-symbol').value;
+            eliteFilters.status = document.getElementById('elite-filter-status').value;
+            eliteFilters.direction = document.getElementById('elite-filter-direction').value;
+
+            applyEliteSortAndFilter();
+        }
+
+        // Reset elite filters
+        function resetEliteFilters() {
+            document.getElementById('elite-filter-search').value = '';
+            document.getElementById('elite-filter-symbol').value = '';
+            document.getElementById('elite-filter-status').value = '';
+            document.getElementById('elite-filter-direction').value = '';
+
+            eliteFilters = { search: '', symbol: '', status: '', direction: '' };
+            applyEliteSortAndFilter();
+        }
+
+        // Apply both sorting and filtering to elite data
+        function applyEliteSortAndFilter() {
+            if (!eliteStrategiesData || eliteStrategiesData.length === 0) return;
+
+            // First, filter the data
+            eliteFilteredData = eliteStrategiesData.filter(s => {
+                const direction = s.params?.direction || s.trade_mode || 'long';
+
+                // Search filter
+                if (eliteFilters.search && !s.strategy_name.toLowerCase().includes(eliteFilters.search)) {
+                    return false;
+                }
+
+                // Symbol filter
+                if (eliteFilters.symbol && s.symbol !== eliteFilters.symbol) {
+                    return false;
+                }
+
+                // Status filter
+                if (eliteFilters.status && s.elite_status !== eliteFilters.status) {
+                    return false;
+                }
+
+                // Direction filter
+                if (eliteFilters.direction && direction !== eliteFilters.direction) {
+                    return false;
+                }
+
+                return true;
+            });
+
+            // Re-render the table with filtered and sorted data
+            renderEliteTableFiltered(eliteFilteredData);
+        }
+
+        // Populate elite symbol filter dropdown
+        function populateEliteSymbolFilter(strategies) {
+            const select = document.getElementById('elite-filter-symbol');
+            const currentValue = select.value;
+
+            // Get unique symbols
+            const symbols = [...new Set(strategies.map(s => s.symbol))].sort();
+
+            // Clear existing options except first
+            select.innerHTML = '<option value="">All Pairs</option>';
+
+            symbols.forEach(symbol => {
+                const option = document.createElement('option');
+                option.value = symbol;
+                option.textContent = symbol;
+                select.appendChild(option);
+            });
+
+            // Restore selected value
+            select.value = currentValue;
+        }
+
+        // ========== END ELITE SORTING & FILTERING ==========
 
         // View strategy details
         async function viewStrategyDetails(strategyId) {
@@ -5783,6 +6006,8 @@
 
         async function initEliteTab() {
             eliteInitialized = true;
+            // Initialize sort indicators
+            updateEliteSortIndicators();
             await loadEliteData();
             // Start continuous polling since validation runs automatically
             startElitePolling();
@@ -5859,6 +6084,32 @@
             if (validatedStrategies.length === 0) {
                 table.style.display = 'none';
                 emptyMsg.style.display = 'block';
+                eliteStrategiesData = [];
+                return;
+            }
+
+            // Store raw data for filtering/sorting
+            eliteStrategiesData = validatedStrategies;
+
+            // Populate symbol filter dropdown
+            populateEliteSymbolFilter(validatedStrategies);
+
+            // Apply current filters and sorting
+            applyEliteSortAndFilter();
+        }
+
+        // Render elite table with filtered data
+        function renderEliteTableFiltered(strategies) {
+            const tbody = document.getElementById('eliteTableBody');
+            const emptyMsg = document.getElementById('eliteEmpty');
+            const table = document.getElementById('eliteTable');
+
+            if (!strategies || strategies.length === 0) {
+                table.style.display = 'none';
+                emptyMsg.style.display = 'block';
+                emptyMsg.textContent = eliteStrategiesData.length > 0
+                    ? 'No strategies match your filters.'
+                    : 'No elite strategies found. Run validation to identify consistent strategies.';
                 return;
             }
 
@@ -5902,9 +6153,34 @@
                 }
             }
 
+            // Helper to get period PnL value for sorting
+            function getPeriodPnL(strategy, periodName) {
+                try {
+                    const validationResults = JSON.parse(strategy.elite_validation_data || '[]');
+                    const period = validationResults.find(r => r.period === periodName);
+                    return period?.pnl || 0;
+                } catch (e) {
+                    return 0;
+                }
+            }
+
+            // Map sort column to period name
+            const periodMap = {
+                '1w': '1 week',
+                '2w': '2 weeks',
+                '1m': '1 month',
+                '3m': '3 months',
+                '6m': '6 months',
+                '9m': '9 months',
+                '1y': '1 year',
+                '2y': '2 years',
+                '3y': '3 years',
+                '5y': '5 years'
+            };
+
             // Group strategies by name+symbol+timeframe+direction
             const groups = {};
-            validatedStrategies.forEach(s => {
+            strategies.forEach(s => {
                 const direction = s.params?.direction || s.trade_mode || 'long';
                 const key = `${s.strategy_name}|${s.symbol}|${s.timeframe}|${direction}`;
                 if (!groups[key]) groups[key] = [];
@@ -5916,9 +6192,62 @@
                 group.sort((a, b) => (b.elite_score || 0) - (a.elite_score || 0));
             });
 
-            // Sort groups by best strategy's score
+            // Sort groups based on eliteSortBy column
             const sortedGroups = Object.values(groups).sort((a, b) => {
-                return (b[0].elite_score || 0) - (a[0].elite_score || 0);
+                const bestA = a[0];
+                const bestB = b[0];
+                let aVal, bVal;
+
+                switch (eliteSortBy) {
+                    case 'rank':
+                        // Rank is determined by score, so same as score
+                        aVal = bestA.elite_score || 0;
+                        bVal = bestB.elite_score || 0;
+                        break;
+                    case 'score':
+                        aVal = bestA.elite_score || 0;
+                        bVal = bestB.elite_score || 0;
+                        break;
+                    case 'strategy':
+                        aVal = bestA.strategy_name.toLowerCase();
+                        bVal = bestB.strategy_name.toLowerCase();
+                        break;
+                    case 'status':
+                        const statusOrder = { 'elite': 3, 'partial': 2, 'failed': 1 };
+                        aVal = statusOrder[bestA.elite_status] || 0;
+                        bVal = statusOrder[bestB.elite_status] || 0;
+                        break;
+                    case 'updated':
+                        aVal = new Date(bestA.elite_validated_at || 0).getTime();
+                        bVal = new Date(bestB.elite_validated_at || 0).getTime();
+                        break;
+                    case '1w':
+                    case '2w':
+                    case '1m':
+                    case '3m':
+                    case '6m':
+                    case '9m':
+                    case '1y':
+                    case '2y':
+                    case '3y':
+                    case '5y':
+                        aVal = getPeriodPnL(bestA, periodMap[eliteSortBy]);
+                        bVal = getPeriodPnL(bestB, periodMap[eliteSortBy]);
+                        break;
+                    default:
+                        aVal = bestA.elite_score || 0;
+                        bVal = bestB.elite_score || 0;
+                }
+
+                // Handle string comparison
+                if (typeof aVal === 'string' && typeof bVal === 'string') {
+                    return eliteSortOrder === 'asc'
+                        ? aVal.localeCompare(bVal)
+                        : bVal.localeCompare(aVal);
+                }
+
+                // Numeric comparison
+                return eliteSortOrder === 'asc' ? aVal - bVal : bVal - aVal;
             });
 
             let rank = 0;
