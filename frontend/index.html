@@ -1453,6 +1453,8 @@
                                 <th>9M</th>
                                 <th>1Y</th>
                                 <th>2Y</th>
+                                <th>3Y</th>
+                                <th>5Y</th>
                                 <th>Status</th>
                                 <th>Actions</th>
                             </tr>
@@ -5058,6 +5060,8 @@
                     <td>${formatPnL(periodData['9 months'])}</td>
                     <td>${formatPnL(periodData['1 year'])}</td>
                     <td>${formatPnL(periodData['2 years'])}</td>
+                    <td>${formatPnL(periodData['3 years'])}</td>
+                    <td>${formatPnL(periodData['5 years'])}</td>
                     <td>${statusBadge}</td>
                     <td>
                         <button class="btn btn-small" onclick="event.stopPropagation(); showPineScript(${best.id})" title="Pine Script">📋</button>
@@ -5077,7 +5081,7 @@
                     variantsRow.className = 'elite-variants-row';
                     variantsRow.id = `elite-variants-${best.id}`;
                     variantsRow.style.display = 'none';
-                    variantsRow.innerHTML = `<td colspan="13" style="padding: 0; background: var(--bg-secondary);"></td>`;
+                    variantsRow.innerHTML = `<td colspan="15" style="padding: 0; background: var(--bg-secondary);"></td>`;
                     tbody.appendChild(variantsRow);
 
                     // Restore expanded state if this was the previously expanded group
@@ -5138,6 +5142,8 @@
                                 <th style="padding: 0.3rem; text-align: center; color: var(--text-muted);">9M</th>
                                 <th style="padding: 0.3rem; text-align: center; color: var(--text-muted);">1Y</th>
                                 <th style="padding: 0.3rem; text-align: center; color: var(--text-muted);">2Y</th>
+                                <th style="padding: 0.3rem; text-align: center; color: var(--text-muted);">3Y</th>
+                                <th style="padding: 0.3rem; text-align: center; color: var(--text-muted);">5Y</th>
                                 <th style="padding: 0.3rem; text-align: center; color: var(--text-muted);">Status</th>
                                 <th style="padding: 0.3rem; text-align: center; color: var(--text-muted);">Actions</th>
                             </tr>
@@ -5180,6 +5186,8 @@
                             <td style="padding: 0.4rem; text-align: center;">${formatPnL(periodData['9 months'])}</td>
                             <td style="padding: 0.4rem; text-align: center;">${formatPnL(periodData['1 year'])}</td>
                             <td style="padding: 0.4rem; text-align: center;">${formatPnL(periodData['2 years'])}</td>
+                            <td style="padding: 0.4rem; text-align: center;">${formatPnL(periodData['3 years'])}</td>
+                            <td style="padding: 0.4rem; text-align: center;">${formatPnL(periodData['5 years'])}</td>
                             <td style="padding: 0.4rem; text-align: center;">${statusBadge}</td>
                             <td style="padding: 0.4rem; text-align: center;">
                                 <button class="btn btn-small" onclick="event.stopPropagation(); showPineScript(${variant.id})" title="Pine Script">📋</button>

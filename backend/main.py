@@ -1729,13 +1729,22 @@ async def validate_strategy(request: ValidateStrategyRequest):
         # Convert timeframe to minutes for data limit check
         tf_minutes = int(timeframe.replace('m', '').replace('h', '')) if 'm' in timeframe else int(timeframe.replace('h', '')) * 60
 
-        # Data source limits (days) - Binance has extensive history for most pairs
+        # Data source limits (days) - Binance has data since 2017 (~7 years) for major pairs
+        # CCXT pagination supports 500k candles, limits based on practical fetch times
         if data_source and 'yahoo' in data_source.lower():
             data_limits = {1: 7, 5: 60, 15: 60, 30: 60, 60: 730, 1440: 9999}
         else:
-            # Binance has 2+ years of history for major pairs via CCXT pagination
-            data_limits = {1: 730, 5: 730, 15: 730, 30: 730, 60: 1095, 1440: 9999}
-        max_days = data_limits.get(tf_minutes, 365)
+            # Binance limits: 1m=1yr (slow fetch), 5m+=5-7yrs (fast pagination)
+            data_limits = {
+                1: 365,      # 1m: 1 year (525k candles, slow)
+                5: 1825,     # 5m: 5 years (525k candles)
+                15: 2555,    # 15m: 7 years (245k candles)
+                30: 2555,    # 30m: 7 years (122k candles)
+                60: 2555,    # 1h: 7 years (61k candles)
+                240: 2555,   # 4h: 7 years (15k candles)
+                1440: 3650,  # 1d: 10 years (3.6k candles)
+            }
+        max_days = data_limits.get(tf_minutes, 1825)
 
         # Validation periods: name, months, days
         validation_periods = [
@@ -1747,6 +1756,8 @@ async def validate_strategy(request: ValidateStrategyRequest):
             {"period": "9 months", "months": 9.0, "days": 270},
             {"period": "1 year", "months": 12.0, "days": 365},
             {"period": "2 years", "months": 24.0, "days": 730},
+            {"period": "3 years", "months": 36.0, "days": 1095},
+            {"period": "5 years", "months": 60.0, "days": 1825},
         ]
 
         # Original metrics (baseline)
@@ -2549,6 +2560,8 @@ async def validate_all_strategies_for_elite():
         {"period": "9 months", "months": 9.0, "days": 270},
         {"period": "1 year", "months": 12.0, "days": 365},
         {"period": "2 years", "months": 24.0, "days": 730},
+        {"period": "3 years", "months": 36.0, "days": 1095},
+        {"period": "5 years", "months": 60.0, "days": 1825},
     ]
 
     try:
@@ -2628,13 +2641,22 @@ async def validate_all_strategies_for_elite():
             # Convert timeframe to minutes
             tf_minutes = int(timeframe.replace('m', '').replace('h', '')) if 'm' in timeframe else int(timeframe.replace('h', '')) * 60
 
-            # Data source limits (days) - Binance has extensive history for most pairs
+            # Data source limits (days) - Binance has data since 2017 (~7 years) for major pairs
+            # CCXT pagination supports 500k candles, limits based on practical fetch times
             if data_source and 'yahoo' in data_source.lower():
                 data_limits = {1: 7, 5: 60, 15: 60, 30: 60, 60: 730, 1440: 9999}
             else:
-                # Binance has 2+ years of history for major pairs via CCXT pagination
-                data_limits = {1: 730, 5: 730, 15: 730, 30: 730, 60: 1095, 1440: 9999}
-            max_days = data_limits.get(tf_minutes, 365)
+                # Binance limits: 1m=1yr (slow fetch), 5m+=5-7yrs (fast pagination)
+                data_limits = {
+                    1: 365,      # 1m: 1 year (525k candles, slow)
+                    5: 1825,     # 5m: 5 years (525k candles)
+                    15: 2555,    # 15m: 7 years (245k candles)
+                    30: 2555,    # 30m: 7 years (122k candles)
+                    60: 2555,    # 1h: 7 years (61k candles)
+                    240: 2555,   # 4h: 7 years (15k candles)
+                    1440: 3650,  # 1d: 10 years (3.6k candles)
+                }
+            max_days = data_limits.get(tf_minutes, 1825)
 
             # Original metrics for comparison
             original_metrics = {
@@ -2721,9 +2743,9 @@ async def validate_all_strategies_for_elite():
                     })
 
             # Calculate elite score:
-            # - Consistency points: 1 point per successful period (max 8)
+            # - Consistency points: 1 point per successful period (max 10)
             # - Profit bonus: total positive P&L / 100 (to scale £ to points)
-            consistency_points = passed  # Number of periods passed (0-8)
+            consistency_points = passed  # Number of periods passed (0-10)
 
             # Sum up P&L from all successful periods
             total_pnl = 0
