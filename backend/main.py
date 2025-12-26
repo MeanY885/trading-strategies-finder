@@ -161,10 +161,12 @@ AUTONOMOUS_CONFIG = {
 
     # Historical periods - Binance has years of data
     "periods": [
-        {"label": "1 month", "months": 1.0},
         {"label": "1 week", "months": 0.25},
+        {"label": "2 weeks", "months": 0.5},
+        {"label": "1 month", "months": 1.0},
         {"label": "3 months", "months": 3.0},
         {"label": "6 months", "months": 6.0},
+        {"label": "9 months", "months": 9.0},
         {"label": "12 months", "months": 12.0},
     ],
 
