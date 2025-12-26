@@ -32,53 +32,89 @@
             box-sizing: border-box;
         }
         
+        html, body {
+            height: 100%;
+            width: 100%;
+        }
+
         body {
             font-family: 'Space Grotesk', sans-serif;
             background: var(--bg-primary);
             color: var(--text-primary);
             min-height: 100vh;
             line-height: 1.6;
+            display: flex;
+            flex-direction: column;
         }
-        
+
         .container {
-            max-width: 1400px;
-            margin: 0 auto;
-            padding: 2rem;
+            flex: 1 1 auto;
+            display: flex;
+            flex-direction: column;
+            width: 100%;
+            max-width: 100%;
+            margin: 0;
+            padding: 1.5rem 2rem;
+            overflow-x: hidden;
         }
         
         /* Header */
         header {
+            flex: 0 0 auto;
             text-align: center;
-            padding: 3rem 0;
+            padding: 1.5rem 0;
             border-bottom: 1px solid var(--border-subtle);
-            margin-bottom: 2rem;
+            margin-bottom: 1.5rem;
         }
-        
+
         header h1 {
-            font-size: 2.5rem;
+            font-size: 2rem;
             font-weight: 700;
             background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
             background-clip: text;
-            margin-bottom: 0.5rem;
+            margin-bottom: 0.25rem;
         }
-        
+
         header p {
             color: var(--text-secondary);
-            font-size: 1.1rem;
+            font-size: 1rem;
         }
-        
-        /* Grid Layout */
+
+        /* Tab Content Area */
+        .tab-content {
+            flex: 1 1 auto;
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+            overflow: hidden;
+        }
+
+        /* Grid Layout - Flexbox based */
         .grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
+            display: flex;
+            flex-wrap: wrap;
             gap: 1.5rem;
+            flex: 1 1 auto;
+            align-content: flex-start;
         }
-        
-        @media (max-width: 1024px) {
-            .grid {
-                grid-template-columns: 1fr;
+
+        .grid > .card {
+            flex: 1 1 calc(50% - 0.75rem);
+            min-width: 300px;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .grid > .card.full-width {
+            flex: 1 1 100%;
+        }
+
+        @media (max-width: 768px) {
+            .grid > .card {
+                flex: 1 1 100%;
+                min-width: 0;
             }
         }
         
@@ -88,6 +124,15 @@
             border: 1px solid var(--border);
             border-radius: 12px;
             padding: 1.5rem;
+            display: flex;
+            flex-direction: column;
+            flex: 1 1 auto;
+        }
+
+        .card-content {
+            flex: 1 1 auto;
+            display: flex;
+            flex-direction: column;
         }
         
         .card-header {
@@ -218,12 +263,17 @@
             color: var(--text-secondary);
         }
         
-        /* Stats Grid */
+        /* Stats Grid - Flexbox */
         .stats-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            display: flex;
+            flex-wrap: wrap;
             gap: 1rem;
             margin-top: 1rem;
+        }
+
+        .stats-grid .stat-item {
+            flex: 1 1 120px;
+            min-width: 100px;
         }
         
         .stat-item {
@@ -321,7 +371,8 @@
         
         /* Full width card */
         .full-width {
-            grid-column: 1 / -1;
+            flex: 1 1 100% !important;
+            width: 100%;
         }
         
         /* Actions row */
@@ -416,22 +467,25 @@
         /* Tab Navigation */
         .tab-nav {
             display: flex;
+            flex-wrap: wrap;
             gap: 0.5rem;
-            margin-top: 1.5rem;
+            margin-top: 1rem;
             justify-content: center;
+            flex: 0 0 auto;
         }
 
         .tab-btn {
-            padding: 0.75rem 1.5rem;
+            padding: 0.5rem 1rem;
             border: 1px solid var(--border);
             border-radius: 8px;
             background: var(--bg-secondary);
             color: var(--text-secondary);
             font-family: inherit;
-            font-size: 0.95rem;
+            font-size: 0.85rem;
             font-weight: 500;
             cursor: pointer;
             transition: all 0.2s;
+            white-space: nowrap;
         }
 
         .tab-btn:hover {
@@ -445,8 +499,11 @@
             color: white;
         }
 
-        .tab-content {
-            margin-top: 1.5rem;
+        @media (max-width: 600px) {
+            .tab-btn {
+                padding: 0.4rem 0.75rem;
+                font-size: 0.75rem;
+            }
         }
 
         /* Filter Controls */
@@ -457,19 +514,29 @@
             padding: 1rem;
             background: var(--bg-secondary);
             border-radius: 8px;
-            margin-bottom: 1.5rem;
+            margin-bottom: 1rem;
             align-items: flex-end;
+            flex: 0 0 auto;
         }
 
         .filter-controls .input-group {
-            flex: 1;
-            min-width: 150px;
-            max-width: 200px;
+            flex: 1 1 150px;
+            min-width: 120px;
+            max-width: 250px;
+        }
+
+        @media (max-width: 600px) {
+            .filter-controls .input-group {
+                flex: 1 1 100%;
+                max-width: none;
+            }
         }
 
         /* History Table */
         .table-container {
+            flex: 1 1 auto;
             overflow-x: auto;
+            overflow-y: auto;
             margin: 0 -0.5rem;
             padding: 0 0.5rem;
         }
@@ -577,10 +644,25 @@
             margin: 0 0.5rem 0.5rem 0.5rem;
         }
         .inline-detail-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr auto;
+            display: flex;
+            flex-wrap: wrap;
             gap: 1.5rem;
-            align-items: start;
+            align-items: flex-start;
+        }
+
+        .inline-detail-grid > * {
+            flex: 1 1 200px;
+            min-width: 150px;
+        }
+
+        .inline-detail-grid .actions-section {
+            flex: 0 0 auto;
+        }
+
+        @media (max-width: 600px) {
+            .inline-detail-grid > * {
+                flex: 1 1 100%;
+            }
         }
         .inline-detail-section h4 {
             margin: 0 0 0.75rem 0;
@@ -589,9 +671,14 @@
             font-weight: 600;
         }
         .mini-stats-grid {
-            display: grid;
-            grid-template-columns: repeat(4, 1fr);
+            display: flex;
+            flex-wrap: wrap;
             gap: 0.5rem;
+        }
+
+        .mini-stats-grid .mini-stat {
+            flex: 1 1 80px;
+            min-width: 70px;
         }
         .mini-stat {
             display: flex;
@@ -610,10 +697,15 @@
             font-weight: 600;
         }
         .params-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
+            display: flex;
+            flex-wrap: wrap;
             gap: 0.5rem;
             font-size: 0.85rem;
+        }
+
+        .params-grid > * {
+            flex: 1 1 45%;
+            min-width: 100px;
         }
         .params-grid .label {
             color: var(--text-muted);
@@ -704,10 +796,15 @@
 
         /* Strategy Detail Panel */
         .detail-stats-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            display: flex;
+            flex-wrap: wrap;
             gap: 1rem;
             margin-bottom: 1.5rem;
+        }
+
+        .detail-stats-grid .detail-stat {
+            flex: 1 1 150px;
+            min-width: 120px;
         }
 
         .detail-stat {
@@ -920,6 +1017,149 @@
         }
         .data-validation .validation-text small {
             color: var(--text-muted);
+        }
+
+        /* ============================================
+           RESPONSIVE BREAKPOINTS
+           ============================================ */
+
+        /* Large screens (1400px+) */
+        @media (min-width: 1400px) {
+            .container {
+                padding: 2rem 3rem;
+            }
+        }
+
+        /* Medium screens / Tablets (768px - 1024px) */
+        @media (max-width: 1024px) {
+            .container {
+                padding: 1rem 1.5rem;
+            }
+
+            header h1 {
+                font-size: 1.75rem;
+            }
+
+            .card {
+                padding: 1.25rem;
+            }
+        }
+
+        /* Small screens / Large phones (600px - 768px) */
+        @media (max-width: 768px) {
+            .container {
+                padding: 1rem;
+            }
+
+            header {
+                padding: 1rem 0;
+            }
+
+            header h1 {
+                font-size: 1.5rem;
+            }
+
+            header p {
+                font-size: 0.9rem;
+            }
+
+            .card {
+                padding: 1rem;
+            }
+
+            .stat-value {
+                font-size: 1.25rem;
+            }
+
+            .elite-status-bar {
+                flex-direction: column;
+                align-items: stretch;
+            }
+
+            .elite-progress {
+                margin-left: 0;
+                margin-top: 0.5rem;
+            }
+        }
+
+        /* Extra small screens / Phones (< 600px) */
+        @media (max-width: 600px) {
+            .container {
+                padding: 0.75rem;
+            }
+
+            header {
+                padding: 0.75rem 0;
+                margin-bottom: 1rem;
+            }
+
+            header h1 {
+                font-size: 1.25rem;
+            }
+
+            header p {
+                font-size: 0.85rem;
+            }
+
+            .grid {
+                gap: 1rem;
+            }
+
+            .card {
+                padding: 0.875rem;
+                border-radius: 8px;
+            }
+
+            .card-header {
+                margin-bottom: 1rem;
+            }
+
+            .card-header h2 {
+                font-size: 1rem;
+            }
+
+            .btn {
+                padding: 0.625rem 1rem;
+                font-size: 0.875rem;
+            }
+
+            .stats-grid {
+                gap: 0.5rem;
+            }
+
+            .stat-item {
+                padding: 0.75rem;
+            }
+
+            .stat-value {
+                font-size: 1.1rem;
+            }
+
+            .stat-label {
+                font-size: 0.7rem;
+            }
+
+            .history-table th,
+            .history-table td {
+                padding: 0.5rem 0.25rem;
+                font-size: 0.75rem;
+            }
+
+            .actions {
+                gap: 0.5rem;
+            }
+
+            .log-container {
+                max-height: 150px;
+                padding: 0.75rem;
+                font-size: 0.7rem;
+            }
+
+            .code-block {
+                padding: 0.75rem;
+                font-size: 0.7rem;
+                max-height: 300px;
+            }
         }
     </style>
 </head>
@@ -1459,6 +1699,7 @@
                                 <th>3Y</th>
                                 <th>5Y</th>
                                 <th>Status</th>
+                                <th>Last Updated</th>
                                 <th>Actions</th>
                             </tr>
                         </thead>
@@ -1471,12 +1712,6 @@
                     </div>
                 </div>
 
-                <!-- Data Last Updated -->
-                <div style="text-align: right; margin-top: 1rem; padding-top: 0.75rem; border-top: 1px solid var(--border-subtle);">
-                    <span style="color: var(--text-muted); font-size: 0.8rem;">
-                        Data last updated: <span id="eliteLastUpdated">--</span>
-                    </span>
-                </div>
             </div>
         </div><!-- End elite-tab -->
 
@@ -4930,12 +5165,6 @@
                 // Render table (show all validated strategies, not just elite)
                 await renderEliteTable(strategies, status);
 
-                // Update last updated timestamp
-                const now = new Date();
-                const timeStr = now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-                const dateStr = now.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
-                document.getElementById('eliteLastUpdated').textContent = `${dateStr} ${timeStr}`;
-
             } catch (error) {
                 console.error('Failed to load elite data:', error);
             }
@@ -5008,6 +5237,21 @@
                     return `<span class="${colorClass}">£${sign}${pnl.toFixed(0)}<br><small style="opacity: 0.7;">(${pctSign}${returnPct}%)</small></span>`;
                 }
                 return `<span class="${colorClass}">£${sign}${pnl.toFixed(0)}</span>`;
+            }
+
+            // Helper to format validated_at timestamp
+            function formatValidatedAt(timestamp) {
+                if (!timestamp) return '--';
+                try {
+                    const date = new Date(timestamp);
+                    const day = date.getDate();
+                    const month = date.toLocaleString('en-GB', { month: 'short' });
+                    const hours = date.getHours().toString().padStart(2, '0');
+                    const mins = date.getMinutes().toString().padStart(2, '0');
+                    return `${day} ${month}<br>${hours}:${mins}`;
+                } catch (e) {
+                    return '--';
+                }
             }
 
             // Group strategies by name+symbol+timeframe+direction
@@ -5104,6 +5348,7 @@
                     <td>${formatPnL(periodData['3 years'])}</td>
                     <td>${formatPnL(periodData['5 years'])}</td>
                     <td>${statusBadge}</td>
+                    <td style="font-size: 0.75rem; color: var(--text-muted); white-space: nowrap;">${formatValidatedAt(best.elite_validated_at)}</td>
                     <td>
                         <button class="btn btn-small" onclick="event.stopPropagation(); showPineScript(${best.id})" title="Pine Script">📋</button>
                         <button class="btn btn-small" onclick="event.stopPropagation(); validateFromHistory(${best.id})" title="Re-validate">🔬</button>
@@ -5122,7 +5367,7 @@
                     variantsRow.className = 'elite-variants-row';
                     variantsRow.id = `elite-variants-${best.id}`;
                     variantsRow.style.display = 'none';
-                    variantsRow.innerHTML = `<td colspan="15" style="padding: 0; background: var(--bg-secondary);"></td>`;
+                    variantsRow.innerHTML = `<td colspan="16" style="padding: 0; background: var(--bg-secondary);"></td>`;
                     tbody.appendChild(variantsRow);
 
                     // Restore expanded state if this was the previously expanded group
