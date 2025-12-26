@@ -29,6 +29,7 @@ class StrategyDatabase:
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
 
         self._init_database()
+        self._init_priority_table()
 
         # Auto-clean duplicates on startup
         self._auto_deduplicate()
@@ -686,6 +687,181 @@ class StrategyDatabase:
 
         print(f"Cleared {count} strategies from database")
         return count
+
+    # =========================================================================
+    # PRIORITY QUEUE MANAGEMENT
+    # =========================================================================
+
+    def _init_priority_table(self):
+        """Create priority_items table if it doesn't exist."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS priority_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                position INTEGER NOT NULL,
+                pair TEXT NOT NULL,
+                period_label TEXT NOT NULL,
+                period_months REAL NOT NULL,
+                timeframe_label TEXT NOT NULL,
+                timeframe_minutes INTEGER NOT NULL,
+                granularity_label TEXT NOT NULL,
+                granularity_trials INTEGER NOT NULL,
+                source TEXT DEFAULT 'binance',
+                enabled INTEGER DEFAULT 1,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(pair, period_label, timeframe_label, granularity_label)
+            )
+        ''')
+
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_priority_position ON priority_items(position)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_priority_enabled ON priority_items(enabled)')
+
+        conn.commit()
+        conn.close()
+
+    def get_priority_list(self) -> List[Dict]:
+        """Get all priority items ordered by position."""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute('''
+            SELECT * FROM priority_items
+            ORDER BY position ASC
+        ''')
+
+        rows = cursor.fetchall()
+        conn.close()
+
+        return [dict(row) for row in rows]
+
+    def add_priority_item(self, pair: str, period_label: str, period_months: float,
+                          timeframe_label: str, timeframe_minutes: int,
+                          granularity_label: str, granularity_trials: int,
+                          source: str = 'binance') -> Optional[int]:
+        """Add a new priority item at the end of the list."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        # Get next position
+        cursor.execute('SELECT COALESCE(MAX(position), 0) + 1 FROM priority_items')
+        next_position = cursor.fetchone()[0]
+
+        try:
+            cursor.execute('''
+                INSERT INTO priority_items
+                (position, pair, period_label, period_months, timeframe_label,
+                 timeframe_minutes, granularity_label, granularity_trials, source)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (next_position, pair, period_label, period_months,
+                  timeframe_label, timeframe_minutes, granularity_label,
+                  granularity_trials, source))
+
+            item_id = cursor.lastrowid
+            conn.commit()
+            return item_id
+        except sqlite3.IntegrityError:
+            return None  # Duplicate
+        finally:
+            conn.close()
+
+    def delete_priority_item(self, item_id: int) -> bool:
+        """Delete a priority item and reorder remaining items."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute('DELETE FROM priority_items WHERE id = ?', (item_id,))
+        deleted = cursor.rowcount > 0
+
+        if deleted:
+            # Reorder positions to eliminate gaps
+            cursor.execute('''
+                WITH numbered AS (
+                    SELECT id, ROW_NUMBER() OVER (ORDER BY position) as new_pos
+                    FROM priority_items
+                )
+                UPDATE priority_items
+                SET position = (SELECT new_pos FROM numbered WHERE numbered.id = priority_items.id)
+            ''')
+
+        conn.commit()
+        conn.close()
+        return deleted
+
+    def reorder_priority_items(self, id_order: List[int]) -> bool:
+        """Update positions based on new order of IDs."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        for position, item_id in enumerate(id_order, start=1):
+            cursor.execute('''
+                UPDATE priority_items
+                SET position = ?, updated_at = ?
+                WHERE id = ?
+            ''', (position, datetime.now().isoformat(), item_id))
+
+        conn.commit()
+        conn.close()
+        return True
+
+    def toggle_priority_item(self, item_id: int) -> Optional[bool]:
+        """Toggle enabled status. Returns new status or None if not found."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute('SELECT enabled FROM priority_items WHERE id = ?', (item_id,))
+        row = cursor.fetchone()
+        if not row:
+            conn.close()
+            return None
+
+        new_status = 0 if row[0] else 1
+        cursor.execute('UPDATE priority_items SET enabled = ?, updated_at = ? WHERE id = ?',
+                       (new_status, datetime.now().isoformat(), item_id))
+
+        conn.commit()
+        conn.close()
+        return bool(new_status)
+
+    def clear_priority_items(self) -> int:
+        """Clear all priority items. Returns count deleted."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute('SELECT COUNT(*) FROM priority_items')
+        count = cursor.fetchone()[0]
+
+        cursor.execute('DELETE FROM priority_items')
+
+        conn.commit()
+        conn.close()
+        return count
+
+    def get_enabled_priority_combinations(self) -> List[Dict]:
+        """Get enabled priority items formatted for optimization."""
+        items = self.get_priority_list()
+        return [
+            {
+                'source': item['source'],
+                'pair': item['pair'],
+                'period': {
+                    'label': item['period_label'],
+                    'months': item['period_months']
+                },
+                'timeframe': {
+                    'label': item['timeframe_label'],
+                    'minutes': item['timeframe_minutes']
+                },
+                'granularity': {
+                    'label': item['granularity_label'],
+                    'n_trials': item['granularity_trials']
+                }
+            }
+            for item in items if item['enabled']
+        ]
 
 
 # Singleton instance for easy access

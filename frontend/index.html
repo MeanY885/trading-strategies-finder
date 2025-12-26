@@ -1161,6 +1161,148 @@
                 max-height: 300px;
             }
         }
+
+        /* Priority List Drag-and-Drop Styles */
+        .priority-list {
+            min-height: 100px;
+        }
+
+        .priority-item {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            padding: 0.75rem 1rem;
+            background: var(--bg-card);
+            border-bottom: 1px solid var(--border-subtle);
+            cursor: grab;
+            transition: background 0.15s, transform 0.15s;
+            user-select: none;
+        }
+
+        .priority-item:hover {
+            background: var(--bg-hover);
+        }
+
+        .priority-item:active {
+            cursor: grabbing;
+        }
+
+        .priority-item.dragging {
+            opacity: 0.8;
+            background: var(--accent-glow);
+            transform: scale(1.02);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+            z-index: 1000;
+        }
+
+        .priority-item.drag-over {
+            border-top: 2px solid var(--accent-primary);
+        }
+
+        .priority-item.disabled {
+            opacity: 0.5;
+        }
+
+        .priority-item .drag-handle {
+            color: var(--text-muted);
+            font-size: 1.2rem;
+            cursor: grab;
+        }
+
+        .priority-item .position-badge {
+            min-width: 28px;
+            height: 28px;
+            background: var(--bg-secondary);
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: var(--text-secondary);
+        }
+
+        .priority-item .item-content {
+            flex: 1;
+            display: flex;
+            gap: 0.5rem;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .priority-item .pair-label {
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .priority-item .period-label {
+            color: var(--accent-secondary);
+            font-size: 0.9rem;
+        }
+
+        .priority-item .timeframe-label {
+            background: var(--bg-secondary);
+            padding: 0.2rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+        }
+
+        .priority-item .granularity-label {
+            background: rgba(139, 92, 246, 0.2);
+            padding: 0.2rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.8rem;
+            color: #a78bfa;
+        }
+
+        .priority-item .item-actions {
+            display: flex;
+            gap: 0.25rem;
+        }
+
+        .priority-item .action-btn {
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            cursor: pointer;
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            transition: color 0.15s, background 0.15s;
+            font-size: 0.9rem;
+        }
+
+        .priority-item .action-btn:hover {
+            color: var(--text-primary);
+            background: var(--bg-secondary);
+        }
+
+        .priority-item .action-btn.delete:hover {
+            color: var(--danger);
+        }
+
+        .priority-add-controls {
+            display: flex;
+            gap: 0.5rem;
+            margin-bottom: 1rem;
+            flex-wrap: wrap;
+        }
+
+        .priority-add-controls select {
+            flex: 1;
+            min-width: 100px;
+            padding: 0.5rem;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: var(--text-primary);
+            font-size: 0.9rem;
+        }
+
+        .priority-add-controls select:focus {
+            outline: none;
+            border-color: var(--accent-primary);
+        }
     </style>
 </head>
 <body>
@@ -1172,19 +1314,19 @@
             <!-- Tab Navigation -->
             <div class="tab-nav">
                 <button class="tab-btn active" data-tab="main" onclick="showTab('main')">
-                    Optimizer
+                    Manual Optimizer
+                </button>
+                <button class="tab-btn" data-tab="autonomous" onclick="showTab('autonomous')">
+                    Auto Optimizer
+                </button>
+                <button class="tab-btn" data-tab="validation" onclick="showTab('validation')">
+                    Manual Validation
                 </button>
                 <button class="tab-btn" data-tab="history" onclick="showTab('history')">
                     Strategy History
                 </button>
-                <button class="tab-btn" data-tab="validation" onclick="showTab('validation')">
-                    Validation
-                </button>
                 <button class="tab-btn" data-tab="elite" onclick="showTab('elite')">
                     Elite Strategies
-                </button>
-                <button class="tab-btn" data-tab="autonomous" onclick="showTab('autonomous')">
-                    Auto Optimizer
                 </button>
                 <button class="tab-btn" data-tab="tools" onclick="showTab('tools')">
                     Tools
@@ -1946,6 +2088,60 @@
                             </button>
                         </div>
                     </div>
+
+                    <!-- Priority Queue Manager -->
+                    <div style="margin-top: 2rem;">
+                        <h3 style="font-size: 1.1rem; margin-bottom: 1rem; color: var(--text-secondary);">Priority Queue</h3>
+
+                        <div style="background: var(--bg-secondary); padding: 1.5rem; border-radius: 8px;">
+                            <h4 style="margin-bottom: 0.5rem; color: var(--text-primary);">Optimization Priority Order</h4>
+                            <p style="font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 1rem;">
+                                Drag items to reorder. Both Autonomous Optimizer and Elite Validation will process combinations in this order.
+                            </p>
+
+                            <!-- Add New Item Controls -->
+                            <div class="priority-add-controls">
+                                <select id="priorityPairSelect">
+                                    <option value="">Select Pair</option>
+                                </select>
+                                <select id="priorityPeriodSelect">
+                                    <option value="">Select Period</option>
+                                </select>
+                                <select id="priorityTimeframeSelect">
+                                    <option value="">Select Timeframe</option>
+                                </select>
+                                <select id="priorityGranularitySelect">
+                                    <option value="">Select Granularity</option>
+                                </select>
+                                <button class="btn btn-primary" onclick="addPriorityItem()" style="white-space: nowrap;">
+                                    + Add
+                                </button>
+                            </div>
+
+                            <!-- Priority List Container -->
+                            <div id="priorityListContainer" style="max-height: 400px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 1rem;">
+                                <div id="priorityList" class="priority-list">
+                                    <!-- Items populated by JavaScript -->
+                                </div>
+                                <div id="priorityEmpty" style="text-align: center; padding: 2rem; color: var(--text-secondary);">
+                                    No priority items. Add combinations above to set optimization order.
+                                </div>
+                            </div>
+
+                            <!-- Bulk Actions -->
+                            <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center;">
+                                <button class="btn btn-secondary" onclick="populateDefaultPriority()">
+                                    📋 Populate Defaults
+                                </button>
+                                <button class="btn btn-secondary" onclick="clearAllPriority()" style="color: var(--danger);">
+                                    🗑️ Clear All
+                                </button>
+                                <span id="priorityCount" style="margin-left: auto; color: var(--text-secondary);">
+                                    0 items
+                                </span>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div><!-- End tools-tab -->
@@ -1966,6 +2162,12 @@
         let eliteInitialized = false;
         let autonomousInitialized = false;
         let autonomousPollingInterval = null;
+
+        // Priority Queue State
+        let priorityItems = [];
+        let priorityAvailable = { pairs: [], periods: [], timeframes: [], granularities: [] };
+        let priorityInitialized = false;
+        let draggedPriorityItem = null;
 
         // Tab Navigation
         function showTab(tabName) {
@@ -2006,6 +2208,9 @@
             // Initialize tools tab on first view
             if (tabName === 'tools') {
                 refreshDbStats();
+                if (!priorityInitialized) {
+                    initPriorityManager();
+                }
             }
         }
 
@@ -2072,6 +2277,249 @@
                 }
             } catch (e) {
                 alert('Error resetting cycle: ' + e.message);
+            }
+        }
+
+        // === PRIORITY QUEUE MANAGEMENT ===
+
+        async function initPriorityManager() {
+            priorityInitialized = true;
+            await loadPriorityAvailable();
+            await loadPriorityList();
+        }
+
+        async function loadPriorityAvailable() {
+            try {
+                const response = await fetch('/api/priority/available');
+                priorityAvailable = await response.json();
+
+                // Populate pair dropdown
+                const pairSelect = document.getElementById('priorityPairSelect');
+                pairSelect.innerHTML = '<option value="">Select Pair</option>';
+                priorityAvailable.pairs.forEach(p => {
+                    pairSelect.innerHTML += `<option value="${p}">${p}</option>`;
+                });
+
+                // Populate period dropdown
+                const periodSelect = document.getElementById('priorityPeriodSelect');
+                periodSelect.innerHTML = '<option value="">Select Period</option>';
+                priorityAvailable.periods.forEach(p => {
+                    periodSelect.innerHTML += `<option value="${p.label}">${p.label}</option>`;
+                });
+
+                // Populate timeframe dropdown
+                const tfSelect = document.getElementById('priorityTimeframeSelect');
+                tfSelect.innerHTML = '<option value="">Select Timeframe</option>';
+                priorityAvailable.timeframes.forEach(tf => {
+                    tfSelect.innerHTML += `<option value="${tf.label}">${tf.label}</option>`;
+                });
+
+                // Populate granularity dropdown
+                const granSelect = document.getElementById('priorityGranularitySelect');
+                granSelect.innerHTML = '<option value="">Select Granularity</option>';
+                priorityAvailable.granularities.forEach(g => {
+                    granSelect.innerHTML += `<option value="${g.label}">${g.label} (${g.n_trials} trials)</option>`;
+                });
+            } catch (e) {
+                console.error('Error loading priority options:', e);
+            }
+        }
+
+        async function loadPriorityList() {
+            try {
+                const response = await fetch('/api/priority/list');
+                const data = await response.json();
+                priorityItems = data.items || [];
+                renderPriorityList();
+            } catch (e) {
+                console.error('Error loading priority list:', e);
+            }
+        }
+
+        function renderPriorityList() {
+            const container = document.getElementById('priorityList');
+            const empty = document.getElementById('priorityEmpty');
+            const count = document.getElementById('priorityCount');
+
+            count.textContent = `${priorityItems.length} items`;
+
+            if (priorityItems.length === 0) {
+                container.innerHTML = '';
+                empty.style.display = 'block';
+                return;
+            }
+
+            empty.style.display = 'none';
+            container.innerHTML = priorityItems.map((item, index) => `
+                <div class="priority-item ${item.enabled ? '' : 'disabled'}"
+                     data-id="${item.id}"
+                     data-position="${index + 1}"
+                     draggable="true"
+                     ondragstart="handlePriorityDragStart(event)"
+                     ondragend="handlePriorityDragEnd(event)"
+                     ondragover="handlePriorityDragOver(event)"
+                     ondrop="handlePriorityDrop(event)">
+                    <span class="drag-handle">&#x2630;</span>
+                    <span class="position-badge">${index + 1}</span>
+                    <div class="item-content">
+                        <span class="pair-label">${item.pair}</span>
+                        <span class="period-label">${item.period_label}</span>
+                        <span class="timeframe-label">${item.timeframe_label}</span>
+                        <span class="granularity-label">${item.granularity_label}</span>
+                    </div>
+                    <div class="item-actions">
+                        <button class="action-btn" onclick="togglePriorityItem(${item.id})" title="${item.enabled ? 'Disable' : 'Enable'}">
+                            ${item.enabled ? '&#x2714;' : '&#x2716;'}
+                        </button>
+                        <button class="action-btn delete" onclick="removePriorityItem(${item.id})" title="Remove">
+                            &#x2715;
+                        </button>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        // Drag and Drop Handlers
+        function handlePriorityDragStart(e) {
+            draggedPriorityItem = e.target.closest('.priority-item');
+            draggedPriorityItem.classList.add('dragging');
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/plain', draggedPriorityItem.dataset.id);
+        }
+
+        function handlePriorityDragEnd(e) {
+            if (draggedPriorityItem) {
+                draggedPriorityItem.classList.remove('dragging');
+                draggedPriorityItem = null;
+            }
+            document.querySelectorAll('.priority-item').forEach(item => {
+                item.classList.remove('drag-over');
+            });
+        }
+
+        function handlePriorityDragOver(e) {
+            e.preventDefault();
+            const target = e.target.closest('.priority-item');
+            if (target && target !== draggedPriorityItem) {
+                document.querySelectorAll('.priority-item').forEach(item => {
+                    item.classList.remove('drag-over');
+                });
+                target.classList.add('drag-over');
+            }
+        }
+
+        async function handlePriorityDrop(e) {
+            e.preventDefault();
+            const target = e.target.closest('.priority-item');
+            if (!target || target === draggedPriorityItem) return;
+
+            const draggedId = parseInt(draggedPriorityItem.dataset.id);
+            const targetId = parseInt(target.dataset.id);
+
+            // Reorder in local array
+            const draggedIndex = priorityItems.findIndex(i => i.id === draggedId);
+            const targetIndex = priorityItems.findIndex(i => i.id === targetId);
+
+            const [removed] = priorityItems.splice(draggedIndex, 1);
+            priorityItems.splice(targetIndex, 0, removed);
+
+            // Render immediately for responsive feel
+            renderPriorityList();
+
+            // Persist to backend
+            const newOrder = priorityItems.map(item => item.id);
+            try {
+                await fetch('/api/priority/reorder', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ order: newOrder })
+                });
+            } catch (e) {
+                console.error('Error saving order:', e);
+                loadPriorityList(); // Reload on error
+            }
+        }
+
+        async function addPriorityItem() {
+            const pair = document.getElementById('priorityPairSelect').value;
+            const period = document.getElementById('priorityPeriodSelect').value;
+            const timeframe = document.getElementById('priorityTimeframeSelect').value;
+            const granularity = document.getElementById('priorityGranularitySelect').value;
+
+            if (!pair || !period || !timeframe || !granularity) {
+                alert('Please select pair, period, timeframe, and granularity');
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/priority/add', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        pair: pair,
+                        period_label: period,
+                        timeframe_label: timeframe,
+                        granularity_label: granularity
+                    })
+                });
+
+                const result = await response.json();
+                if (result.success) {
+                    loadPriorityList();
+                    // Reset selects
+                    document.getElementById('priorityPairSelect').value = '';
+                    document.getElementById('priorityPeriodSelect').value = '';
+                    document.getElementById('priorityTimeframeSelect').value = '';
+                    document.getElementById('priorityGranularitySelect').value = '';
+                } else {
+                    alert(result.message || 'Error adding item');
+                }
+            } catch (e) {
+                alert('Error adding item: ' + e.message);
+            }
+        }
+
+        async function removePriorityItem(id) {
+            try {
+                await fetch(`/api/priority/${id}`, { method: 'DELETE' });
+                loadPriorityList();
+            } catch (e) {
+                console.error('Error removing item:', e);
+            }
+        }
+
+        async function togglePriorityItem(id) {
+            try {
+                await fetch(`/api/priority/${id}/toggle`, { method: 'PATCH' });
+                loadPriorityList();
+            } catch (e) {
+                console.error('Error toggling item:', e);
+            }
+        }
+
+        async function populateDefaultPriority() {
+            if (!confirm('This will add default priority combinations. Continue?')) return;
+
+            try {
+                const response = await fetch('/api/priority/populate-defaults', { method: 'POST' });
+                const result = await response.json();
+                if (result.success) {
+                    loadPriorityList();
+                    alert(`Added ${result.added} items`);
+                }
+            } catch (e) {
+                alert('Error: ' + e.message);
+            }
+        }
+
+        async function clearAllPriority() {
+            if (!confirm('Remove ALL priority items?')) return;
+
+            try {
+                await fetch('/api/priority/clear', { method: 'POST' });
+                loadPriorityList();
+            } catch (e) {
+                alert('Error: ' + e.message);
             }
         }
 
