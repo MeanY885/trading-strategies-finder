@@ -2660,6 +2660,37 @@ async def populate_default_priority():
     return {"success": True, "added": added}
 
 
+@app.post("/api/priority/populate-all")
+async def populate_all_priority():
+    """Populate priority list with ALL possible combinations."""
+    if not HAS_DATABASE:
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    config = AUTONOMOUS_CONFIG
+    db = get_strategy_db()
+
+    added = 0
+    # Generate all combinations: granularity → timeframe → period → pairs
+    # Order: fastest granularity first (0.5% = 400 trials), shortest timeframe, shortest period
+    for granularity in config["granularities"]:
+        for timeframe in config["timeframes"]:
+            for period in config["periods"]:
+                for pair in config["pairs"].get("binance", []):
+                    item_id = db.add_priority_item(
+                        pair=pair,
+                        period_label=period["label"],
+                        period_months=period["months"],
+                        timeframe_label=timeframe["label"],
+                        timeframe_minutes=timeframe["minutes"],
+                        granularity_label=granularity["label"],
+                        granularity_trials=granularity["n_trials"]
+                    )
+                    if item_id:
+                        added += 1
+
+    return {"success": True, "added": added}
+
+
 @app.post("/api/priority/clear")
 async def clear_priority():
     """Clear all priority items."""

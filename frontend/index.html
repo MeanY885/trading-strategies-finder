@@ -2036,6 +2036,39 @@
                     <h2>Tools</h2>
                 </div>
                 <div class="card-body">
+                    <!-- Priority Queue Manager (TOP) -->
+                    <div style="margin-bottom: 2rem;">
+                        <h3 style="font-size: 1.1rem; margin-bottom: 1rem; color: var(--text-secondary);">Priority Queue</h3>
+
+                        <div style="background: var(--bg-secondary); padding: 1.5rem; border-radius: 8px;">
+                            <h4 style="margin-bottom: 0.5rem; color: var(--text-primary);">Optimization Priority Order</h4>
+                            <p style="font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 1rem;">
+                                Drag items to reorder. Both Autonomous Optimizer and Elite Validation will process combinations in this order.
+                                Disable items to skip them temporarily.
+                            </p>
+
+                            <!-- Priority List Container -->
+                            <div id="priorityListContainer" style="max-height: 500px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 1rem;">
+                                <div id="priorityList" class="priority-list">
+                                    <!-- Items populated by JavaScript -->
+                                </div>
+                                <div id="priorityEmpty" style="text-align: center; padding: 2rem; color: var(--text-secondary);">
+                                    Loading priority items...
+                                </div>
+                            </div>
+
+                            <!-- Actions -->
+                            <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center;">
+                                <button class="btn btn-secondary" onclick="resetPriorityToDefaults()">
+                                    🔄 Reset to Defaults
+                                </button>
+                                <span id="priorityCount" style="margin-left: auto; color: var(--text-secondary);">
+                                    0 items
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- Database Tools -->
                     <div style="margin-bottom: 2rem;">
                         <h3 style="font-size: 1.1rem; margin-bottom: 1rem; color: var(--text-secondary);">Database Management</h3>
@@ -2088,60 +2121,6 @@
                             <button class="btn btn-secondary" onclick="resetAutonomousCycle()">
                                 🔄 Reset Cycle
                             </button>
-                        </div>
-                    </div>
-
-                    <!-- Priority Queue Manager -->
-                    <div style="margin-top: 2rem;">
-                        <h3 style="font-size: 1.1rem; margin-bottom: 1rem; color: var(--text-secondary);">Priority Queue</h3>
-
-                        <div style="background: var(--bg-secondary); padding: 1.5rem; border-radius: 8px;">
-                            <h4 style="margin-bottom: 0.5rem; color: var(--text-primary);">Optimization Priority Order</h4>
-                            <p style="font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 1rem;">
-                                Drag items to reorder. Both Autonomous Optimizer and Elite Validation will process combinations in this order.
-                            </p>
-
-                            <!-- Add New Item Controls -->
-                            <div class="priority-add-controls">
-                                <select id="priorityPairSelect">
-                                    <option value="">Select Pair</option>
-                                </select>
-                                <select id="priorityPeriodSelect">
-                                    <option value="">Select Period</option>
-                                </select>
-                                <select id="priorityTimeframeSelect">
-                                    <option value="">Select Timeframe</option>
-                                </select>
-                                <select id="priorityGranularitySelect">
-                                    <option value="">Select Granularity</option>
-                                </select>
-                                <button class="btn btn-primary" onclick="addPriorityItem()" style="white-space: nowrap;">
-                                    + Add
-                                </button>
-                            </div>
-
-                            <!-- Priority List Container -->
-                            <div id="priorityListContainer" style="max-height: 400px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 1rem;">
-                                <div id="priorityList" class="priority-list">
-                                    <!-- Items populated by JavaScript -->
-                                </div>
-                                <div id="priorityEmpty" style="text-align: center; padding: 2rem; color: var(--text-secondary);">
-                                    No priority items. Add combinations above to set optimization order.
-                                </div>
-                            </div>
-
-                            <!-- Bulk Actions -->
-                            <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center;">
-                                <button class="btn btn-secondary" onclick="populateDefaultPriority()">
-                                    📋 Populate Defaults
-                                </button>
-                                <button class="btn btn-secondary" onclick="clearAllPriority()" style="color: var(--danger);">
-                                    🗑️ Clear All
-                                </button>
-                                <span id="priorityCount" style="margin-left: auto; color: var(--text-secondary);">
-                                    0 items
-                                </span>
-                            </div>
                         </div>
                     </div>
                 </div>
@@ -2286,44 +2265,11 @@
 
         async function initPriorityManager() {
             priorityInitialized = true;
-            await loadPriorityAvailable();
             await loadPriorityList();
-        }
 
-        async function loadPriorityAvailable() {
-            try {
-                const response = await fetch('/api/priority/available');
-                priorityAvailable = await response.json();
-
-                // Populate pair dropdown
-                const pairSelect = document.getElementById('priorityPairSelect');
-                pairSelect.innerHTML = '<option value="">Select Pair</option>';
-                priorityAvailable.pairs.forEach(p => {
-                    pairSelect.innerHTML += `<option value="${p}">${p}</option>`;
-                });
-
-                // Populate period dropdown
-                const periodSelect = document.getElementById('priorityPeriodSelect');
-                periodSelect.innerHTML = '<option value="">Select Period</option>';
-                priorityAvailable.periods.forEach(p => {
-                    periodSelect.innerHTML += `<option value="${p.label}">${p.label}</option>`;
-                });
-
-                // Populate timeframe dropdown
-                const tfSelect = document.getElementById('priorityTimeframeSelect');
-                tfSelect.innerHTML = '<option value="">Select Timeframe</option>';
-                priorityAvailable.timeframes.forEach(tf => {
-                    tfSelect.innerHTML += `<option value="${tf.label}">${tf.label}</option>`;
-                });
-
-                // Populate granularity dropdown
-                const granSelect = document.getElementById('priorityGranularitySelect');
-                granSelect.innerHTML = '<option value="">Select Granularity</option>';
-                priorityAvailable.granularities.forEach(g => {
-                    granSelect.innerHTML += `<option value="${g.label}">${g.label} (${g.n_trials} trials)</option>`;
-                });
-            } catch (e) {
-                console.error('Error loading priority options:', e);
+            // Auto-populate if list is empty
+            if (priorityItems.length === 0) {
+                await populateAllPriority();
             }
         }
 
@@ -2335,6 +2281,30 @@
                 renderPriorityList();
             } catch (e) {
                 console.error('Error loading priority list:', e);
+            }
+        }
+
+        async function populateAllPriority() {
+            try {
+                document.getElementById('priorityEmpty').textContent = 'Loading all combinations...';
+                const response = await fetch('/api/priority/populate-all', { method: 'POST' });
+                const result = await response.json();
+                if (result.success) {
+                    await loadPriorityList();
+                }
+            } catch (e) {
+                console.error('Error populating priority list:', e);
+            }
+        }
+
+        async function resetPriorityToDefaults() {
+            if (!confirm('Reset priority queue to default order? This will clear your current ordering.')) return;
+
+            try {
+                await fetch('/api/priority/clear', { method: 'POST' });
+                await populateAllPriority();
+            } catch (e) {
+                alert('Error: ' + e.message);
             }
         }
 
