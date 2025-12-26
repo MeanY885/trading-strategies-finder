@@ -1446,9 +1446,11 @@
                                 <th>Score</th>
                                 <th style="text-align: left;">Strategy</th>
                                 <th>1W</th>
+                                <th>2W</th>
                                 <th>1M</th>
                                 <th>3M</th>
                                 <th>6M</th>
+                                <th>9M</th>
                                 <th>1Y</th>
                                 <th>2Y</th>
                                 <th>Status</th>
@@ -5049,9 +5051,11 @@
                         </div>
                     </td>
                     <td>${formatPnL(periodData['1 week'])}</td>
+                    <td>${formatPnL(periodData['2 weeks'])}</td>
                     <td>${formatPnL(periodData['1 month'])}</td>
                     <td>${formatPnL(periodData['3 months'])}</td>
                     <td>${formatPnL(periodData['6 months'])}</td>
+                    <td>${formatPnL(periodData['9 months'])}</td>
                     <td>${formatPnL(periodData['1 year'])}</td>
                     <td>${formatPnL(periodData['2 years'])}</td>
                     <td>${statusBadge}</td>
@@ -5073,7 +5077,7 @@
                     variantsRow.className = 'elite-variants-row';
                     variantsRow.id = `elite-variants-${best.id}`;
                     variantsRow.style.display = 'none';
-                    variantsRow.innerHTML = `<td colspan="11" style="padding: 0; background: var(--bg-secondary);"></td>`;
+                    variantsRow.innerHTML = `<td colspan="13" style="padding: 0; background: var(--bg-secondary);"></td>`;
                     tbody.appendChild(variantsRow);
 
                     // Restore expanded state if this was the previously expanded group
@@ -5127,9 +5131,11 @@
                                 <th style="padding: 0.3rem; text-align: left; color: var(--text-muted);">SL%</th>
                                 <th style="padding: 0.3rem; text-align: left; color: var(--text-muted);">Score</th>
                                 <th style="padding: 0.3rem; text-align: center; color: var(--text-muted);">1W</th>
+                                <th style="padding: 0.3rem; text-align: center; color: var(--text-muted);">2W</th>
                                 <th style="padding: 0.3rem; text-align: center; color: var(--text-muted);">1M</th>
                                 <th style="padding: 0.3rem; text-align: center; color: var(--text-muted);">3M</th>
                                 <th style="padding: 0.3rem; text-align: center; color: var(--text-muted);">6M</th>
+                                <th style="padding: 0.3rem; text-align: center; color: var(--text-muted);">9M</th>
                                 <th style="padding: 0.3rem; text-align: center; color: var(--text-muted);">1Y</th>
                                 <th style="padding: 0.3rem; text-align: center; color: var(--text-muted);">2Y</th>
                                 <th style="padding: 0.3rem; text-align: center; color: var(--text-muted);">Status</th>
@@ -5167,9 +5173,11 @@
                             <td style="padding: 0.4rem; color: var(--danger);">${sl}</td>
                             <td style="padding: 0.4rem;">${score}</td>
                             <td style="padding: 0.4rem; text-align: center;">${formatPnL(periodData['1 week'])}</td>
+                            <td style="padding: 0.4rem; text-align: center;">${formatPnL(periodData['2 weeks'])}</td>
                             <td style="padding: 0.4rem; text-align: center;">${formatPnL(periodData['1 month'])}</td>
                             <td style="padding: 0.4rem; text-align: center;">${formatPnL(periodData['3 months'])}</td>
                             <td style="padding: 0.4rem; text-align: center;">${formatPnL(periodData['6 months'])}</td>
+                            <td style="padding: 0.4rem; text-align: center;">${formatPnL(periodData['9 months'])}</td>
                             <td style="padding: 0.4rem; text-align: center;">${formatPnL(periodData['1 year'])}</td>
                             <td style="padding: 0.4rem; text-align: center;">${formatPnL(periodData['2 years'])}</td>
                             <td style="padding: 0.4rem; text-align: center;">${statusBadge}</td>

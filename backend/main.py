@@ -1740,9 +1740,11 @@ async def validate_strategy(request: ValidateStrategyRequest):
         # Validation periods: name, months, days
         validation_periods = [
             {"period": "1 week", "months": 0.25, "days": 7},
+            {"period": "2 weeks", "months": 0.5, "days": 14},
             {"period": "1 month", "months": 1.0, "days": 30},
             {"period": "3 months", "months": 3.0, "days": 90},
             {"period": "6 months", "months": 6.0, "days": 180},
+            {"period": "9 months", "months": 9.0, "days": 270},
             {"period": "1 year", "months": 12.0, "days": 365},
             {"period": "2 years", "months": 24.0, "days": 730},
         ]
@@ -2540,9 +2542,11 @@ async def validate_all_strategies_for_elite():
 
     validation_periods = [
         {"period": "1 week", "months": 0.25, "days": 7},
+        {"period": "2 weeks", "months": 0.5, "days": 14},
         {"period": "1 month", "months": 1.0, "days": 30},
         {"period": "3 months", "months": 3.0, "days": 90},
         {"period": "6 months", "months": 6.0, "days": 180},
+        {"period": "9 months", "months": 9.0, "days": 270},
         {"period": "1 year", "months": 12.0, "days": 365},
         {"period": "2 years", "months": 24.0, "days": 730},
     ]
@@ -2716,9 +2720,9 @@ async def validate_all_strategies_for_elite():
                     })
 
             # Calculate elite score:
-            # - Consistency points: 1 point per successful period (max 6)
+            # - Consistency points: 1 point per successful period (max 8)
             # - Profit bonus: total positive P&L / 100 (to scale £ to points)
-            consistency_points = passed  # Number of periods passed (0-6)
+            consistency_points = passed  # Number of periods passed (0-8)
 
             # Sum up P&L from all successful periods
             total_pnl = 0
