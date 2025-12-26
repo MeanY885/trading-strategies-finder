@@ -2970,7 +2970,9 @@ async def validate_all_strategies_for_elite():
                 elite_validation_status["message"] = "Paused (optimizer running)"
                 await asyncio.sleep(2)  # Check every 2 seconds
             elite_validation_status["paused"] = False
-            print(f"[Elite Validation] Starting strategy {strategy.get('id')}: {strategy.get('strategy_name', 'Unknown')}")
+            strategy_name = strategy.get('strategy_name', 'Unknown')
+            elite_validation_status["message"] = f"Validating: {strategy_name}"
+            print(f"[Elite Validation] Starting strategy {strategy.get('id')}: {strategy_name}")
 
             strategy_id = strategy.get('id')
             strategy_name = strategy.get('strategy_name', 'Unknown')
@@ -3058,6 +3060,7 @@ async def validate_all_strategies_for_elite():
                     elite_validation_status["message"] = f"Paused during {strategy_name} (optimizer running)"
                     await asyncio.sleep(2)
                 elite_validation_status["paused"] = False
+                elite_validation_status["message"] = f"Validating: {strategy_name} ({vp['period']})"
 
                 if vp["days"] > max_days:
                     # Skip - exceeds data limit
