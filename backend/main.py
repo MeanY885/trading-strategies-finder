@@ -1698,7 +1698,8 @@ async def validate_strategy(request: ValidateStrategyRequest):
         direction = params.get('direction', strategy.get('trade_mode', 'long'))
 
         # Get position size and original period from optimization run
-        original_position_size_pct = 75.0
+        # Defaults match Elite validation: £1000, 100% position
+        original_position_size_pct = 100.0
         original_capital = 1000.0
         original_months = 1.0  # Default to 1 month if not found
         run_id = strategy.get('optimization_run_id')
@@ -1825,6 +1826,9 @@ async def validate_strategy(request: ValidateStrategyRequest):
                 elif result.win_rate < original_metrics["win_rate"] * 0.95:
                     status = "minor_drop"
 
+                # Calculate % return (based on capital used)
+                return_pct = round((result.total_pnl / capital) * 100, 1)
+
                 validations.append({
                     "period": vp["period"],
                     "months": vp["months"],
@@ -1834,6 +1838,7 @@ async def validate_strategy(request: ValidateStrategyRequest):
                         "total_pnl": round(result.total_pnl, 2),
                         "profit_factor": round(result.profit_factor, 2),
                         "max_drawdown": round(result.max_drawdown, 2),
+                        "return_pct": return_pct,
                     },
                     "status": status,
                     "message": None
@@ -2708,7 +2713,7 @@ async def validate_all_strategies_for_elite():
                         tp_percent=tp_percent,
                         sl_percent=sl_percent,
                         initial_capital=1000.0,
-                        position_size_pct=75.0,
+                        position_size_pct=100.0,  # Full position for fair comparison
                         commission_pct=0.1
                     )
 
@@ -2727,12 +2732,16 @@ async def validate_all_strategies_for_elite():
                     if status in ['consistent', 'minor_drop']:
                         passed += 1
 
+                    # Calculate % return (based on £1000 starting capital)
+                    return_pct = round((result.total_pnl / 1000.0) * 100, 1)
+
                     results.append({
                         "period": vp["period"],
                         "status": status,
                         "trades": result.total_trades,
                         "win_rate": round(result.win_rate, 2),
                         "pnl": round(result.total_pnl, 2),
+                        "return_pct": return_pct,
                     })
 
                 except Exception as e:

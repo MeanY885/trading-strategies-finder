@@ -1421,8 +1421,11 @@
                     <div class="icon">🏆</div>
                     <h2>Elite Strategies</h2>
                 </div>
-                <p style="color: var(--text-secondary); margin-bottom: 1rem;">
+                <p style="color: var(--text-secondary); margin-bottom: 0.5rem;">
                     Strategies validated across ALL time periods. Elite status means consistent performance.
+                </p>
+                <p style="color: var(--text-muted); font-size: 0.8rem; margin-bottom: 1rem;">
+                    📊 Validation settings: £1,000 capital, 100% position size, 0.1% commission. Returns shown as % of starting capital.
                 </p>
 
                 <!-- Status Bar -->
@@ -4964,8 +4967,15 @@
                 if (periodData.pnl === undefined) return '<span style="color: var(--text-muted);">--</span>';
 
                 const pnl = periodData.pnl;
+                const returnPct = periodData.return_pct;
                 const sign = pnl >= 0 ? '+' : '';
                 const colorClass = pnl >= 0 ? 'success' : 'danger';
+
+                // Show % return if available, otherwise just PnL
+                if (returnPct !== undefined) {
+                    const pctSign = returnPct >= 0 ? '+' : '';
+                    return `<span class="${colorClass}" title="£${sign}${pnl.toFixed(0)}">${pctSign}${returnPct}%</span>`;
+                }
                 return `<span class="${colorClass}">£${sign}${pnl.toFixed(0)}</span>`;
             }
 
