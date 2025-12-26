@@ -3804,6 +3804,9 @@ async def start_autonomous_optimizer():
     autonomous_optimizer_status["auto_running"] = True
     print("[Autonomous Optimizer] Starting continuous background optimization...")
 
+    # Brief delay to let Elite validation initialize and check pending count
+    await asyncio.sleep(3)
+
     # Build the full combination list with priority ordering
     combinations = build_optimization_combinations()
     autonomous_optimizer_status["total_combinations"] = len(combinations)
@@ -3839,8 +3842,12 @@ async def start_autonomous_optimizer():
 
             # === CHECK FOR PENDING ELITE STRATEGIES ===
             # Auto-optimizer must NOT run if there are Elite strategies in the backlog
+            # Re-fetch db to ensure we have latest state
+            db = get_strategy_db()
             strategies = db.get_all_strategies()
             pending_elite = len([s for s in strategies if s.get('elite_status') in [None, 'pending']])
+            if pending_elite > 0:
+                print(f"[Autonomous Optimizer] Detected {pending_elite} pending elite strategies, pausing...")
             while pending_elite > 0:
                 if not autonomous_optimizer_status["enabled"]:
                     break
