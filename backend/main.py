@@ -3637,12 +3637,12 @@ async def wait_for_elite_validation():
 
     initial_pending = len(pending)
 
-    # Wait for Elite to validate at least 1 strategy (or more if many pending)
-    min_to_validate = max(1, min(5, int(initial_pending * 0.1)))
+    # Wait for Elite to validate ALL pending strategies before continuing
+    min_to_validate = initial_pending  # Wait for all
 
     autonomous_optimizer_status["message"] = f"Waiting for Elite: {initial_pending} pending..."
     autonomous_optimizer_status["running"] = False
-    print(f"[Autonomous Optimizer] PAUSING - Waiting for Elite to validate at least {min_to_validate} of {initial_pending} pending strategies...")
+    print(f"[Autonomous Optimizer] PAUSING - Waiting for Elite to validate ALL {initial_pending} pending strategies...")
 
     # Give Elite a moment to detect that optimizer stopped
     await asyncio.sleep(3)
@@ -3650,7 +3650,7 @@ async def wait_for_elite_validation():
     check_interval = 5
     last_pending = initial_pending
     last_progress_time = asyncio.get_event_loop().time()
-    stall_timeout = 180  # 3 minutes with no progress = consider stalled
+    stall_timeout = 7200  # 2 hours with no progress = consider stalled
 
     while True:
         # CRITICAL: Keep this False so Elite can run
