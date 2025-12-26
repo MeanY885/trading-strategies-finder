@@ -2470,6 +2470,24 @@
             }
         }
 
+        // Show Pine Script in modal (for Elite Strategies)
+        async function showPineScript(strategyId) {
+            try {
+                const response = await fetch(`/api/db/strategies/${strategyId}/pinescript`);
+                const data = await response.json();
+
+                if (data.pinescript) {
+                    const title = data.strategy_name || `Strategy #${strategyId}`;
+                    showPineModal(title, data.pinescript);
+                } else {
+                    showToast('Failed to generate Pine Script');
+                }
+            } catch (error) {
+                console.error('Failed to load Pine Script:', error);
+                showToast('Failed to load Pine Script: ' + error.message);
+            }
+        }
+
         // Show toast notification
         function showToast(message) {
             const toast = document.createElement('div');
@@ -4971,10 +4989,10 @@
                 const sign = pnl >= 0 ? '+' : '';
                 const colorClass = pnl >= 0 ? 'success' : 'danger';
 
-                // Show % return if available, otherwise just PnL
+                // Show both £ and % if return_pct available
                 if (returnPct !== undefined) {
                     const pctSign = returnPct >= 0 ? '+' : '';
-                    return `<span class="${colorClass}" title="£${sign}${pnl.toFixed(0)}">${pctSign}${returnPct}%</span>`;
+                    return `<span class="${colorClass}">£${sign}${pnl.toFixed(0)}<br><small style="opacity: 0.7;">(${pctSign}${returnPct}%)</small></span>`;
                 }
                 return `<span class="${colorClass}">£${sign}${pnl.toFixed(0)}</span>`;
             }
