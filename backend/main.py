@@ -137,6 +137,9 @@ autonomous_optimizer_status = {
 autonomous_runs_history = []
 MAX_HISTORY_SIZE = 500  # Keep last 500 runs in memory
 
+# Reference to current optimization's status dict (for abort signaling)
+current_optimization_status = None
+
 # Autonomous optimizer configuration
 AUTONOMOUS_CONFIG = {
     # Capital settings
@@ -2369,14 +2372,20 @@ async def get_autonomous_status():
 @app.post("/api/autonomous/toggle")
 async def toggle_autonomous_optimizer():
     """Toggle the autonomous optimizer on/off"""
-    global autonomous_optimizer_status
+    global autonomous_optimizer_status, current_optimization_status
 
     if autonomous_optimizer_status["enabled"]:
         # Disable
         autonomous_optimizer_status["enabled"] = False
         autonomous_optimizer_status["auto_running"] = False
-        autonomous_optimizer_status["message"] = "Disabled by user"
-        return {"status": "disabled", "message": "Autonomous optimizer disabled"}
+        autonomous_optimizer_status["message"] = "Stopping..."
+
+        # Signal any running optimization to abort
+        if current_optimization_status:
+            current_optimization_status["abort"] = True
+            print("[Autonomous Optimizer] Abort signal sent to running optimization")
+
+        return {"status": "disabled", "message": "Autonomous optimizer stopping..."}
     else:
         # Enable
         autonomous_optimizer_status["enabled"] = True
@@ -2476,7 +2485,10 @@ async def start_auto_elite_validation():
             # Wait for optimizer to be idle
             while unified_status["running"]:
                 elite_validation_status["message"] = "Waiting for optimizer to finish..."
+                elite_validation_status["paused"] = True
                 await asyncio.sleep(5)
+            elite_validation_status["paused"] = False
+            print(f"[Elite Auto-Validation] Optimizer idle, checking for pending strategies...")
 
             # Check if there are pending strategies
             db = get_strategy_db()
@@ -2484,8 +2496,10 @@ async def start_auto_elite_validation():
             pending = [s for s in strategies if s.get('elite_status') in [None, 'pending']]
 
             if pending:
+                print(f"[Elite Auto-Validation] Found {len(pending)} pending strategies to validate")
                 elite_validation_status["message"] = f"Found {len(pending)} pending strategies to validate"
                 await validate_all_strategies_for_elite()
+                print(f"[Elite Auto-Validation] Validation batch complete, processed {elite_validation_status.get('processed', 0)} strategies")
             else:
                 # No pending - re-validate oldest strategy to keep data fresh
                 validated = [s for s in strategies if s.get('elite_validated_at')]
@@ -2549,11 +2563,14 @@ async def validate_all_strategies_for_elite():
 
         for strategy in pending:
             # === PRIORITY CHECK: Pause if optimizer starts ===
+            if unified_status["running"]:
+                print(f"[Elite Validation] Optimizer started, pausing before strategy {strategy.get('id')}...")
             while unified_status["running"]:
                 elite_validation_status["paused"] = True
                 elite_validation_status["message"] = "Paused (optimizer running)"
                 await asyncio.sleep(2)  # Check every 2 seconds
             elite_validation_status["paused"] = False
+            print(f"[Elite Validation] Starting strategy {strategy.get('id')}: {strategy.get('strategy_name', 'Unknown')}")
 
             strategy_id = strategy.get('id')
             strategy_name = strategy.get('strategy_name', 'Unknown')
@@ -2625,9 +2642,12 @@ async def validate_all_strategies_for_elite():
             results = []
 
             for vp in validation_periods:
-                # Check optimizer again before each period
-                if unified_status["running"]:
-                    break
+                # === PAUSE if optimizer starts - don't break, WAIT ===
+                while unified_status["running"]:
+                    elite_validation_status["paused"] = True
+                    elite_validation_status["message"] = f"Paused during {strategy_name} (optimizer running)"
+                    await asyncio.sleep(2)
+                elite_validation_status["paused"] = False
 
                 if vp["days"] > max_days:
                     # Skip - exceeds data limit
@@ -2735,6 +2755,7 @@ async def validate_all_strategies_for_elite():
             )
 
             elite_validation_status["processed"] += 1
+            print(f"[Elite Validation] Completed strategy {strategy_id}: {elite_status} ({passed}/{total_testable} periods, score={elite_score:.1f})")
 
         elite_validation_status["message"] = f"Complete! Validated {elite_validation_status['processed']} strategies"
 
@@ -2993,12 +3014,23 @@ async def run_autonomous_optimization(combo: dict) -> str:
         "running": True,
         "progress": 0,
         "message": "",
-        "report": None
+        "report": None,
+        "abort": False  # Abort signal for cancellation
     }
+
+    # Set global reference so toggle can access it
+    global current_optimization_status
+    current_optimization_status = temp_status
 
     # Background task to update progress from temp_status
     async def update_progress():
         while temp_status["running"]:
+            # Check if optimizer was disabled - signal abort
+            if not autonomous_optimizer_status["enabled"]:
+                temp_status["abort"] = True
+                autonomous_optimizer_status["message"] = "Stopping optimization..."
+                print("[Autonomous Optimizer] Detected disabled state, setting abort flag")
+
             # Map temp_status progress (0-100) to our range (15-95)
             inner_progress = temp_status.get("progress", 0)
             mapped_progress = 15 + int(inner_progress * 0.8)  # 15 to 95
@@ -3015,7 +3047,10 @@ async def run_autonomous_optimization(combo: dict) -> str:
                 total_trials = int(match.group(2).replace(',', ''))
                 autonomous_optimizer_status["trial_current"] = current_trial
                 autonomous_optimizer_status["trial_total"] = total_trials
-                autonomous_optimizer_status["message"] = f"Optimizing {pair} {timeframe['label']} - {current_trial:,}/{total_trials:,}..."
+                if temp_status.get("abort"):
+                    autonomous_optimizer_status["message"] = f"Stopping... {current_trial:,}/{total_trials:,}"
+                else:
+                    autonomous_optimizer_status["message"] = f"Optimizing {pair} {timeframe['label']} - {current_trial:,}/{total_trials:,}..."
             elif msg:
                 autonomous_optimizer_status["message"] = f"Optimizing {pair} {timeframe['label']} ({granularity['label']})..."
 
@@ -3035,11 +3070,18 @@ async def run_autonomous_optimization(combo: dict) -> str:
         )
     finally:
         temp_status["running"] = False
+        current_optimization_status = None  # Clear global reference
         progress_task.cancel()
         try:
             await progress_task
         except asyncio.CancelledError:
             pass
+
+    # Check if we were aborted
+    if temp_status.get("abort"):
+        autonomous_optimizer_status["message"] = "Stopped by user"
+        print("[Autonomous Optimizer] Optimization aborted")
+        return "aborted"
 
     # Step 3: Process results
     if temp_status.get("report"):
@@ -3095,13 +3137,17 @@ async def run_autonomous_optimization(combo: dict) -> str:
 async def wait_for_elite_validation():
     """
     Wait for Elite validation to process strategies from the last optimization.
-    This ensures newly generated strategies get validated before we start
-    the next optimization run.
 
-    Strategy: Validate a BATCH of strategies (up to 10) from the most recent
-    optimization before continuing. This prevents the queue from growing forever.
+    CRITICAL: Keep unified_status["running"] = False during this entire function
+    so Elite validation can actually run.
+
+    Strategy: Wait for Elite to validate at least 1 strategy before continuing.
+    If Elite is actively running (making progress), keep waiting.
     """
-    global elite_validation_status, autonomous_optimizer_status
+    global elite_validation_status, autonomous_optimizer_status, unified_status
+
+    # CRITICAL: Ensure optimizer is marked as not running so Elite can work
+    unified_status["running"] = False
 
     db = get_strategy_db()
 
@@ -3116,47 +3162,89 @@ async def wait_for_elite_validation():
 
     initial_pending = len(pending)
 
-    # Validate a batch of strategies (up to 10) before continuing
-    # This ensures Elite validation makes progress between optimizations
-    batch_size = min(10, initial_pending)
-    target_remaining = initial_pending - batch_size
+    # Wait for Elite to validate at least 1 strategy (or more if many pending)
+    min_to_validate = max(1, min(5, int(initial_pending * 0.1)))
 
-    autonomous_optimizer_status["message"] = f"Elite validation: {initial_pending} pending, validating {batch_size}..."
-    print(f"[Autonomous Optimizer] Waiting for Elite to validate {batch_size} strategies ({initial_pending} pending)...")
+    autonomous_optimizer_status["message"] = f"Waiting for Elite: {initial_pending} pending..."
+    autonomous_optimizer_status["running"] = False
+    print(f"[Autonomous Optimizer] PAUSING - Waiting for Elite to validate at least {min_to_validate} of {initial_pending} pending strategies...")
 
-    # Wait for Elite validation to process the batch (with timeout)
-    max_wait = 600  # 10 minute max wait for batch
-    check_interval = 3
-    elapsed = 0
+    # Give Elite a moment to detect that optimizer stopped
+    await asyncio.sleep(3)
 
-    while elapsed < max_wait:
-        # Let Elite validation run
+    check_interval = 5
+    last_pending = initial_pending
+    last_progress_time = asyncio.get_event_loop().time()
+    stall_timeout = 180  # 3 minutes with no progress = consider stalled
+
+    while True:
+        # CRITICAL: Keep this False so Elite can run
+        unified_status["running"] = False
+
         await asyncio.sleep(check_interval)
-        elapsed += check_interval
+        current_time = asyncio.get_event_loop().time()
 
-        # Update status message
-        if elite_validation_status["running"]:
-            autonomous_optimizer_status["message"] = f"Elite: {elite_validation_status['message']}"
+        # Check if disabled
+        if not autonomous_optimizer_status["enabled"]:
+            print("[Autonomous Optimizer] Disabled during Elite wait, exiting...")
+            return
 
-        # Check progress
+        # Check Elite status
+        is_elite_running = elite_validation_status.get("running", False)
+        is_elite_paused = elite_validation_status.get("paused", False)
+        elite_message = elite_validation_status.get("message", "")
+
+        # Update our status
+        if is_elite_running and not is_elite_paused:
+            autonomous_optimizer_status["message"] = f"Elite validating: {elite_message}"
+        elif is_elite_paused:
+            # Elite thinks optimizer is running - force it to see we're not
+            autonomous_optimizer_status["message"] = f"Waiting for Elite to unpause..."
+            unified_status["running"] = False  # Reinforce
+            print(f"[Autonomous Optimizer] Elite still paused, reinforcing unified_status=False")
+
+        # Check database progress
         strategies = db.get_all_strategies()
         current_pending = len([s for s in strategies if s.get('elite_status') in [None, 'pending']])
-        validated_count = initial_pending - current_pending
+        validated_this_session = initial_pending - current_pending
 
-        if validated_count >= batch_size:
-            print(f"[Autonomous Optimizer] Elite validated {validated_count} strategies, continuing...")
+        # Track progress for stall detection
+        if current_pending != last_pending:
+            print(f"[Autonomous Optimizer] Elite progress: {validated_this_session} validated, {current_pending} still pending")
+            last_pending = current_pending
+            last_progress_time = current_time  # Reset stall timer
+
+        # Check exit conditions
+        if validated_this_session >= min_to_validate:
+            print(f"[Autonomous Optimizer] Elite validated {validated_this_session} strategies - resuming optimization")
             break
 
         if current_pending == 0:
             print(f"[Autonomous Optimizer] All strategies validated!")
             break
 
-        # Progress update every 30 seconds
-        if elapsed % 30 == 0:
-            print(f"[Autonomous Optimizer] Elite progress: {validated_count}/{batch_size} validated, {current_pending} pending")
+        # Check if Elite has finished (not running and no progress in a while)
+        if not is_elite_running and not is_elite_paused:
+            # Elite is idle - check if it just finished or if it never started
+            if validated_this_session > 0:
+                print(f"[Autonomous Optimizer] Elite finished - validated {validated_this_session} strategies")
+                break
+            elif current_time - last_progress_time > 30:
+                # Elite hasn't started after 30 seconds - something might be wrong
+                print(f"[Autonomous Optimizer] Elite idle with {current_pending} pending - giving it more time...")
 
-    if elapsed >= max_wait:
-        print(f"[Autonomous Optimizer] Timeout after {max_wait}s, continuing anyway...")
+        # Check for stall (no progress for stall_timeout seconds)
+        time_since_progress = current_time - last_progress_time
+        if time_since_progress > stall_timeout:
+            print(f"[Autonomous Optimizer] No progress in {int(time_since_progress)}s - continuing with optimization")
+            print(f"[Autonomous Optimizer] Elite running={is_elite_running}, paused={is_elite_paused}, validated={validated_this_session}")
+            break
+
+        # Periodic status update
+        if int(time_since_progress) % 30 == 0 and int(time_since_progress) > 0:
+            print(f"[Autonomous Optimizer] Waiting... Elite running={is_elite_running}, paused={is_elite_paused}, "
+                  f"validated={validated_this_session}/{min_to_validate}, pending={current_pending}, "
+                  f"last_progress={int(time_since_progress)}s ago")
 
     autonomous_optimizer_status["message"] = "Resuming optimization..."
     await asyncio.sleep(2)
@@ -3295,6 +3383,12 @@ async def start_autonomous_optimizer():
                 elif result == "skipped":
                     # Already logged and counted in run_autonomous_optimization
                     print(f"[Autonomous Optimizer] Skipped {combo['pair']} - moving to next combination...")
+                elif result == "aborted":
+                    # User disabled the optimizer
+                    print(f"[Autonomous Optimizer] Aborted {combo['pair']} - stopping...")
+                    autonomous_optimizer_status["running"] = False
+                    unified_status["running"] = False
+                    break
                 elif result == "error":
                     autonomous_optimizer_status["error_count"] += 1
             except Exception as e:
@@ -3314,7 +3408,7 @@ async def start_autonomous_optimizer():
             # Wait for Elite validation to process any pending strategies
             if result == "completed":
                 await wait_for_elite_validation()
-            else:
+            elif result not in ["aborted"]:
                 # For skipped/error, just a brief pause
                 await asyncio.sleep(2)
 

@@ -3113,13 +3113,30 @@ class StrategyEngine:
         # === SEPARATE DIRECTION TESTING (long/short independently) ===
         if directions:  # Only run if mode is "separate" or "all"
             for strat_idx, strategy in enumerate(strategies):
+                # Check for abort signal
+                if self.status and self.status.get("abort"):
+                    self._update_status("Optimization aborted by user", 95)
+                    break
+
                 for dir_idx, direction in enumerate(directions):
+                    # Check for abort signal
+                    if self.status and self.status.get("abort"):
+                        break
+
                     # Update at start of each strategy/direction combination
                     combo_num = strat_idx * num_directions + dir_idx + 1
                     combo_total = num_strategies * num_directions
 
                     for tp in tp_range:
+                        # Check for abort signal
+                        if self.status and self.status.get("abort"):
+                            break
+
                         for sl in sl_range:
+                            # Check for abort signal
+                            if self.status and self.status.get("abort"):
+                                break
+
                             result = self.backtest(strategy, direction, tp, sl,
                                                    initial_capital=self.capital,
                                                    position_size_pct=self.position_size_pct,
@@ -3149,10 +3166,23 @@ class StrategyEngine:
         # === BIDIRECTIONAL TESTING (combined long+short) ===
         if mode in ['bidirectional', 'all']:
             for strat_idx, strategy in enumerate(strategies):
+                # Check for abort signal
+                if self.status and self.status.get("abort"):
+                    self._update_status("Optimization aborted by user", 95)
+                    break
+
                 combo_num = strat_idx + 1
 
                 for tp in tp_range:
+                    # Check for abort signal
+                    if self.status and self.status.get("abort"):
+                        break
+
                     for sl in sl_range:
+                        # Check for abort signal
+                        if self.status and self.status.get("abort"):
+                            break
+
                         result = self.backtest_bidirectional(strategy, tp, sl,
                                                              initial_capital=self.capital,
                                                              position_size_pct=self.position_size_pct,
