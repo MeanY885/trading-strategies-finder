@@ -6126,16 +6126,16 @@
                 if (periodData.pnl === undefined) return '<span style="color: var(--text-muted);">--</span>';
 
                 const pnl = periodData.pnl;
-                const returnPct = periodData.return_pct;
+                // Use return_pct if available, otherwise calculate from PnL (£1000 capital)
+                const returnPct = periodData.return_pct !== undefined
+                    ? periodData.return_pct
+                    : Math.round((pnl / 1000) * 1000) / 10;  // Calculate from PnL, round to 1 decimal
                 const sign = pnl >= 0 ? '+' : '';
                 const colorClass = pnl >= 0 ? 'success' : 'danger';
 
-                // Show both £ and % if return_pct available
-                if (returnPct !== undefined) {
-                    const pctSign = returnPct >= 0 ? '+' : '';
-                    return `<span class="${colorClass}">£${sign}${pnl.toFixed(0)}<br><small style="opacity: 0.7;">(${pctSign}${returnPct}%)</small></span>`;
-                }
-                return `<span class="${colorClass}">£${sign}${pnl.toFixed(0)}</span>`;
+                // Always show both £ and %
+                const pctSign = returnPct >= 0 ? '+' : '';
+                return `<span class="${colorClass}">£${sign}${pnl.toFixed(0)}<br><small style="opacity: 0.7;">(${pctSign}${returnPct.toFixed(1)}%)</small></span>`;
             }
 
             // Helper to format validated_at timestamp

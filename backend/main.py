@@ -2404,20 +2404,25 @@ async def get_autonomous_status():
 @app.post("/api/autonomous/toggle")
 async def toggle_autonomous_optimizer():
     """Toggle the autonomous optimizer on/off"""
-    global autonomous_optimizer_status, current_optimization_status
+    global autonomous_optimizer_status, current_optimization_status, unified_status
 
     if autonomous_optimizer_status["enabled"]:
         # Disable
         autonomous_optimizer_status["enabled"] = False
         autonomous_optimizer_status["auto_running"] = False
-        autonomous_optimizer_status["message"] = "Stopping..."
+        autonomous_optimizer_status["running"] = False
+        autonomous_optimizer_status["paused"] = False
+        autonomous_optimizer_status["message"] = "Stopped"
+
+        # Clear unified_status so Elite validation can run immediately
+        unified_status["running"] = False
 
         # Signal any running optimization to abort
         if current_optimization_status:
             current_optimization_status["abort"] = True
             print("[Autonomous Optimizer] Abort signal sent to running optimization")
 
-        return {"status": "disabled", "message": "Autonomous optimizer stopping..."}
+        return {"status": "disabled", "message": "Autonomous optimizer stopped"}
     else:
         # Enable
         autonomous_optimizer_status["enabled"] = True
@@ -2447,11 +2452,21 @@ async def start_autonomous():
 @app.post("/api/autonomous/stop")
 async def stop_autonomous():
     """Stop autonomous optimizer"""
-    global autonomous_optimizer_status
+    global autonomous_optimizer_status, current_optimization_status, unified_status
 
     autonomous_optimizer_status["enabled"] = False
     autonomous_optimizer_status["auto_running"] = False
+    autonomous_optimizer_status["running"] = False
+    autonomous_optimizer_status["paused"] = False
     autonomous_optimizer_status["message"] = "Stopped by user"
+
+    # Clear unified_status so Elite validation can run immediately
+    unified_status["running"] = False
+
+    # Signal any running optimization to abort
+    if current_optimization_status:
+        current_optimization_status["abort"] = True
+        print("[Autonomous Optimizer] Abort signal sent to running optimization")
 
     return {"status": "stopped", "message": "Autonomous optimizer stopped"}
 
@@ -3816,6 +3831,24 @@ async def start_autonomous_optimizer():
                 autonomous_optimizer_status["paused"] = True
                 autonomous_optimizer_status["message"] = "Paused - waiting for manual optimizer..."
                 await asyncio.sleep(2)  # Check more frequently
+
+            if not autonomous_optimizer_status["enabled"]:
+                break
+
+            autonomous_optimizer_status["paused"] = False
+
+            # === CHECK FOR PENDING ELITE STRATEGIES ===
+            # Auto-optimizer must NOT run if there are Elite strategies in the backlog
+            strategies = db.get_all_strategies()
+            pending_elite = len([s for s in strategies if s.get('elite_status') in [None, 'pending']])
+            while pending_elite > 0:
+                if not autonomous_optimizer_status["enabled"]:
+                    break
+                autonomous_optimizer_status["paused"] = True
+                autonomous_optimizer_status["message"] = f"⏸ Paused (elite backlog: {pending_elite})"
+                await asyncio.sleep(10)
+                strategies = db.get_all_strategies()
+                pending_elite = len([s for s in strategies if s.get('elite_status') in [None, 'pending']])
 
             if not autonomous_optimizer_status["enabled"]:
                 break
