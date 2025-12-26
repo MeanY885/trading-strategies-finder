@@ -1470,6 +1470,13 @@
                         No elite strategies found. Run validation to identify consistent strategies.
                     </div>
                 </div>
+
+                <!-- Data Last Updated -->
+                <div style="text-align: right; margin-top: 1rem; padding-top: 0.75rem; border-top: 1px solid var(--border-subtle);">
+                    <span style="color: var(--text-muted); font-size: 0.8rem;">
+                        Data last updated: <span id="eliteLastUpdated">--</span>
+                    </span>
+                </div>
             </div>
         </div><!-- End elite-tab -->
 
@@ -4922,6 +4929,12 @@
 
                 // Render table (show all validated strategies, not just elite)
                 await renderEliteTable(strategies, status);
+
+                // Update last updated timestamp
+                const now = new Date();
+                const timeStr = now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                const dateStr = now.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+                document.getElementById('eliteLastUpdated').textContent = `${dateStr} ${timeStr}`;
 
             } catch (error) {
                 console.error('Failed to load elite data:', error);
