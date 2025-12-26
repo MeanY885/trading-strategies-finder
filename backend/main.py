@@ -1729,13 +1729,13 @@ async def validate_strategy(request: ValidateStrategyRequest):
         # Convert timeframe to minutes for data limit check
         tf_minutes = int(timeframe.replace('m', '').replace('h', '')) if 'm' in timeframe else int(timeframe.replace('h', '')) * 60
 
-        # Data source limits (days)
+        # Data source limits (days) - Binance has extensive history for most pairs
         if data_source and 'yahoo' in data_source.lower():
             data_limits = {1: 7, 5: 60, 15: 60, 30: 60, 60: 730, 1440: 9999}
         else:
-            # Binance typically has more history
-            data_limits = {1: 365, 5: 365, 15: 365, 30: 365, 60: 730, 1440: 9999}
-        max_days = data_limits.get(tf_minutes, 60)
+            # Binance has 2+ years of history for major pairs via CCXT pagination
+            data_limits = {1: 730, 5: 730, 15: 730, 30: 730, 60: 1095, 1440: 9999}
+        max_days = data_limits.get(tf_minutes, 365)
 
         # Validation periods: name, months, days
         validation_periods = [
@@ -2628,12 +2628,13 @@ async def validate_all_strategies_for_elite():
             # Convert timeframe to minutes
             tf_minutes = int(timeframe.replace('m', '').replace('h', '')) if 'm' in timeframe else int(timeframe.replace('h', '')) * 60
 
-            # Data source limits (days)
+            # Data source limits (days) - Binance has extensive history for most pairs
             if data_source and 'yahoo' in data_source.lower():
                 data_limits = {1: 7, 5: 60, 15: 60, 30: 60, 60: 730, 1440: 9999}
             else:
-                data_limits = {1: 365, 5: 365, 15: 365, 30: 365, 60: 730, 1440: 9999}
-            max_days = data_limits.get(tf_minutes, 60)
+                # Binance has 2+ years of history for major pairs via CCXT pagination
+                data_limits = {1: 730, 5: 730, 15: 730, 30: 730, 60: 1095, 1440: 9999}
+            max_days = data_limits.get(tf_minutes, 365)
 
             # Original metrics for comparison
             original_metrics = {
