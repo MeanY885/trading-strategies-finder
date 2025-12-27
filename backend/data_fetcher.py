@@ -28,7 +28,7 @@ import asyncio
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta, timezone
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, Dict, Any
 from dataclasses import dataclass
 
 

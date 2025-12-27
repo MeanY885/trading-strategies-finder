@@ -16,9 +16,8 @@ import pandas as pd
 import numpy as np
 import pandas_ta as ta
 from typing import Dict, List, Optional, Callable, Tuple
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from datetime import datetime
-import multiprocessing as mp
 import os
 import psutil
 
@@ -341,19 +340,6 @@ class TradeResult:
     trade_duration_hours: float = 0.0  # Duration in hours (if time data available)
     mfe_capture_ratio: float = 0.0     # Actual P&L / Max Favorable Excursion (how much trend captured)
     exit_type: str = 'fixed_tp_sl'     # Exit strategy used: 'fixed_tp_sl', 'trailing_stop', 'indicator_exit'
-
-
-# Time periods for performance breakdown
-TIME_PERIODS = [
-    ('1d', 1),
-    ('3d', 3),
-    ('1w', 7),
-    ('2w', 14),
-    ('1m', 30),
-    ('3m', 90),
-    ('6m', 180),
-    ('1y', 365),
-]
 
 
 def _generate_period_buckets(earliest: datetime, latest: datetime) -> List[Tuple[str, datetime, datetime]]:

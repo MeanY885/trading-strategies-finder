@@ -6,15 +6,15 @@ import json
 import asyncio
 import concurrent.futures
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
 from pydantic import BaseModel
-from typing import Optional, List, Dict, Any
+from typing import Optional, List
 from collections import defaultdict
 import pandas as pd
 import io
@@ -29,8 +29,7 @@ print(f"[Startup] Thread pool initialized with {max_workers} workers (CPU cores 
 from data_fetcher import BinanceDataFetcher, YFinanceDataFetcher, KrakenDataFetcher
 from pinescript_generator import PineScriptGenerator
 from strategy_engine import (
-    run_strategy_finder, generate_pinescript, StrategyEngine,
-    TunedResult, STRATEGY_PARAM_MAP, DEFAULT_INDICATOR_PARAMS
+    run_strategy_finder, generate_pinescript, StrategyEngine, TunedResult
 )
 from strategy_database import get_strategy_db
 from exchange_rate_fetcher import preload_exchange_rates, get_exchange_fetcher, reset_exchange_fetcher
@@ -2383,7 +2382,7 @@ async def clear_comparison():
 # INDICATOR ENGINE COMPARISON - Compare TV Default vs pandas_ta vs mihakralj
 # =============================================================================
 
-from indicator_engines import MultiEngineCalculator, IndicatorEngine
+from indicator_engines import MultiEngineCalculator
 
 @app.get("/api/indicator-comparison")
 async def get_indicator_comparison():
@@ -2393,16 +2392,18 @@ async def get_indicator_comparison():
     - pandas_ta (current library)
     - mihakralj (mathematically rigorous)
 
-    Returns comparison for last 100 bars of loaded data.
+    Fetches fresh BTCUSDT data for comparison.
     """
-    global current_df
-
-    if current_df is None or len(current_df) == 0:
-        raise HTTPException(status_code=400, detail="No data loaded. Fetch data first.")
-
     try:
+        # Fetch fresh data for comparison
+        fetcher = BinanceDataFetcher()
+        df = await fetcher.fetch_ohlcv('BTCUSDT', 60, 1)  # 1 month of 1h data
+
+        if df is None or len(df) == 0:
+            raise HTTPException(status_code=500, detail="Failed to fetch data for comparison")
+
         # Use last 100 bars for comparison
-        df_sample = current_df.tail(100).copy()
+        df_sample = df.tail(100).copy()
         calc = MultiEngineCalculator(df_sample)
 
         # Get comparison summary

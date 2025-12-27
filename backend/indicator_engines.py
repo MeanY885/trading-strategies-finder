@@ -12,7 +12,6 @@ Use Native engine for in-app execution with pattern-based signals.
 import numpy as np
 import pandas as pd
 from typing import Dict, Tuple, List, Optional
-from dataclasses import dataclass
 from enum import Enum
 
 # Import TA-Lib
@@ -21,14 +20,6 @@ try:
     TALIB_AVAILABLE = True
 except ImportError:
     TALIB_AVAILABLE = False
-    print("Warning: TA-Lib not available. Native engine will fall back to pandas_ta.")
-
-# Fallback to pandas_ta if TA-Lib not available
-try:
-    import pandas_ta as pta
-    PANDAS_TA_AVAILABLE = True
-except ImportError:
-    PANDAS_TA_AVAILABLE = False
 
 
 class IndicatorEngine(Enum):
@@ -74,15 +65,6 @@ CANDLESTICK_PATTERNS = {
     'CDL_TASUKI_GAP': {'name': 'Tasuki Gap', 'type': 'neutral', 'func': 'CDLTASUKIGAP'},
     'CDL_GAP_THREE_METHODS': {'name': 'Gap Three Methods', 'type': 'neutral', 'func': 'CDLGAPSIDESIDEWHITE'},
 }
-
-
-@dataclass
-class IndicatorResult:
-    """Result from an indicator calculation with metadata"""
-    values: pd.Series
-    engine: IndicatorEngine
-    indicator_name: str
-    parameters: Dict
 
 
 class MultiEngineCalculator:
