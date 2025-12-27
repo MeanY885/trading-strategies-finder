@@ -19,9 +19,12 @@ import pandas as pd
 import io
 import queue
 import threading
+import os
 
-# Thread pool for running blocking optimization
-thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+# Thread pool for running blocking optimization - use all available CPU cores
+max_workers = os.cpu_count() or 4
+thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
+print(f"[Startup] Thread pool initialized with {max_workers} workers (CPU cores detected)")
 
 from data_fetcher import BinanceDataFetcher, YFinanceDataFetcher, KrakenDataFetcher
 from pinescript_generator import PineScriptGenerator
@@ -277,6 +280,40 @@ async def get_status():
     return {
         "optimization": unified_status,
         "data": data_status
+    }
+
+
+@app.get("/api/system")
+async def get_system_resources():
+    """Get detected system resources (CPU, memory, workers)"""
+    from strategy_engine import get_system_resources, get_optimal_workers, OPTIMAL_WORKERS, SYSTEM_RESOURCES
+
+    # Get fresh readings
+    current_resources = get_system_resources()
+    optimal, details = get_optimal_workers()
+
+    return {
+        "detected": {
+            "cpu_cores_logical": current_resources['cpu_cores'],
+            "cpu_cores_physical": current_resources['cpu_cores_physical'],
+            "memory_total_gb": round(current_resources['memory_gb'], 2),
+            "memory_available_gb": round(current_resources['memory_available_gb'], 2),
+            "memory_percent_used": current_resources.get('memory_percent_used', 0),
+            "cpu_percent": current_resources.get('cpu_percent', 0),
+            "is_container": current_resources['is_container'],
+            "container_memory_limit_gb": current_resources.get('container_memory_limit_gb')
+        },
+        "workers": {
+            "optimal": optimal,
+            "cpu_based": details['cpu_based_workers'],
+            "memory_based": details['memory_based_workers'],
+            "mem_per_worker_gb": details['mem_per_worker_gb'],
+            "usable_memory_gb": round(details['usable_memory_gb'], 2)
+        },
+        "startup_config": {
+            "optimal_workers": OPTIMAL_WORKERS,
+            "thread_pool_workers": max_workers
+        }
     }
 
 

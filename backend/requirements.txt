@@ -14,3 +14,6 @@ ccxt>=4.0.0
 # Technical Analysis
 TA-Lib
 pandas-ta
+
+# System Resources
+psutil>=5.9.0

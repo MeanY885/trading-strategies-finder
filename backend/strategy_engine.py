@@ -21,6 +21,7 @@ from datetime import datetime
 import multiprocessing as mp
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import os
+import psutil
 
 # Import database
 try:
@@ -216,91 +217,97 @@ class PeriodMetrics:
     max_drawdown_pct: float = 0.0  # Max drawdown % in period
 
 
-# Auto-scaling configuration
+# Auto-scaling configuration - USE ALL AVAILABLE RESOURCES
 def get_system_resources() -> Dict:
-    """Detect system resources (CPU, memory) for auto-scaling."""
+    """
+    Detect system resources (CPU, memory) using psutil for cross-platform support.
+    Works on Linux, macOS, Windows, and inside Docker containers.
+    """
     resources = {
-        'cpu_cores': os.cpu_count() or 4,
-        'memory_gb': 4.0,  # Default fallback
+        'cpu_cores': psutil.cpu_count(logical=True) or os.cpu_count() or 4,
+        'cpu_cores_physical': psutil.cpu_count(logical=False) or 4,
+        'memory_gb': 4.0,
         'memory_available_gb': 4.0,
         'container_memory_limit_gb': None,
-        'is_container': False
+        'is_container': False,
+        'cpu_percent': 0.0
     }
 
-    # Try to get memory info
     try:
-        # Check if running in Docker (cgroup memory limit)
-        cgroup_limit_path = '/sys/fs/cgroup/memory/memory.limit_in_bytes'
-        cgroup_v2_path = '/sys/fs/cgroup/memory.max'
+        # Get memory info using psutil (cross-platform)
+        mem = psutil.virtual_memory()
+        resources['memory_gb'] = mem.total / (1024**3)
+        resources['memory_available_gb'] = mem.available / (1024**3)
+        resources['memory_percent_used'] = mem.percent
 
-        if os.path.exists(cgroup_limit_path):
-            with open(cgroup_limit_path, 'r') as f:
-                limit_bytes = int(f.read().strip())
-                # If limit is very high (>100TB), it's effectively unlimited
-                if limit_bytes < 100 * 1024**4:
-                    resources['container_memory_limit_gb'] = limit_bytes / (1024**3)
-                    resources['is_container'] = True
-        elif os.path.exists(cgroup_v2_path):
-            with open(cgroup_v2_path, 'r') as f:
-                content = f.read().strip()
-                if content != 'max':
-                    limit_bytes = int(content)
-                    resources['container_memory_limit_gb'] = limit_bytes / (1024**3)
-                    resources['is_container'] = True
+        # Get current CPU usage
+        resources['cpu_percent'] = psutil.cpu_percent(interval=0.1)
 
-        # Get system memory from /proc/meminfo (Linux)
-        if os.path.exists('/proc/meminfo'):
-            with open('/proc/meminfo', 'r') as f:
-                for line in f:
-                    if line.startswith('MemTotal:'):
-                        mem_kb = int(line.split()[1])
-                        resources['memory_gb'] = mem_kb / (1024**2)
-                    elif line.startswith('MemAvailable:'):
-                        mem_kb = int(line.split()[1])
-                        resources['memory_available_gb'] = mem_kb / (1024**2)
+        # Check for Docker/container memory limits (Linux cgroups)
+        cgroup_paths = [
+            '/sys/fs/cgroup/memory/memory.limit_in_bytes',  # cgroup v1
+            '/sys/fs/cgroup/memory.max',  # cgroup v2
+        ]
+        for cgroup_path in cgroup_paths:
+            if os.path.exists(cgroup_path):
+                try:
+                    with open(cgroup_path, 'r') as f:
+                        content = f.read().strip()
+                        if content != 'max':
+                            limit_bytes = int(content)
+                            # If limit is less than host memory, we're in a container
+                            if limit_bytes < mem.total:
+                                resources['container_memory_limit_gb'] = limit_bytes / (1024**3)
+                                resources['is_container'] = True
+                                break
+                except (ValueError, IOError):
+                    pass
+
     except Exception as e:
-        print(f"Warning: Could not detect memory: {e}")
+        print(f"Warning: Could not detect system resources: {e}")
 
     return resources
 
 
 def get_optimal_workers() -> Tuple[int, Dict]:
     """
-    Determine optimal number of workers based on CPU and memory.
+    Determine optimal number of workers - USE ALL AVAILABLE RESOURCES.
 
-    Rules:
-    - Each worker needs ~500MB RAM for backtesting
-    - Use 75% of CPU cores
-    - Cap at available memory / 500MB
-    - Minimum 2 workers, maximum 16
+    Aggressive scaling for maximum performance:
+    - Use 100% of logical CPU cores (hyperthreading helps for I/O-bound work)
+    - Each worker needs ~300MB RAM (backtesting is mostly CPU-bound)
+    - No artificial caps - use what's available
+    - Minimum 2 workers for parallelism
     """
     resources = get_system_resources()
 
-    # CPU-based limit (75% of cores)
-    cpu_workers = max(2, int(resources['cpu_cores'] * 0.75))
+    # Use ALL logical CPU cores (including hyperthreading)
+    cpu_workers = resources['cpu_cores']
 
-    # Memory-based limit (~500MB per worker)
-    mem_per_worker_gb = 0.5
+    # Memory-based limit (~300MB per worker - backtesting is CPU-bound, not memory-heavy)
+    mem_per_worker_gb = 0.3
 
-    # Use container limit if available, otherwise system memory
+    # Use container limit if available, otherwise system available memory
     if resources['container_memory_limit_gb']:
         available_mem = resources['container_memory_limit_gb']
     else:
         available_mem = resources['memory_available_gb']
 
-    # Reserve 1GB for OS/system
-    usable_mem = max(0.5, available_mem - 1.0)
+    # Reserve 2GB for OS/system, use the rest
+    usable_mem = max(1.0, available_mem - 2.0)
     mem_workers = max(2, int(usable_mem / mem_per_worker_gb))
 
     # Take the minimum of CPU and memory limits
     optimal = min(cpu_workers, mem_workers)
 
-    # Cap between 2 and 16
-    optimal = max(2, min(16, optimal))
+    # Minimum 2 workers, NO MAXIMUM CAP - use all available resources
+    optimal = max(2, optimal)
 
     resources['cpu_based_workers'] = cpu_workers
     resources['memory_based_workers'] = mem_workers
     resources['optimal_workers'] = optimal
+    resources['mem_per_worker_gb'] = mem_per_worker_gb
+    resources['usable_memory_gb'] = usable_mem
 
     return optimal, resources
 
