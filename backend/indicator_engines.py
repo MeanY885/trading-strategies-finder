@@ -788,6 +788,50 @@ class MultiEngineCalculator:
         return (tp * volume).cumsum() / volume.cumsum()
 
     # =========================================================================
+    # VWMA (Volume Weighted Moving Average)
+    # =========================================================================
+
+    def vwma_tradingview(self, length: int = 20) -> pd.Series:
+        """
+        Volume Weighted Moving Average - matches ta.vwma()
+        VWMA = SMA(close * volume, length) / SMA(volume, length)
+
+        Weights each bar's price by its volume - high volume bars have more influence.
+        """
+        close = self.df['close']
+        volume = self.df.get('volume', pd.Series(1, index=self.df.index))
+
+        # VWMA formula: SMA(close * volume) / SMA(volume)
+        return (close * volume).rolling(window=length).mean() / volume.rolling(window=length).mean()
+
+    # =========================================================================
+    # OBV (On Balance Volume)
+    # =========================================================================
+
+    def obv_tradingview(self) -> pd.Series:
+        """
+        On Balance Volume - matches ta.obv()
+        OBV adds volume on up days and subtracts on down days.
+        """
+        close = self.df['close']
+        volume = self.df.get('volume', pd.Series(1, index=self.df.index))
+
+        # Calculate OBV: +volume if close > prev, -volume if close < prev, 0 if unchanged
+        close_diff = close.diff()
+        obv_change = np.where(close_diff > 0, volume,
+                     np.where(close_diff < 0, -volume, 0))
+        return pd.Series(obv_change, index=self.df.index).cumsum()
+
+    def obv_native(self) -> pd.Series:
+        """OBV using TA-Lib if available, otherwise pandas calculation"""
+        if TALIB_AVAILABLE:
+            return pd.Series(
+                talib.OBV(self.df['close'].values, self.df['volume'].values),
+                index=self.df.index
+            )
+        return self.obv_tradingview()
+
+    # =========================================================================
     # CANDLESTICK PATTERNS - Native engine only
     # =========================================================================
 

@@ -637,6 +637,7 @@ inDateRange() => not useDateRange or (time >= fromDate and time <= toDate)
         st_atr = p('supertrend_atr')
         adx_len = p('adx_length')
         atr_len = p('atr_length')
+        vwma_length = p('vwma_length') if indicator_params and 'vwma_length' in indicator_params else 20
 
         entry_conditions = {
             # === MOMENTUM ===
@@ -707,6 +708,21 @@ touchedAbove = high > vwapValue
 closedAbove = close > vwapValue
 closedBelow = close < vwapValue
 entrySignal = {"touchedBelow and closedAbove" if is_long else "touchedAbove and closedBelow"}''',
+
+            'vwap_cross': f'''// VWAP Cross Entry
+vwapValue = ta.vwap(hlc3)
+entrySignal = {"ta.crossover(close, vwapValue)" if is_long else "ta.crossunder(close, vwapValue)"}''',
+
+            'vwma_cross': f'''// VWMA Cross Entry
+vwmaLength = {vwma_length}
+vwmaValue = ta.vwma(close, vwmaLength)
+entrySignal = {"ta.crossover(close, vwmaValue)" if is_long else "ta.crossunder(close, vwmaValue)"}''',
+
+            'vwma_trend': f'''// VWMA Trend Entry
+vwmaLength = {vwma_length}
+vwmaValue = ta.vwma(close, vwmaLength)
+vwmaSlope = vwmaValue - vwmaValue[1]
+entrySignal = {"vwmaSlope > 0 and vwmaSlope[1] <= 0" if is_long else "vwmaSlope < 0 and vwmaSlope[1] >= 0"}''',
 
             # === TREND ===
             'ema_cross': f'''// EMA Cross Entry
@@ -947,6 +963,21 @@ touchedAbove = high > vwapValue
 closedAbove = close > vwapValue
 closedBelow = close < vwapValue
 entrySignal = {"touchedBelow and closedAbove" if is_long else "touchedAbove and closedBelow"}''',
+
+            'vwap_cross': f'''// VWAP Cross Entry
+vwapValue = ta.vwap(hlc3)
+entrySignal = {"ta.crossover(close, vwapValue)" if is_long else "ta.crossunder(close, vwapValue)"}''',
+
+            'vwma_cross': f'''// VWMA Cross Entry
+vwmaLength = {vwma_length}
+vwmaValue = ta.vwma(close, vwmaLength)
+entrySignal = {"ta.crossover(close, vwmaValue)" if is_long else "ta.crossunder(close, vwmaValue)"}''',
+
+            'vwma_trend': f'''// VWMA Trend Entry
+vwmaLength = {vwma_length}
+vwmaValue = ta.vwma(close, vwmaLength)
+vwmaSlope = vwmaValue - vwmaValue[1]
+entrySignal = {"vwmaSlope > 0 and vwmaSlope[1] <= 0" if is_long else "vwmaSlope < 0 and vwmaSlope[1] >= 0"}''',
 
             # === TREND ===
             'ema_cross': f'''// EMA 9/21 Cross Entry (mihakralj warmup-compensated)
@@ -1287,6 +1318,24 @@ closedAbove = close > vwapValue
 closedBelow = close < vwapValue
 longEntrySignal = touchedBelow and closedAbove
 shortEntrySignal = touchedAbove and closedBelow''',
+
+            'vwap_cross': f'''// VWAP Cross - BIDIRECTIONAL
+vwapValue = ta.vwap(hlc3)
+longEntrySignal = ta.crossover(close, vwapValue)
+shortEntrySignal = ta.crossunder(close, vwapValue)''',
+
+            'vwma_cross': f'''// VWMA Cross - BIDIRECTIONAL
+vwmaLength = {vwma_length}
+vwmaValue = ta.vwma(close, vwmaLength)
+longEntrySignal = ta.crossover(close, vwmaValue)
+shortEntrySignal = ta.crossunder(close, vwmaValue)''',
+
+            'vwma_trend': f'''// VWMA Trend - BIDIRECTIONAL
+vwmaLength = {vwma_length}
+vwmaValue = ta.vwma(close, vwmaLength)
+vwmaSlope = vwmaValue - vwmaValue[1]
+longEntrySignal = vwmaSlope > 0 and vwmaSlope[1] <= 0
+shortEntrySignal = vwmaSlope < 0 and vwmaSlope[1] >= 0''',
 
             'bb_squeeze_breakout': f'''// BB Squeeze Breakout - BIDIRECTIONAL
 [bbMiddle, bbUpper, bbLower] = ta.bb(close, {bb_len}, {bb_mult})

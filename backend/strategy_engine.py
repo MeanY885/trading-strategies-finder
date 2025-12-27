@@ -1211,6 +1211,13 @@ DEFAULT_INDICATOR_PARAMS = {
     'linreg_length': 50,
     'mfi_length': 14,
     'cmf_length': 20,
+    'vwma_length': 20,
+    # PSAR params
+    'psar_start': 0.02,
+    'psar_increment': 0.02,
+    'psar_maximum': 0.2,
+    # OBV params
+    'obv_lookback': 20,
 }
 
 # Strategy to tunable parameters mapping
@@ -1336,8 +1343,12 @@ STRATEGY_PARAM_MAP = {
         'ranges': {'adx_length': [10, 14, 20, 25]},
     },
     'psar_reversal': {
-        'params': [],  # PSAR uses fixed params
-        'ranges': {},
+        'params': ['psar_start', 'psar_increment', 'psar_maximum'],
+        'ranges': {
+            'psar_start': [0.01, 0.02, 0.03],
+            'psar_increment': [0.01, 0.02, 0.03],
+            'psar_maximum': [0.1, 0.2, 0.3],
+        },
     },
     'aroon_cross': {
         'params': ['aroon_length'],
@@ -1586,13 +1597,27 @@ STRATEGY_PARAM_MAP = {
         'params': [],  # VWAP has no params
         'ranges': {},
     },
+    'vwma_cross': {
+        'params': ['vwma_length'],
+        'ranges': {
+            'vwma_length': [10, 14, 20, 30, 50],
+        },
+    },
+    'vwma_trend': {
+        'params': ['vwma_length'],
+        'ranges': {
+            'vwma_length': [10, 14, 20, 30, 50],
+        },
+    },
     'pivot_bounce': {
         'params': [],  # Pivot has no params
         'ranges': {},
     },
     'obv_trend': {
-        'params': [],  # OBV has no params
-        'ranges': {},
+        'params': ['obv_lookback'],
+        'ranges': {
+            'obv_lookback': [10, 14, 20, 30],
+        },
     },
     'elder_ray': {
         'params': [],  # Uses EMA 13 (fixed)
@@ -2160,6 +2185,20 @@ class StrategyEngine:
             'description': 'Price crosses VWAP'
         },
 
+        # === VWMA STRATEGIES ===
+        'vwma_cross': {
+            'name': 'VWMA Cross',
+            'category': 'Trend Following',
+            'description': 'Price crosses VWMA',
+            'pool': 'indicator_exit'
+        },
+        'vwma_trend': {
+            'name': 'VWMA Trend',
+            'category': 'Trend Following',
+            'description': 'VWMA direction change',
+            'pool': 'indicator_exit'
+        },
+
         # === PIVOT POINTS ===
         'pivot_bounce': {
             'name': 'Pivot Point Bounce',
@@ -2599,8 +2638,10 @@ class StrategyEngine:
             # VWAP - only works with volume data
             if 'volume' in df.columns and df['volume'].sum() > 0:
                 df['vwap'] = calc.vwap_tradingview()
+                df['obv'] = calc.obv_tradingview()
             else:
                 df['vwap'] = df['sma_20']  # Fallback to SMA if no volume
+                df['obv'] = pd.Series(0, index=df.index)
 
         elif HAS_MULTI_ENGINE and engine == 'native':
             # Use Native (TA-Lib) implementations
@@ -2682,11 +2723,13 @@ class StrategyEngine:
             # Choppiness Index
             df['chop'] = ta.chop(df['high'], df['low'], df['close'], length=14)
 
-            # VWAP
+            # VWAP and OBV
             if 'volume' in df.columns and df['volume'].sum() > 0:
                 df['vwap'] = ta.vwap(df['high'], df['low'], df['close'], df['volume'])
+                df['obv'] = calc.obv_native()
             else:
                 df['vwap'] = df['sma_20']
+                df['obv'] = pd.Series(0, index=df.index)
 
         else:
             # Use pandas_ta for all additional indicators
@@ -2784,8 +2827,15 @@ class StrategyEngine:
                         df['vwap'] = df['sma_20']  # Fallback to SMA
                 except Exception:
                     df['vwap'] = df['sma_20']  # Fallback to SMA on error
+
+                # OBV
+                close_diff = df['close'].diff()
+                obv_change = np.where(close_diff > 0, df['volume'],
+                             np.where(close_diff < 0, -df['volume'], 0))
+                df['obv'] = pd.Series(obv_change, index=df.index).cumsum()
             else:
                 df['vwap'] = df['sma_20']  # Fallback to SMA if no volume
+                df['obv'] = pd.Series(0, index=df.index)
 
         # === McGINLEY DYNAMIC ===
         # Pre-calculate for mcginley_cross, mcginley_trend strategies and indicator exits
@@ -3422,21 +3472,25 @@ class StrategyEngine:
         # === OBV (On Balance Volume) ===
         elif strategy == 'obv_trend':
             # OBV makes new high/low with price
-            if 'obv' not in df.columns:
+            # Use pre-calculated OBV column if available, else calculate inline
+            if 'obv' in df.columns:
+                obv = safe_col('obv')
+            else:
                 obv_change = np.where(df['close'] > df['close'].shift(1), df['volume'],
                              np.where(df['close'] < df['close'].shift(1), -df['volume'], 0))
-                df['obv'] = pd.Series(obv_change, index=df.index).cumsum()
-            lookback = 20
-            obv_high = df['obv'].rolling(lookback).max()
-            obv_low = df['obv'].rolling(lookback).min()
+                obv = pd.Series(obv_change, index=df.index).cumsum()
+            # Use obv_lookback from column if available (for tuning), else default
+            lookback = int(df.get('obv_lookback', pd.Series(20)).iloc[0]) if 'obv_lookback' in df.columns else 20
+            obv_high = obv.rolling(lookback).max()
+            obv_low = obv.rolling(lookback).min()
             price_high = df['close'].rolling(lookback).max()
             price_low = df['close'].rolling(lookback).min()
             if direction == 'long':
                 # OBV new high with price near highs
-                return safe_bool((df['obv'] == obv_high) & (df['close'] >= price_high * 0.98))
+                return safe_bool((obv == obv_high) & (df['close'] >= price_high * 0.98))
             else:
                 # OBV new low with price near lows
-                return safe_bool((df['obv'] == obv_low) & (df['close'] <= price_low * 1.02))
+                return safe_bool((obv == obv_low) & (df['close'] <= price_low * 1.02))
 
         # === MFI (Money Flow Index) ===
         elif strategy == 'mfi_extreme':
@@ -3511,6 +3565,37 @@ class StrategyEngine:
                 return safe_bool((df['close'] > df['vwap']) & (df['close'].shift(1) <= df['vwap'].shift(1)))
             else:
                 return safe_bool((df['close'] < df['vwap']) & (df['close'].shift(1) >= df['vwap'].shift(1)))
+
+        # === VWMA CROSS ===
+        elif strategy == 'vwma_cross':
+            # Use pre-calculated VWMA column if available (for tuning), else calculate with default
+            if 'vwma' in df.columns:
+                vwma = safe_col('vwma')
+            else:
+                vwma_length = 20  # Default VWMA length
+                # VWMA = SMA(close * volume) / SMA(volume)
+                vwma = (df['close'] * df['volume']).rolling(window=vwma_length).mean() / df['volume'].rolling(window=vwma_length).mean()
+            if direction == 'long':
+                return safe_bool((df['close'] > vwma) & (df['close'].shift(1) <= vwma.shift(1)))
+            else:
+                return safe_bool((df['close'] < vwma) & (df['close'].shift(1) >= vwma.shift(1)))
+
+        # === VWMA TREND ===
+        elif strategy == 'vwma_trend':
+            # Use pre-calculated VWMA column if available (for tuning), else calculate with default
+            if 'vwma' in df.columns:
+                vwma = safe_col('vwma')
+            else:
+                vwma_length = 20  # Default VWMA length
+                # VWMA = SMA(close * volume) / SMA(volume)
+                vwma = (df['close'] * df['volume']).rolling(window=vwma_length).mean() / df['volume'].rolling(window=vwma_length).mean()
+            vwma_slope = vwma - vwma.shift(1)
+            if direction == 'long':
+                # Long when VWMA starts sloping up
+                return safe_bool((vwma_slope > 0) & (vwma_slope.shift(1) <= 0))
+            else:
+                # Short when VWMA starts sloping down
+                return safe_bool((vwma_slope < 0) & (vwma_slope.shift(1) >= 0))
 
         # === PIVOT BOUNCE ===
         elif strategy == 'pivot_bounce':
@@ -4874,6 +4959,39 @@ class StrategyEngine:
                 if engine == 'tradingview':
                     df['chop'] = calc.chop_tradingview(length)
 
+            # VWMA (Volume Weighted Moving Average)
+            if 'vwma_length' in params:
+                length = params['vwma_length']
+                if engine == 'tradingview':
+                    df['vwma'] = calc.vwma_tradingview(length)
+                else:
+                    # VWMA = SMA(close * volume) / SMA(volume)
+                    df['vwma'] = (df['close'] * df['volume']).rolling(window=length).mean() / df['volume'].rolling(window=length).mean()
+
+            # Parabolic SAR
+            if any(k in params for k in ['psar_start', 'psar_increment', 'psar_maximum']):
+                start = params.get('psar_start', DEFAULT_INDICATOR_PARAMS['psar_start'])
+                increment = params.get('psar_increment', DEFAULT_INDICATOR_PARAMS['psar_increment'])
+                maximum = params.get('psar_maximum', DEFAULT_INDICATOR_PARAMS['psar_maximum'])
+                if engine == 'tradingview':
+                    df['psar'] = calc.psar_tradingview(start, increment, maximum)
+                else:
+                    # Use pandas_ta for PSAR as TA-Lib has no equivalent
+                    psar = ta.psar(df['high'], df['low'], df['close'], af0=start, af=increment, max_af=maximum)
+                    psar_l = [c for c in psar.columns if 'PSARl' in c]
+                    psar_s = [c for c in psar.columns if 'PSARs' in c]
+                    if psar_l and psar_s:
+                        df['psar'] = psar[psar_l[0]].fillna(psar[psar_s[0]])
+                    else:
+                        df['psar'] = psar.iloc[:, 0]
+
+            # OBV (On Balance Volume) - recalculate if lookback changes
+            if 'obv_lookback' in params:
+                if engine == 'tradingview':
+                    df['obv'] = calc.obv_tradingview()
+                else:
+                    df['obv'] = calc.obv_native()
+
         else:
             # Fallback to pandas_ta
             if 'rsi_length' in params:
@@ -4932,9 +5050,39 @@ class StrategyEngine:
                 df['macd_signal'] = macd[macd_signal_col]
                 df['macd_hist'] = macd[macd_hist_col]
 
+            # VWMA (Volume Weighted Moving Average)
+            if 'vwma_length' in params:
+                length = params['vwma_length']
+                # VWMA = SMA(close * volume) / SMA(volume)
+                df['vwma'] = (df['close'] * df['volume']).rolling(window=length).mean() / df['volume'].rolling(window=length).mean()
+
+            # Parabolic SAR
+            if any(k in params for k in ['psar_start', 'psar_increment', 'psar_maximum']):
+                start = params.get('psar_start', DEFAULT_INDICATOR_PARAMS['psar_start'])
+                increment = params.get('psar_increment', DEFAULT_INDICATOR_PARAMS['psar_increment'])
+                maximum = params.get('psar_maximum', DEFAULT_INDICATOR_PARAMS['psar_maximum'])
+                psar = ta.psar(df['high'], df['low'], df['close'], af0=start, af=increment, max_af=maximum)
+                psar_l = [c for c in psar.columns if 'PSARl' in c]
+                psar_s = [c for c in psar.columns if 'PSARs' in c]
+                if psar_l and psar_s:
+                    df['psar'] = psar[psar_l[0]].fillna(psar[psar_s[0]])
+                else:
+                    df['psar'] = psar.iloc[:, 0]
+
+            # OBV (On Balance Volume)
+            if 'obv_lookback' in params:
+                close_diff = df['close'].diff()
+                obv_change = np.where(close_diff > 0, df['volume'],
+                             np.where(close_diff < 0, -df['volume'], 0))
+                df['obv'] = pd.Series(obv_change, index=df.index).cumsum()
+
         # Store non-indicator parameters as constant columns for signal functions
         if 'consecutive_bars' in params:
             df['consecutive_bars'] = params['consecutive_bars']
+
+        # Store OBV lookback for signal function
+        if 'obv_lookback' in params:
+            df['obv_lookback'] = params['obv_lookback']
 
         # Sanitize all indicator columns to prevent None comparison errors
         self._sanitize_df(df)
@@ -4957,7 +5105,7 @@ class StrategyEngine:
             'adx', 'di_plus', 'di_minus',
             'aroon_up', 'aroon_down', 'aroon_osc',
             'supertrend', 'supertrend_dir',
-            'psar', 'vwap',
+            'psar', 'vwap', 'vwma', 'obv',
             'kc_mid', 'kc_upper', 'kc_lower',
             'dc_mid', 'dc_upper', 'dc_lower',
             'tenkan', 'kijun', 'senkou_a', 'senkou_b',
