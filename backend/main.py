@@ -15,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
+from collections import defaultdict
 import pandas as pd
 import io
 import queue
@@ -2553,17 +2554,33 @@ async def get_elite_status():
 
 @app.get("/api/elite/strategies")
 async def get_elite_strategies():
-    """Return all validated strategies, sorted by elite_score descending"""
+    """Return top 10 validated strategies per pair/timeframe, sorted by elite_score descending"""
     if not HAS_DATABASE:
         raise HTTPException(status_code=503, detail="Database not available")
 
     try:
         db = get_strategy_db()
         strategies = db.get_all_strategies()
-        # Filter validated (not pending) and sort by score descending
+        # Filter validated (not pending)
         validated = [s for s in strategies if s.get('elite_status') not in [None, 'pending']]
-        validated.sort(key=lambda x: x.get('elite_score', 0), reverse=True)
-        return validated
+
+        # Group by (symbol, timeframe) and take top 10 from each
+        by_market = defaultdict(list)
+        for s in validated:
+            symbol = s.get('symbol', 'unknown')
+            timeframe = s.get('timeframe', 'unknown')
+            key = (symbol, timeframe)
+            by_market[key].append(s)
+
+        # Sort each group by elite_score and take top 10
+        result = []
+        for market, group in by_market.items():
+            group.sort(key=lambda x: x.get('elite_score', 0), reverse=True)
+            result.extend(group[:10])  # Top 10 per pair/timeframe
+
+        # Final sort by elite_score for display
+        result.sort(key=lambda x: x.get('elite_score', 0), reverse=True)
+        return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
