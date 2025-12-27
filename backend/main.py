@@ -1682,12 +1682,11 @@ async def get_filter_options():
 
 @app.get("/api/db/strategies")
 async def get_saved_strategies(
-    limit: int = 10,
     symbol: str = None,
     timeframe: str = None,
     min_win_rate: float = 0.0
 ):
-    """Get top strategies from database, limited to top N per pair/timeframe."""
+    """Get top 10 strategies per pair/timeframe from database."""
     if not HAS_DATABASE:
         raise HTTPException(status_code=503, detail="Database not available")
 
@@ -1702,7 +1701,7 @@ async def get_saved_strategies(
             min_win_rate=min_win_rate
         )
 
-        # Group by (symbol, timeframe) and take top N from each
+        # Group by (symbol, timeframe) and take top 10 from each
         by_market = defaultdict(list)
         for s in all_strategies:
             sym = s.get('symbol', 'unknown')
@@ -1710,11 +1709,11 @@ async def get_saved_strategies(
             key = (sym, tf)
             by_market[key].append(s)
 
-        # Sort each group by composite_score and take top N
+        # Sort each group by composite_score and take top 10
         result = []
         for market, group in by_market.items():
             group.sort(key=lambda x: x.get('composite_score', 0) or 0, reverse=True)
-            result.extend(group[:limit])  # Top N per pair/timeframe
+            result.extend(group[:10])  # Always top 10 per pair/timeframe
 
         # Final sort by composite_score for display
         result.sort(key=lambda x: x.get('composite_score', 0) or 0, reverse=True)
