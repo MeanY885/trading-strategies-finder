@@ -458,70 +458,8 @@ class BinanceDataFetcher:
         return pd.DataFrame(columns=["time", "open", "high", "low", "close", "volume"])
 
 
-# Factory function for backward compatibility
-def get_fetcher(source: str = "binance", status_callback=None):
-    """
-    Get a data fetcher instance.
-
-    Args:
-        source: Ignored (always uses Binance)
-        status_callback: Function for status updates
-
-    Returns:
-        BinanceDataFetcher instance
-    """
-    return BinanceDataFetcher(status_callback=status_callback)
-
-
-def get_optimal_fetcher(pair: str, interval_minutes: int, months: float, status_callback=None):
-    """
-    Get the optimal fetcher for a given configuration.
-
-    Args:
-        pair: Trading pair
-        interval_minutes: Candle interval
-        months: Historical period
-        status_callback: Function for status updates
-
-    Returns:
-        Tuple of (BinanceDataFetcher, "binance")
-    """
-    return BinanceDataFetcher(status_callback=status_callback), "binance"
-
-
-# Backward compatibility aliases
+# Backward compatibility aliases (deprecated - use BinanceDataFetcher directly)
 CCXTDataFetcher = BinanceDataFetcher
 KrakenDataFetcher = BinanceDataFetcher
 CryptoCompareDataFetcher = BinanceDataFetcher
 YFinanceDataFetcher = BinanceDataFetcher
-
-
-async def test_fetcher():
-    """Test the data fetcher"""
-    print("=" * 60)
-    print("Testing Binance Data Fetcher (CCXT)")
-    print("=" * 60)
-
-    fetcher = BinanceDataFetcher()
-
-    # Test BTC/USDT
-    print("\n1. Fetching BTC/USDT @ 15m, 1 month...")
-    df = await fetcher.fetch_ohlcv("BTCUSDT", 15, 1)
-    print(f"   Candles: {len(df)}")
-    print(f"   TradingView: {fetcher.get_tradingview_symbol('BTCUSDT')}")
-
-    # Validate
-    result = fetcher.validate_data(df, 15, 1)
-    print(f"   Validation: {result.message}")
-
-    if len(df) > 0:
-        print(f"\n   Sample data:")
-        print(df.head(3).to_string())
-        print(f"\n   Data types:")
-        print(df.dtypes)
-
-    print("\n" + "=" * 60)
-
-
-if __name__ == "__main__":
-    asyncio.run(test_fetcher())

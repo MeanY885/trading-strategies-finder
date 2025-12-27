@@ -19,7 +19,6 @@ import pandas as pd
 import io
 import queue
 import threading
-import os
 
 # Thread pool for running blocking optimization - use all available CPU cores
 max_workers = os.cpu_count() or 4
