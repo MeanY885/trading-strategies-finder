@@ -38,13 +38,288 @@ except ImportError:
 
 
 @dataclass
+class ExitConfig:
+    """
+    Configuration for exit strategy - supports both TP/SL and indicator-based exits.
+
+    Exit Types:
+    - 'fixed_tp_sl': Traditional fixed TP/SL percentages (current behavior)
+    - 'trailing_stop': ATR-based trailing stop that ratchets with price
+    - 'indicator_exit': Exit on indicator signal (trend reversal)
+    """
+    exit_type: str = 'fixed_tp_sl'  # 'fixed_tp_sl', 'trailing_stop', 'indicator_exit'
+
+    # For fixed_tp_sl
+    tp_percent: float = 2.0
+    sl_percent: float = 1.0
+
+    # For trailing_stop
+    trailing_atr_mult: float = 2.0      # ATR multiplier for trailing distance
+    use_protection_sl: bool = True      # Wide protection SL even with trailing
+    protection_sl_atr_mult: float = 4.0 # Protection SL distance (wider than trailing)
+
+    # For indicator_exit
+    exit_indicator: str = None          # 'supertrend', 'ema_cross', 'psar', 'mcginley'
+    exit_indicator_params: Dict = None  # Indicator-specific parameters
+
+    # Pool classification
+    pool: str = 'tp_sl'                 # 'tp_sl' or 'indicator_exit'
+
+
+@dataclass
+class TradingCosts:
+    """
+    Comprehensive trading costs configuration for realistic backtesting.
+
+    These costs filter out marginal strategies that only work with zero costs
+    and provide more realistic P&L expectations.
+    """
+    # Commission costs (per trade, applied to each entry and exit)
+    commission_pct: float = 0.1         # 0.1% per trade (Binance spot default)
+
+    # Spread costs (bid-ask spread, applied to entries/exits)
+    spread_pct: float = 0.05            # 0.05% spread assumption
+
+    # Slippage (market impact, worse fills than expected)
+    slippage_pct: float = 0.03          # 0.03% slippage estimate
+
+    # Enable/disable cost components
+    apply_commission: bool = True
+    apply_spread: bool = True
+    apply_slippage: bool = True
+
+    @property
+    def total_entry_cost_pct(self) -> float:
+        """Total cost applied at entry (worse entry price)"""
+        cost = 0.0
+        if self.apply_commission:
+            cost += self.commission_pct
+        if self.apply_spread:
+            cost += self.spread_pct / 2  # Half spread at entry
+        if self.apply_slippage:
+            cost += self.slippage_pct
+        return cost
+
+    @property
+    def total_exit_cost_pct(self) -> float:
+        """Total cost applied at exit (worse exit price)"""
+        cost = 0.0
+        if self.apply_commission:
+            cost += self.commission_pct
+        if self.apply_spread:
+            cost += self.spread_pct / 2  # Half spread at exit
+        if self.apply_slippage:
+            cost += self.slippage_pct
+        return cost
+
+    @property
+    def total_round_trip_pct(self) -> float:
+        """Total costs for a complete round-trip trade"""
+        return self.total_entry_cost_pct + self.total_exit_cost_pct
+
+
+# Default trading costs (realistic Binance spot trading)
+DEFAULT_TRADING_COSTS = TradingCosts(
+    commission_pct=0.1,
+    spread_pct=0.05,
+    slippage_pct=0.03
+)
+
+# Zero costs (for raw signal testing without friction)
+ZERO_TRADING_COSTS = TradingCosts(
+    commission_pct=0.0,
+    spread_pct=0.0,
+    slippage_pct=0.0,
+    apply_commission=False,
+    apply_spread=False,
+    apply_slippage=False
+)
+
+
+@dataclass
+class PositionSizing:
+    """
+    Position sizing configuration for risk management.
+
+    Sizing Methods:
+    - 'fixed': Fixed amount per trade (e.g., £1000)
+    - 'percent_equity': Percentage of equity per trade (e.g., 2%)
+    - 'percent_risk': Risk percentage of equity per trade, sized by SL distance
+    - 'kelly': Kelly criterion based on win rate and risk:reward ratio
+    - 'volatility_adjusted': Scale position based on ATR (lower volatility = larger position)
+
+    Compounding:
+    - When enabled, profits are reinvested for exponential growth
+    - This is how strategies achieve 1000%+ returns
+    """
+    sizing_method: str = 'fixed'          # 'fixed', 'percent_equity', 'percent_risk', 'kelly', 'volatility_adjusted'
+
+    # Initial capital
+    initial_capital: float = 10000.0      # Starting equity
+
+    # For 'fixed' method
+    fixed_amount: float = 1000.0          # Fixed £ per trade
+
+    # For 'percent_equity' method
+    equity_percent: float = 10.0          # 10% of equity per trade
+
+    # For 'percent_risk' method
+    risk_percent: float = 1.0             # Risk 1% of equity per trade
+
+    # For 'kelly' method
+    kelly_fraction: float = 0.25          # Use 25% of Kelly (quarter Kelly for safety)
+
+    # For 'volatility_adjusted' method
+    target_risk_atr: float = 1.5          # Target risk in ATR units
+    base_position_size: float = 1000.0    # Base position size to scale from
+
+    # Compounding
+    compound_profits: bool = True         # Reinvest profits (exponential growth)
+
+    # Position limits
+    max_position_pct: float = 50.0        # Max 50% of equity in single trade
+    min_position_size: float = 10.0       # Minimum trade size
+
+    def calculate_position_size(self,
+                                 current_equity: float,
+                                 sl_distance_pct: float = 1.0,
+                                 win_rate: float = 0.5,
+                                 avg_win_loss_ratio: float = 1.5,
+                                 current_atr_pct: float = 2.0) -> float:
+        """
+        Calculate position size based on sizing method.
+
+        Args:
+            current_equity: Current account equity
+            sl_distance_pct: Stop loss distance as percentage (for percent_risk)
+            win_rate: Historical win rate (for Kelly)
+            avg_win_loss_ratio: Average winner / average loser (for Kelly)
+            current_atr_pct: Current ATR as percentage of price (for volatility_adjusted)
+
+        Returns:
+            Position size in currency units
+        """
+        if self.sizing_method == 'fixed':
+            position = self.fixed_amount
+
+        elif self.sizing_method == 'percent_equity':
+            position = current_equity * (self.equity_percent / 100.0)
+
+        elif self.sizing_method == 'percent_risk':
+            # Size so that SL hit = risk_percent loss
+            if sl_distance_pct <= 0:
+                sl_distance_pct = 1.0  # Default 1% if not specified
+            risk_amount = current_equity * (self.risk_percent / 100.0)
+            position = risk_amount / (sl_distance_pct / 100.0)
+
+        elif self.sizing_method == 'kelly':
+            # Kelly Criterion: f* = (p * b - q) / b
+            # Where p = win rate, q = 1 - p, b = avg win/loss ratio
+            p = max(0.01, min(0.99, win_rate))  # Clamp to valid range
+            q = 1 - p
+            b = max(0.1, avg_win_loss_ratio)
+
+            kelly_full = (p * b - q) / b if b > 0 else 0
+            kelly_full = max(0, kelly_full)  # Can't be negative
+
+            # Apply fractional Kelly for safety
+            kelly_adjusted = kelly_full * self.kelly_fraction
+            position = current_equity * kelly_adjusted
+
+        elif self.sizing_method == 'volatility_adjusted':
+            # Scale inversely with volatility
+            # Lower ATR = larger position, higher ATR = smaller position
+            if current_atr_pct <= 0:
+                current_atr_pct = 2.0  # Default
+            volatility_factor = self.target_risk_atr / current_atr_pct
+            position = self.base_position_size * volatility_factor
+
+        else:
+            position = self.fixed_amount  # Fallback
+
+        # Apply limits
+        max_allowed = current_equity * (self.max_position_pct / 100.0)
+        position = min(position, max_allowed)
+        position = max(position, self.min_position_size)
+
+        return position
+
+
+@dataclass
+class PortfolioRiskLimits:
+    """
+    Portfolio-level risk management limits.
+    Prevents over-exposure and excessive drawdowns.
+    """
+    # Concurrent position limits
+    max_concurrent_positions: int = 5          # Max open trades at once
+    max_positions_per_pair: int = 1            # Max trades per trading pair
+
+    # Drawdown limits
+    max_daily_drawdown_pct: float = 5.0        # Pause trading if daily DD exceeds
+    max_total_drawdown_pct: float = 20.0       # Stop trading if total DD exceeds
+
+    # Correlation limits
+    max_correlation: float = 0.7               # Don't run highly correlated strategies together
+
+    # Exposure limits
+    max_total_exposure_pct: float = 100.0      # Max total capital at risk
+    max_single_pair_exposure_pct: float = 30.0 # Max exposure to single pair
+
+    # Recovery rules
+    reduce_size_after_losses: int = 3          # Reduce size after N consecutive losses
+    size_reduction_factor: float = 0.5         # Cut size by 50% when reducing
+
+    def check_daily_drawdown(self, daily_pnl_pct: float) -> bool:
+        """Check if daily drawdown limit exceeded. Returns True if OK to trade."""
+        return daily_pnl_pct > -self.max_daily_drawdown_pct
+
+    def check_total_drawdown(self, total_drawdown_pct: float) -> bool:
+        """Check if total drawdown limit exceeded. Returns True if OK to trade."""
+        return total_drawdown_pct < self.max_total_drawdown_pct
+
+    def get_size_multiplier(self, consecutive_losses: int) -> float:
+        """Get position size multiplier based on consecutive losses."""
+        if consecutive_losses >= self.reduce_size_after_losses:
+            return self.size_reduction_factor
+        return 1.0
+
+
+# Default position sizing (fixed amount, no compounding)
+DEFAULT_POSITION_SIZING = PositionSizing(
+    sizing_method='fixed',
+    fixed_amount=1000.0,
+    compound_profits=False
+)
+
+# Compounding position sizing (for maximizing returns)
+COMPOUNDING_POSITION_SIZING = PositionSizing(
+    sizing_method='percent_equity',
+    equity_percent=10.0,
+    compound_profits=True,
+    initial_capital=10000.0
+)
+
+# Risk-based position sizing (professional approach)
+RISK_BASED_POSITION_SIZING = PositionSizing(
+    sizing_method='percent_risk',
+    risk_percent=1.0,
+    compound_profits=True,
+    initial_capital=10000.0
+)
+
+# Default portfolio risk limits
+DEFAULT_PORTFOLIO_LIMITS = PortfolioRiskLimits()
+
+
+@dataclass
 class TradeResult:
     direction: str
     entry_price: float
     exit_price: float
     pnl: float
     pnl_percent: float  # Percentage gain/loss
-    exit_reason: str    # 'tp' or 'sl'
+    exit_reason: str    # 'tp', 'sl', 'trailing_stop', 'indicator_exit', 'flip', 'protection_sl'
     # Enhanced fields for TradingView-style reporting
     trade_num: int = 0
     entry_time: str = None
@@ -61,6 +336,11 @@ class TradeResult:
     position_size_gbp: float = 0.0    # Position size in GBP
     cumulative_pnl_gbp: float = 0.0   # Running total P&L in GBP
     usd_gbp_rate: float = 1.0         # Exchange rate used for this trade
+    # NEW: Trend-following metrics
+    trade_duration_bars: int = 0       # How many bars the trade lasted
+    trade_duration_hours: float = 0.0  # Duration in hours (if time data available)
+    mfe_capture_ratio: float = 0.0     # Actual P&L / Max Favorable Excursion (how much trend captured)
+    exit_type: str = 'fixed_tp_sl'     # Exit strategy used: 'fixed_tp_sl', 'trailing_stop', 'indicator_exit'
 
 
 # Time periods for performance breakdown
@@ -796,6 +1076,96 @@ class StrategyResult:
 
         self.composite_score = round(base_score, 1)
 
+    def calculate_trend_following_score(self, avg_winner_pct: float = 0, avg_loser_pct: float = 0,
+                                        mfe_capture_ratio: float = 0) -> float:
+        """
+        Calculate score optimized for trend-following strategies.
+
+        Key differences from standard scoring:
+        - Lower win rate is acceptable (40% is fine if R:R is good)
+        - Rewards large winners (MFE capture)
+        - Penalizes cutting winners short
+        - Values risk:reward ratio over win rate
+
+        Weights:
+        - Risk:Reward ratio: 30% (target 3:1 or better)
+        - MFE Capture: 20% (how much of the trend was captured)
+        - Profit Factor: 20% (overall profitability)
+        - Win Rate: 10% (lower weight - trend strategies often have 40-50% WR)
+        - Max Drawdown: 20% (capital preservation)
+
+        Args:
+            avg_winner_pct: Average winning trade percentage
+            avg_loser_pct: Average losing trade percentage (positive number)
+            mfe_capture_ratio: Ratio of actual profit to max favorable excursion
+
+        Returns:
+            Trend-following composite score (0-100)
+        """
+        # Risk:Reward Score (0-100): Target 3:1 or better
+        if avg_loser_pct > 0:
+            risk_reward = avg_winner_pct / avg_loser_pct
+        else:
+            risk_reward = avg_winner_pct if avg_winner_pct > 0 else 0
+
+        if risk_reward >= 3.0:
+            rr_score = 100
+        elif risk_reward >= 2.0:
+            rr_score = 70 + (risk_reward - 2.0) * 30
+        elif risk_reward >= 1.5:
+            rr_score = 40 + (risk_reward - 1.5) * 60
+        elif risk_reward >= 1.0:
+            rr_score = 20 + (risk_reward - 1.0) * 40
+        else:
+            rr_score = max(0, risk_reward * 20)
+
+        # MFE Capture Score (0-100): How much of the move did we capture?
+        mfe_score = min(100, mfe_capture_ratio * 100) if mfe_capture_ratio > 0 else 50
+
+        # Profit Factor Score (same as standard)
+        profit_factor = self.profit_factor if self.profit_factor is not None else 0
+        if profit_factor >= 2.0:
+            pf_score = 100
+        elif profit_factor >= 1.5:
+            pf_score = 70 + (profit_factor - 1.5) * 60
+        elif profit_factor >= 1.0:
+            pf_score = 30 + (profit_factor - 1.0) * 80
+        else:
+            pf_score = max(0, profit_factor * 30)
+
+        # Win Rate Score (adjusted for trend strategies - 40% is acceptable)
+        win_rate = self.win_rate if self.win_rate is not None else 0
+        if win_rate >= 50:
+            wr_score = 100
+        elif win_rate >= 40:
+            wr_score = 60 + (win_rate - 40) * 4
+        elif win_rate >= 30:
+            wr_score = 30 + (win_rate - 30) * 3
+        else:
+            wr_score = max(0, win_rate)
+
+        # Max Drawdown Score (same as standard)
+        dd_pct = self.max_drawdown_percent if self.max_drawdown_percent else 0
+        if dd_pct < 10:
+            dd_score = 100
+        elif dd_pct < 20:
+            dd_score = 70
+        elif dd_pct < 30:
+            dd_score = 40
+        else:
+            dd_score = max(0, 20 - (dd_pct - 30))
+
+        # Trend-following composite weights
+        trend_score = (
+            rr_score * 0.30 +       # Risk:Reward is king for trend strategies
+            mfe_score * 0.20 +      # Reward capturing the trend
+            pf_score * 0.20 +       # Overall profitability
+            wr_score * 0.10 +       # Win rate (lower weight)
+            dd_score * 0.20         # Capital preservation
+        )
+
+        return round(trend_score, 1)
+
 
 # =============================================================================
 # PHASE 2: INDICATOR PARAMETER TUNING
@@ -839,6 +1209,22 @@ DEFAULT_INDICATOR_PARAMS = {
     'uo_slow': 28,
     'chop_length': 14,
     'consecutive_bars': 3,
+    # New indicator params for added strategies
+    'mcginley_length': 14,
+    'mcginley_k': 0.6,
+    'hull_length': 20,
+    'zlema_length': 20,
+    'tsi_long': 25,
+    'tsi_short': 13,
+    'tsi_signal': 7,
+    'fisher_length': 10,
+    'ao_fast': 5,
+    'ao_slow': 34,
+    'chandelier_length': 22,
+    'chandelier_mult': 3.0,
+    'linreg_length': 50,
+    'mfi_length': 14,
+    'cmf_length': 20,
 }
 
 # Strategy to tunable parameters mapping
@@ -1060,6 +1446,172 @@ STRATEGY_PARAM_MAP = {
         'params': ['rsi_length'],
         'ranges': {'rsi_length': [10, 14, 20, 25]},
     },
+
+    # === McGINLEY DYNAMIC STRATEGIES ===
+    'mcginley_cross': {
+        'params': ['mcginley_length', 'mcginley_k'],
+        'ranges': {
+            'mcginley_length': [10, 14, 20, 25],
+            'mcginley_k': [0.4, 0.5, 0.6, 0.8],
+        },
+    },
+    'mcginley_trend': {
+        'params': ['mcginley_length', 'mcginley_k'],
+        'ranges': {
+            'mcginley_length': [10, 14, 20, 25],
+            'mcginley_k': [0.4, 0.5, 0.6, 0.8],
+        },
+    },
+
+    # === HULL MOVING AVERAGE ===
+    'hull_ma_cross': {
+        'params': ['hull_length'],
+        'ranges': {'hull_length': [14, 20, 25, 30]},
+    },
+    'hull_ma_turn': {
+        'params': ['hull_length'],
+        'ranges': {'hull_length': [14, 20, 25, 30]},
+    },
+
+    # === ZLEMA ===
+    'zlema_cross': {
+        'params': ['zlema_length'],
+        'ranges': {'zlema_length': [14, 20, 25, 30]},
+    },
+
+    # === CHANDELIER ===
+    'chandelier_entry': {
+        'params': ['chandelier_length', 'chandelier_mult'],
+        'ranges': {
+            'chandelier_length': [14, 20, 22, 25],
+            'chandelier_mult': [2.0, 2.5, 3.0, 3.5],
+        },
+    },
+
+    # === TSI ===
+    'tsi_cross': {
+        'params': ['tsi_long', 'tsi_short', 'tsi_signal'],
+        'ranges': {
+            'tsi_long': [20, 25, 30],
+            'tsi_short': [10, 13, 15],
+            'tsi_signal': [5, 7, 9],
+        },
+    },
+    'tsi_zero': {
+        'params': ['tsi_long', 'tsi_short'],
+        'ranges': {
+            'tsi_long': [20, 25, 30],
+            'tsi_short': [10, 13, 15],
+        },
+    },
+
+    # === CMF ===
+    'cmf_cross': {
+        'params': ['cmf_length'],
+        'ranges': {'cmf_length': [14, 20, 25]},
+    },
+
+    # === MFI ===
+    'mfi_extreme': {
+        'params': ['mfi_length'],
+        'ranges': {'mfi_length': [10, 14, 20]},
+    },
+
+    # === PPO ===
+    'ppo_cross': {
+        'params': [],  # Uses MACD periods (12, 26, 9)
+        'ranges': {},
+    },
+
+    # === FISHER ===
+    'fisher_cross': {
+        'params': ['fisher_length'],
+        'ranges': {'fisher_length': [8, 10, 12, 14]},
+    },
+
+    # === AWESOME OSCILLATOR ===
+    'ao_zero_cross': {
+        'params': ['ao_fast', 'ao_slow'],
+        'ranges': {
+            'ao_fast': [3, 5, 7],
+            'ao_slow': [25, 34, 40],
+        },
+    },
+    'ao_twin_peaks': {
+        'params': ['ao_fast', 'ao_slow'],
+        'ranges': {
+            'ao_fast': [3, 5, 7],
+            'ao_slow': [25, 34, 40],
+        },
+    },
+
+    # === SQUEEZE MOMENTUM ===
+    'squeeze_momentum': {
+        'params': ['bb_length', 'bb_mult'],
+        'ranges': {
+            'bb_length': [15, 20, 25],
+            'bb_mult': [1.5, 2.0, 2.5],
+        },
+    },
+
+    # === LINEAR REGRESSION ===
+    'linreg_channel': {
+        'params': ['linreg_length'],
+        'ranges': {'linreg_length': [30, 50, 75, 100]},
+    },
+
+    # === COMBO STRATEGIES ===
+    'rsi_macd_combo': {
+        'params': ['rsi_length'],
+        'ranges': {'rsi_length': [10, 14, 20]},
+    },
+    'bb_rsi_combo': {
+        'params': ['bb_length', 'rsi_length'],
+        'ranges': {
+            'bb_length': [15, 20, 25],
+            'rsi_length': [10, 14, 20],
+        },
+    },
+    'supertrend_adx_combo': {
+        'params': ['supertrend_factor', 'adx_length'],
+        'ranges': {
+            'supertrend_factor': [2.0, 2.5, 3.0],
+            'adx_length': [10, 14, 20],
+        },
+    },
+    'ema_rsi_combo': {
+        'params': ['ema_fast', 'ema_slow', 'rsi_length'],
+        'ranges': {
+            'ema_fast': [7, 9, 12],
+            'ema_slow': [18, 21, 26],
+            'rsi_length': [10, 14, 20],
+        },
+    },
+    'macd_stoch_combo': {
+        'params': ['macd_fast', 'macd_slow'],
+        'ranges': {
+            'macd_fast': [8, 12, 15],
+            'macd_slow': [21, 26, 30],
+        },
+    },
+
+    # === OTHER NEW STRATEGIES ===
+    'vwap_cross': {
+        'params': [],  # VWAP has no params
+        'ranges': {},
+    },
+    'pivot_bounce': {
+        'params': [],  # Pivot has no params
+        'ranges': {},
+    },
+    'obv_trend': {
+        'params': [],  # OBV has no params
+        'ranges': {},
+    },
+    'elder_ray': {
+        'params': [],  # Uses EMA 13 (fixed)
+        'ranges': {},
+    },
 }
 
 
@@ -1151,6 +1703,148 @@ class TunedResult:
             'is_improved': self.is_improved,
             'params_changed': self.params_changed,
         }
+
+
+# =============================================================================
+# EXIT STRATEGY HELPERS
+# =============================================================================
+
+def calculate_trailing_stop(current_stop: float, high: float, low: float,
+                           atr: float, atr_mult: float, direction: str) -> float:
+    """
+    Calculate trailing stop that ratchets with price movement.
+    Only moves in favorable direction - never backwards.
+
+    Args:
+        current_stop: Current trailing stop price (or None for initial)
+        high: Current bar's high price
+        low: Current bar's low price
+        atr: Current ATR value
+        atr_mult: ATR multiplier for stop distance
+        direction: 'long' or 'short'
+
+    Returns:
+        New trailing stop price
+    """
+    if direction == 'long':
+        # For longs: stop trails below price, ratchets UP
+        new_stop = high - (atr * atr_mult)
+        if current_stop is None or new_stop > current_stop:
+            return new_stop
+        return current_stop
+    else:  # short
+        # For shorts: stop trails above price, ratchets DOWN
+        new_stop = low + (atr * atr_mult)
+        if current_stop is None or new_stop < current_stop:
+            return new_stop
+        return current_stop
+
+
+def check_indicator_exit(df: pd.DataFrame, bar_idx: int, indicator: str,
+                         direction: str, params: dict = None) -> bool:
+    """
+    Check if an indicator-based exit signal has triggered.
+
+    Args:
+        df: DataFrame with indicator columns
+        bar_idx: Current bar index
+        indicator: Exit indicator type ('supertrend', 'ema_cross', 'psar', 'mcginley')
+        direction: Current position direction ('long' or 'short')
+        params: Optional indicator parameters
+
+    Returns:
+        True if exit signal triggered, False otherwise
+    """
+    params = params or {}
+    row = df.iloc[bar_idx]
+    prev_row = df.iloc[bar_idx - 1] if bar_idx > 0 else row
+
+    if indicator == 'supertrend':
+        # Exit when Supertrend direction flips
+        # Supertrend: -1 = bearish (price below), 1 = bullish (price above)
+        if 'supertrend_direction' in df.columns:
+            current_dir = row.get('supertrend_direction', 0)
+            if direction == 'long' and current_dir == -1:
+                return True  # Supertrend turned bearish - exit long
+            elif direction == 'short' and current_dir == 1:
+                return True  # Supertrend turned bullish - exit short
+
+    elif indicator == 'ema_cross':
+        # Exit when fast EMA crosses slow EMA against position
+        fast_col = f"ema_{params.get('fast', 9)}"
+        slow_col = f"ema_{params.get('slow', 21)}"
+        if fast_col in df.columns and slow_col in df.columns:
+            fast_curr = row[fast_col]
+            slow_curr = row[slow_col]
+            fast_prev = prev_row[fast_col]
+            slow_prev = prev_row[slow_col]
+            if direction == 'long':
+                # Exit long when fast crosses below slow
+                if fast_prev >= slow_prev and fast_curr < slow_curr:
+                    return True
+            else:  # short
+                # Exit short when fast crosses above slow
+                if fast_prev <= slow_prev and fast_curr > slow_curr:
+                    return True
+
+    elif indicator == 'psar':
+        # Exit when Parabolic SAR flips
+        if 'psar' in df.columns:
+            psar = row['psar']
+            close = row['close']
+            if direction == 'long' and psar > close:
+                return True  # SAR above price = bearish
+            elif direction == 'short' and psar < close:
+                return True  # SAR below price = bullish
+
+    elif indicator == 'mcginley':
+        # Exit when McGinley Dynamic changes direction
+        if 'mcginley' in df.columns:
+            mcg_curr = row['mcginley']
+            mcg_prev = prev_row['mcginley']
+            if direction == 'long':
+                # Exit long when McGinley turns from rising to falling
+                if mcg_prev > df.iloc[bar_idx - 2]['mcginley'] if bar_idx > 1 else False:
+                    if mcg_curr < mcg_prev:
+                        return True
+            else:  # short
+                # Exit short when McGinley turns from falling to rising
+                if mcg_prev < df.iloc[bar_idx - 2]['mcginley'] if bar_idx > 1 else False:
+                    if mcg_curr > mcg_prev:
+                        return True
+
+    elif indicator == 'adx_di':
+        # Exit when ADX weakens or DI cross reverses
+        if 'adx' in df.columns and 'di_plus' in df.columns and 'di_minus' in df.columns:
+            adx = row['adx']
+            di_plus = row['di_plus']
+            di_minus = row['di_minus']
+            threshold = params.get('adx_threshold', 20)
+            if adx < threshold:
+                return True  # Trend weakening
+            if direction == 'long' and di_minus > di_plus:
+                return True  # DI flipped bearish
+            elif direction == 'short' and di_plus > di_minus:
+                return True  # DI flipped bullish
+
+    return False
+
+
+def calculate_mfe_capture_ratio(pnl_pct: float, run_up_pct: float) -> float:
+    """
+    Calculate how much of the maximum favorable excursion was captured.
+
+    MFE Capture Ratio = Actual P&L / Max Favorable Excursion
+
+    A ratio of 1.0 means we captured all of the best possible exit.
+    A ratio of 0.5 means we only captured half of the potential.
+
+    Returns 0.0 if run_up_pct is 0 or negative.
+    """
+    if run_up_pct <= 0:
+        return 0.0
+    # Can be > 1.0 if we happened to exit at the absolute peak
+    return min(pnl_pct / run_up_pct, 1.0) if run_up_pct > 0 else 0.0
 
 
 class StrategyEngine:
@@ -1373,6 +2067,174 @@ class StrategyEngine:
             'category': 'Trend',
             'description': 'EMA 9 > EMA 21 > EMA 50 alignment'
         },
+
+        # === McGINLEY DYNAMIC STRATEGIES ===
+        'mcginley_cross': {
+            'name': 'McGinley Cross',
+            'category': 'Trend',
+            'description': 'Price crosses McGinley Dynamic indicator',
+            'pool': 'indicator_exit'  # Trend following with indicator exit
+        },
+        'mcginley_trend': {
+            'name': 'McGinley Trend Direction',
+            'category': 'Trend',
+            'description': 'McGinley Dynamic changes direction (slope)',
+            'pool': 'indicator_exit'
+        },
+
+        # === HULL MOVING AVERAGE ===
+        'hull_ma_cross': {
+            'name': 'Hull MA Cross',
+            'category': 'Trend',
+            'description': 'Price crosses Hull Moving Average',
+            'pool': 'indicator_exit'
+        },
+        'hull_ma_turn': {
+            'name': 'Hull MA Direction',
+            'category': 'Trend',
+            'description': 'Hull MA changes direction',
+            'pool': 'indicator_exit'
+        },
+
+        # === ZLEMA (Zero-Lag EMA) ===
+        'zlema_cross': {
+            'name': 'ZLEMA Cross',
+            'category': 'Trend',
+            'description': 'Price crosses Zero-Lag EMA',
+            'pool': 'indicator_exit'
+        },
+
+        # === CHANDELIER EXIT ===
+        'chandelier_entry': {
+            'name': 'Chandelier Entry',
+            'category': 'Volatility',
+            'description': 'Enter on Chandelier Exit signal',
+            'pool': 'indicator_exit'
+        },
+
+        # === TSI (True Strength Index) ===
+        'tsi_cross': {
+            'name': 'TSI Cross',
+            'category': 'Momentum',
+            'description': 'TSI crosses signal line'
+        },
+        'tsi_zero': {
+            'name': 'TSI Zero Cross',
+            'category': 'Momentum',
+            'description': 'TSI crosses zero line'
+        },
+
+        # === CMF (Chaikin Money Flow) ===
+        'cmf_cross': {
+            'name': 'CMF Zero Cross',
+            'category': 'Momentum',
+            'description': 'Chaikin Money Flow crosses zero'
+        },
+
+        # === OBV (On Balance Volume) ===
+        'obv_trend': {
+            'name': 'OBV Trend',
+            'category': 'Momentum',
+            'description': 'OBV makes new high/low with price'
+        },
+
+        # === MFI (Money Flow Index) ===
+        'mfi_extreme': {
+            'name': 'MFI Extreme',
+            'category': 'Momentum',
+            'description': 'MFI < 20 (long) or > 80 (short)'
+        },
+
+        # === PPO (Percentage Price Oscillator) ===
+        'ppo_cross': {
+            'name': 'PPO Signal Cross',
+            'category': 'Momentum',
+            'description': 'PPO crosses signal line'
+        },
+
+        # === FISHER TRANSFORM ===
+        'fisher_cross': {
+            'name': 'Fisher Transform Cross',
+            'category': 'Momentum',
+            'description': 'Fisher crosses signal line'
+        },
+
+        # === SQUEEZE MOMENTUM ===
+        'squeeze_momentum': {
+            'name': 'Squeeze Momentum',
+            'category': 'Volatility',
+            'description': 'BB inside Keltner + momentum direction',
+            'pool': 'indicator_exit'
+        },
+
+        # === VWAP STRATEGIES ===
+        'vwap_cross': {
+            'name': 'VWAP Cross',
+            'category': 'Mean Reversion',
+            'description': 'Price crosses VWAP'
+        },
+
+        # === PIVOT POINTS ===
+        'pivot_bounce': {
+            'name': 'Pivot Point Bounce',
+            'category': 'Price Action',
+            'description': 'Price bounces off pivot point levels'
+        },
+
+        # === LINEAR REGRESSION ===
+        'linreg_channel': {
+            'name': 'Linear Regression Channel',
+            'category': 'Trend',
+            'description': 'Price touches/breaks linear regression channel',
+            'pool': 'indicator_exit'
+        },
+
+        # === AWESOME OSCILLATOR ===
+        'ao_zero_cross': {
+            'name': 'AO Zero Cross',
+            'category': 'Momentum',
+            'description': 'Awesome Oscillator crosses zero'
+        },
+        'ao_twin_peaks': {
+            'name': 'AO Twin Peaks',
+            'category': 'Momentum',
+            'description': 'Awesome Oscillator twin peaks pattern'
+        },
+
+        # === ELDER RAY ===
+        'elder_ray': {
+            'name': 'Elder Ray',
+            'category': 'Momentum',
+            'description': 'Bull/Bear power with EMA trend filter'
+        },
+
+        # === COMBO STRATEGIES ===
+        'rsi_macd_combo': {
+            'name': 'RSI + MACD Combo',
+            'category': 'Momentum',
+            'description': 'RSI extreme + MACD confirmation'
+        },
+        'bb_rsi_combo': {
+            'name': 'BB + RSI Combo',
+            'category': 'Mean Reversion',
+            'description': 'Bollinger Band touch + RSI extreme'
+        },
+        'supertrend_adx_combo': {
+            'name': 'Supertrend + ADX Combo',
+            'category': 'Trend',
+            'description': 'Supertrend signal + ADX > 25 filter',
+            'pool': 'indicator_exit'
+        },
+        'ema_rsi_combo': {
+            'name': 'EMA Cross + RSI Combo',
+            'category': 'Trend',
+            'description': 'EMA cross + RSI confirmation'
+        },
+        'macd_stoch_combo': {
+            'name': 'MACD + Stochastic Combo',
+            'category': 'Momentum',
+            'description': 'MACD cross + Stochastic confirmation'
+        },
     }
 
     def __init__(self, df: pd.DataFrame, status_callback: Dict = None,
@@ -1450,6 +2312,97 @@ class StrategyEngine:
         buy_hold_pct = ((end_price - start_price) / start_price) * 100
         print(f"Buy & Hold benchmark: {buy_hold_pct:.2f}% (from £{start_price:.2f} to £{end_price:.2f})")
         return round(buy_hold_pct, 2)
+
+    # =========================================================================
+    # POOL CLASSIFICATION AND EXIT CONFIG
+    # =========================================================================
+
+    # Categories that naturally fit the TP/SL pool (mean reversion, fixed targets)
+    TP_SL_CATEGORIES = {'Mean Reversion', 'Momentum', 'Pattern', 'Baseline'}
+
+    # Categories that naturally fit the indicator exit pool (trend following)
+    INDICATOR_EXIT_CATEGORIES = {'Trend', 'Volatility', 'Price Action'}
+
+    @classmethod
+    def get_strategy_pool(cls, strategy_name: str) -> str:
+        """
+        Determine which pool a strategy belongs to based on its category.
+
+        Returns:
+            'tp_sl' - Strategy best suited for fixed TP/SL exits
+            'indicator_exit' - Strategy best suited for indicator-based exits
+        """
+        strategy_info = cls.ENTRY_STRATEGIES.get(strategy_name, {})
+        category = strategy_info.get('category', 'Unknown')
+
+        # Check explicit pool override first
+        if 'pool' in strategy_info:
+            return strategy_info['pool']
+
+        # Otherwise classify by category
+        if category in cls.TP_SL_CATEGORIES:
+            return 'tp_sl'
+        elif category in cls.INDICATOR_EXIT_CATEGORIES:
+            return 'indicator_exit'
+        else:
+            # Default to TP/SL for unknown categories (safer default)
+            return 'tp_sl'
+
+    @classmethod
+    def get_default_exit_config(cls, strategy_name: str, tp_percent: float = 2.0,
+                                sl_percent: float = 1.0) -> 'ExitConfig':
+        """
+        Get the default exit configuration for a strategy based on its pool.
+
+        Args:
+            strategy_name: Name of the entry strategy
+            tp_percent: Take profit percentage (for TP/SL pool)
+            sl_percent: Stop loss percentage (for TP/SL pool)
+
+        Returns:
+            ExitConfig with appropriate defaults
+        """
+        pool = cls.get_strategy_pool(strategy_name)
+        strategy_info = cls.ENTRY_STRATEGIES.get(strategy_name, {})
+
+        if pool == 'tp_sl':
+            return ExitConfig(
+                exit_type='fixed_tp_sl',
+                tp_percent=tp_percent,
+                sl_percent=sl_percent,
+                pool='tp_sl'
+            )
+        else:  # indicator_exit pool
+            # Determine exit indicator based on strategy type
+            category = strategy_info.get('category', 'Trend')
+
+            if strategy_name in ['supertrend', 'supertrend_rider']:
+                exit_indicator = 'supertrend'
+            elif strategy_name in ['psar_reversal', 'parabolic_sar_trend']:
+                exit_indicator = 'psar'
+            elif strategy_name in ['ema_cross', 'double_ema_cross', 'triple_ema']:
+                exit_indicator = 'ema_cross'
+            elif strategy_name in ['adx_strong_trend', 'adx_di_trend']:
+                exit_indicator = 'adx_di'
+            elif strategy_name.startswith('mcginley'):
+                exit_indicator = 'mcginley'
+            else:
+                # Default to trailing stop for trend strategies without specific indicator
+                return ExitConfig(
+                    exit_type='trailing_stop',
+                    trailing_atr_mult=2.0,
+                    use_protection_sl=True,
+                    protection_sl_atr_mult=4.0,
+                    pool='indicator_exit'
+                )
+
+            return ExitConfig(
+                exit_type='indicator_exit',
+                exit_indicator=exit_indicator,
+                use_protection_sl=True,
+                protection_sl_atr_mult=4.0,
+                pool='indicator_exit'
+            )
 
     def _update_status(self, message: str, progress: int):
         if self.status:
@@ -1847,6 +2800,29 @@ class StrategyEngine:
                     df['vwap'] = df['sma_20']  # Fallback to SMA on error
             else:
                 df['vwap'] = df['sma_20']  # Fallback to SMA if no volume
+
+        # === McGINLEY DYNAMIC ===
+        # Pre-calculate for mcginley_cross, mcginley_trend strategies and indicator exits
+        # Formula: MD = MD_prev + (Close - MD_prev) / (k * n * (Close/MD_prev)^4)
+        try:
+            length = 14
+            k = 0.6
+            close = df['close'].values
+            n = len(close)
+            md = np.full(n, np.nan)
+            md[0] = close[0]
+            for i in range(1, n):
+                if md[i-1] == 0 or np.isnan(md[i-1]):
+                    md[i] = close[i]
+                else:
+                    ratio = close[i] / md[i-1]
+                    ratio = max(0.5, min(ratio, 2.0))  # Clamp ratio for stability
+                    divisor = k * length * (ratio ** 4)
+                    divisor = max(divisor, 0.001)  # Prevent division by zero
+                    md[i] = md[i-1] + (close[i] - md[i-1]) / divisor
+            df['mcginley'] = md
+        except Exception:
+            df['mcginley'] = df['ema_21']  # Fallback to EMA21
 
         # === CANDLE PROPERTIES ===
         df['body'] = abs(df['close'] - df['open'])
@@ -2299,6 +3275,383 @@ class StrategyEngine:
                 aligned = (df['ema_9'] < df['ema_21']) & (df['ema_21'] < ema_50)
                 was_not_aligned = ~((df['ema_9'].shift(1) < df['ema_21'].shift(1)) & (df['ema_21'].shift(1) < ema_50.shift(1)))
                 return safe_bool(aligned & was_not_aligned)
+
+        # === McGINLEY DYNAMIC STRATEGIES ===
+        elif strategy == 'mcginley_cross':
+            # Price crosses McGinley Dynamic
+            if 'mcginley' not in df.columns:
+                # Calculate McGinley Dynamic inline
+                # Formula: MD = MD_prev + (Close - MD_prev) / (k * n * (Close/MD_prev)^4)
+                length = 14
+                k = 0.6
+                close = df['close'].values
+                n = len(close)
+                md = np.full(n, np.nan)
+                md[0] = close[0]
+                for i in range(1, n):
+                    if md[i-1] == 0 or np.isnan(md[i-1]):
+                        md[i] = close[i]
+                    else:
+                        ratio = close[i] / md[i-1]
+                        ratio = max(0.5, min(ratio, 2.0))  # Clamp ratio for stability
+                        divisor = k * length * (ratio ** 4)
+                        divisor = max(divisor, 0.001)  # Prevent division by zero
+                        md[i] = md[i-1] + (close[i] - md[i-1]) / divisor
+                df['mcginley'] = md
+            if direction == 'long':
+                return safe_bool((df['close'] > df['mcginley']) & (df['close'].shift(1) <= df['mcginley'].shift(1)))
+            else:
+                return safe_bool((df['close'] < df['mcginley']) & (df['close'].shift(1) >= df['mcginley'].shift(1)))
+
+        elif strategy == 'mcginley_trend':
+            # McGinley changes direction (slope)
+            if 'mcginley' not in df.columns:
+                # Calculate McGinley Dynamic inline
+                length = 14
+                k = 0.6
+                close = df['close'].values
+                n = len(close)
+                md = np.full(n, np.nan)
+                md[0] = close[0]
+                for i in range(1, n):
+                    if md[i-1] == 0 or np.isnan(md[i-1]):
+                        md[i] = close[i]
+                    else:
+                        ratio = close[i] / md[i-1]
+                        ratio = max(0.5, min(ratio, 2.0))
+                        divisor = k * length * (ratio ** 4)
+                        divisor = max(divisor, 0.001)
+                        md[i] = md[i-1] + (close[i] - md[i-1]) / divisor
+                df['mcginley'] = md
+            mcg_slope = df['mcginley'] - df['mcginley'].shift(1)
+            mcg_slope_prev = df['mcginley'].shift(1) - df['mcginley'].shift(2)
+            if direction == 'long':
+                # Slope turns positive
+                return safe_bool((mcg_slope > 0) & (mcg_slope_prev <= 0))
+            else:
+                # Slope turns negative
+                return safe_bool((mcg_slope < 0) & (mcg_slope_prev >= 0))
+
+        # === HULL MOVING AVERAGE ===
+        elif strategy == 'hull_ma_cross':
+            # Price crosses Hull MA
+            if 'hull_ma' not in df.columns:
+                # Calculate Hull MA if not present: HMA = WMA(2*WMA(n/2) - WMA(n), sqrt(n))
+                period = 20
+                half_period = period // 2
+                sqrt_period = int(np.sqrt(period))
+                wma1 = df['close'].rolling(half_period).apply(lambda x: np.sum(x * np.arange(1, half_period+1)) / np.sum(np.arange(1, half_period+1)), raw=True)
+                wma2 = df['close'].rolling(period).apply(lambda x: np.sum(x * np.arange(1, period+1)) / np.sum(np.arange(1, period+1)), raw=True)
+                raw_hma = 2 * wma1 - wma2
+                df['hull_ma'] = raw_hma.rolling(sqrt_period).apply(lambda x: np.sum(x * np.arange(1, sqrt_period+1)) / np.sum(np.arange(1, sqrt_period+1)), raw=True)
+            if direction == 'long':
+                return safe_bool((df['close'] > df['hull_ma']) & (df['close'].shift(1) <= df['hull_ma'].shift(1)))
+            else:
+                return safe_bool((df['close'] < df['hull_ma']) & (df['close'].shift(1) >= df['hull_ma'].shift(1)))
+
+        elif strategy == 'hull_ma_turn':
+            # Hull MA changes direction
+            if 'hull_ma' not in df.columns:
+                period = 20
+                half_period = period // 2
+                sqrt_period = int(np.sqrt(period))
+                wma1 = df['close'].rolling(half_period).apply(lambda x: np.sum(x * np.arange(1, half_period+1)) / np.sum(np.arange(1, half_period+1)), raw=True)
+                wma2 = df['close'].rolling(period).apply(lambda x: np.sum(x * np.arange(1, period+1)) / np.sum(np.arange(1, period+1)), raw=True)
+                raw_hma = 2 * wma1 - wma2
+                df['hull_ma'] = raw_hma.rolling(sqrt_period).apply(lambda x: np.sum(x * np.arange(1, sqrt_period+1)) / np.sum(np.arange(1, sqrt_period+1)), raw=True)
+            hull_slope = df['hull_ma'] - df['hull_ma'].shift(1)
+            hull_slope_prev = df['hull_ma'].shift(1) - df['hull_ma'].shift(2)
+            if direction == 'long':
+                return safe_bool((hull_slope > 0) & (hull_slope_prev <= 0))
+            else:
+                return safe_bool((hull_slope < 0) & (hull_slope_prev >= 0))
+
+        # === ZLEMA (Zero-Lag EMA) ===
+        elif strategy == 'zlema_cross':
+            # Price crosses Zero-Lag EMA
+            period = 20
+            lag = (period - 1) // 2
+            ema_data = df['close'] + (df['close'] - df['close'].shift(lag))
+            zlema = ema_data.ewm(span=period, adjust=False).mean()
+            if direction == 'long':
+                return safe_bool((df['close'] > zlema) & (df['close'].shift(1) <= zlema.shift(1)))
+            else:
+                return safe_bool((df['close'] < zlema) & (df['close'].shift(1) >= zlema.shift(1)))
+
+        # === CHANDELIER EXIT ===
+        elif strategy == 'chandelier_entry':
+            # Chandelier Exit signal
+            period = 22
+            mult = 3.0
+            highest_high = df['high'].rolling(period).max()
+            lowest_low = df['low'].rolling(period).min()
+            chandelier_long = highest_high - df['atr'] * mult
+            chandelier_short = lowest_low + df['atr'] * mult
+            if direction == 'long':
+                # Price crosses above chandelier long stop
+                return safe_bool((df['close'] > chandelier_long) & (df['close'].shift(1) <= chandelier_long.shift(1)))
+            else:
+                # Price crosses below chandelier short stop
+                return safe_bool((df['close'] < chandelier_short) & (df['close'].shift(1) >= chandelier_short.shift(1)))
+
+        # === TSI (True Strength Index) ===
+        elif strategy == 'tsi_cross':
+            # TSI crosses signal line
+            if 'tsi' not in df.columns:
+                # Calculate TSI
+                close_diff = df['close'].diff()
+                double_smooth_pc = close_diff.ewm(span=25, adjust=False).mean().ewm(span=13, adjust=False).mean()
+                double_smooth_apc = close_diff.abs().ewm(span=25, adjust=False).mean().ewm(span=13, adjust=False).mean()
+                df['tsi'] = 100 * (double_smooth_pc / double_smooth_apc.replace(0, np.nan))
+                df['tsi_signal'] = df['tsi'].ewm(span=7, adjust=False).mean()
+            if direction == 'long':
+                return safe_bool((df['tsi'] > df['tsi_signal']) & (df['tsi'].shift(1) <= df['tsi_signal'].shift(1)))
+            else:
+                return safe_bool((df['tsi'] < df['tsi_signal']) & (df['tsi'].shift(1) >= df['tsi_signal'].shift(1)))
+
+        elif strategy == 'tsi_zero':
+            # TSI crosses zero
+            if 'tsi' not in df.columns:
+                close_diff = df['close'].diff()
+                double_smooth_pc = close_diff.ewm(span=25, adjust=False).mean().ewm(span=13, adjust=False).mean()
+                double_smooth_apc = close_diff.abs().ewm(span=25, adjust=False).mean().ewm(span=13, adjust=False).mean()
+                df['tsi'] = 100 * (double_smooth_pc / double_smooth_apc.replace(0, np.nan))
+            if direction == 'long':
+                return safe_bool((df['tsi'] > 0) & (df['tsi'].shift(1) <= 0))
+            else:
+                return safe_bool((df['tsi'] < 0) & (df['tsi'].shift(1) >= 0))
+
+        # === CMF (Chaikin Money Flow) ===
+        elif strategy == 'cmf_cross':
+            # CMF crosses zero
+            if 'cmf' not in df.columns:
+                mfm = ((df['close'] - df['low']) - (df['high'] - df['close'])) / (df['high'] - df['low']).replace(0, np.nan)
+                mfv = mfm * df['volume']
+                df['cmf'] = mfv.rolling(20).sum() / df['volume'].rolling(20).sum()
+            if direction == 'long':
+                return safe_bool((df['cmf'] > 0) & (df['cmf'].shift(1) <= 0))
+            else:
+                return safe_bool((df['cmf'] < 0) & (df['cmf'].shift(1) >= 0))
+
+        # === OBV (On Balance Volume) ===
+        elif strategy == 'obv_trend':
+            # OBV makes new high/low with price
+            if 'obv' not in df.columns:
+                obv_change = np.where(df['close'] > df['close'].shift(1), df['volume'],
+                             np.where(df['close'] < df['close'].shift(1), -df['volume'], 0))
+                df['obv'] = pd.Series(obv_change, index=df.index).cumsum()
+            lookback = 20
+            obv_high = df['obv'].rolling(lookback).max()
+            obv_low = df['obv'].rolling(lookback).min()
+            price_high = df['close'].rolling(lookback).max()
+            price_low = df['close'].rolling(lookback).min()
+            if direction == 'long':
+                # OBV new high with price near highs
+                return safe_bool((df['obv'] == obv_high) & (df['close'] >= price_high * 0.98))
+            else:
+                # OBV new low with price near lows
+                return safe_bool((df['obv'] == obv_low) & (df['close'] <= price_low * 1.02))
+
+        # === MFI (Money Flow Index) ===
+        elif strategy == 'mfi_extreme':
+            if 'mfi' not in df.columns:
+                typical_price = (df['high'] + df['low'] + df['close']) / 3
+                raw_mf = typical_price * df['volume']
+                positive_mf = np.where(typical_price > typical_price.shift(1), raw_mf, 0)
+                negative_mf = np.where(typical_price < typical_price.shift(1), raw_mf, 0)
+                positive_mf_sum = pd.Series(positive_mf, index=df.index).rolling(14).sum()
+                negative_mf_sum = pd.Series(negative_mf, index=df.index).rolling(14).sum()
+                mfi_ratio = positive_mf_sum / negative_mf_sum.replace(0, np.nan)
+                df['mfi'] = 100 - (100 / (1 + mfi_ratio))
+            if direction == 'long':
+                return safe_bool((df['mfi'] > 20) & (df['mfi'].shift(1) <= 20))
+            else:
+                return safe_bool((df['mfi'] < 80) & (df['mfi'].shift(1) >= 80))
+
+        # === PPO (Percentage Price Oscillator) ===
+        elif strategy == 'ppo_cross':
+            if 'ppo' not in df.columns:
+                ema_fast = df['close'].ewm(span=12, adjust=False).mean()
+                ema_slow = df['close'].ewm(span=26, adjust=False).mean()
+                df['ppo'] = ((ema_fast - ema_slow) / ema_slow) * 100
+                df['ppo_signal'] = df['ppo'].ewm(span=9, adjust=False).mean()
+            if direction == 'long':
+                return safe_bool((df['ppo'] > df['ppo_signal']) & (df['ppo'].shift(1) <= df['ppo_signal'].shift(1)))
+            else:
+                return safe_bool((df['ppo'] < df['ppo_signal']) & (df['ppo'].shift(1) >= df['ppo_signal'].shift(1)))
+
+        # === FISHER TRANSFORM ===
+        elif strategy == 'fisher_cross':
+            if 'fisher' not in df.columns:
+                period = 10
+                hl2 = (df['high'] + df['low']) / 2
+                max_high = hl2.rolling(period).max()
+                min_low = hl2.rolling(period).min()
+                value = 2 * ((hl2 - min_low) / (max_high - min_low).replace(0, np.nan)) - 1
+                value = value.clip(-0.999, 0.999)
+                df['fisher'] = (np.log((1 + value) / (1 - value)) / 2).ewm(span=1, adjust=False).mean()
+                df['fisher_signal'] = df['fisher'].shift(1)
+            if direction == 'long':
+                return safe_bool((df['fisher'] > df['fisher_signal']) & (df['fisher'].shift(1) <= df['fisher_signal'].shift(1)))
+            else:
+                return safe_bool((df['fisher'] < df['fisher_signal']) & (df['fisher'].shift(1) >= df['fisher_signal'].shift(1)))
+
+        # === SQUEEZE MOMENTUM ===
+        elif strategy == 'squeeze_momentum':
+            # BB inside Keltner + momentum direction
+            bb_len, bb_mult = 20, 2.0
+            kc_len, kc_mult = 20, 1.5
+            sma = df['close'].rolling(bb_len).mean()
+            std = df['close'].rolling(bb_len).std()
+            bb_upper = sma + bb_mult * std
+            bb_lower = sma - bb_mult * std
+            kc_upper = sma + kc_mult * df['atr']
+            kc_lower = sma - kc_mult * df['atr']
+            squeeze_on = (bb_lower > kc_lower) & (bb_upper < kc_upper)
+            squeeze_off = ~squeeze_on
+            squeeze_fired = squeeze_off & squeeze_on.shift(1)
+            mom = df['close'] - df['close'].rolling(20).mean()
+            if direction == 'long':
+                return safe_bool(squeeze_fired & (mom > 0))
+            else:
+                return safe_bool(squeeze_fired & (mom < 0))
+
+        # === VWAP CROSS ===
+        elif strategy == 'vwap_cross':
+            if 'vwap' not in df.columns:
+                typical_price = (df['high'] + df['low'] + df['close']) / 3
+                df['vwap'] = (typical_price * df['volume']).cumsum() / df['volume'].cumsum()
+            if direction == 'long':
+                return safe_bool((df['close'] > df['vwap']) & (df['close'].shift(1) <= df['vwap'].shift(1)))
+            else:
+                return safe_bool((df['close'] < df['vwap']) & (df['close'].shift(1) >= df['vwap'].shift(1)))
+
+        # === PIVOT BOUNCE ===
+        elif strategy == 'pivot_bounce':
+            # Simple pivot calculation
+            pivot = (df['high'].shift(1) + df['low'].shift(1) + df['close'].shift(1)) / 3
+            r1 = 2 * pivot - df['low'].shift(1)
+            s1 = 2 * pivot - df['high'].shift(1)
+            if direction == 'long':
+                # Price bounces off S1
+                near_s1 = (df['low'] <= s1 * 1.005) & (df['low'] >= s1 * 0.995)
+                return safe_bool(near_s1 & (df['close'] > df['open']))
+            else:
+                # Price bounces off R1
+                near_r1 = (df['high'] >= r1 * 0.995) & (df['high'] <= r1 * 1.005)
+                return safe_bool(near_r1 & (df['close'] < df['open']))
+
+        # === LINEAR REGRESSION CHANNEL ===
+        elif strategy == 'linreg_channel':
+            period = 50
+            x = np.arange(period)
+            def linreg_series(data):
+                if len(data) < period:
+                    return np.nan
+                slope, intercept = np.polyfit(x, data[-period:], 1)
+                return intercept + slope * (period - 1)
+            linreg = df['close'].rolling(period).apply(linreg_series, raw=True)
+            std = df['close'].rolling(period).std()
+            upper = linreg + 2 * std
+            lower = linreg - 2 * std
+            if direction == 'long':
+                return safe_bool((df['close'] > lower) & (df['close'].shift(1) <= lower.shift(1)))
+            else:
+                return safe_bool((df['close'] < upper) & (df['close'].shift(1) >= upper.shift(1)))
+
+        # === AWESOME OSCILLATOR ===
+        elif strategy == 'ao_zero_cross':
+            if 'ao' not in df.columns:
+                hl2 = (df['high'] + df['low']) / 2
+                df['ao'] = hl2.rolling(5).mean() - hl2.rolling(34).mean()
+            if direction == 'long':
+                return safe_bool((df['ao'] > 0) & (df['ao'].shift(1) <= 0))
+            else:
+                return safe_bool((df['ao'] < 0) & (df['ao'].shift(1) >= 0))
+
+        elif strategy == 'ao_twin_peaks':
+            # AO twin peaks pattern (simplified)
+            if 'ao' not in df.columns:
+                hl2 = (df['high'] + df['low']) / 2
+                df['ao'] = hl2.rolling(5).mean() - hl2.rolling(34).mean()
+            lookback = 20
+            if direction == 'long':
+                # Two lows below zero, second higher than first, AO turning up
+                ao_low = df['ao'].rolling(lookback).min()
+                ao_rising = df['ao'] > df['ao'].shift(1)
+                return safe_bool((df['ao'] < 0) & (df['ao'] > ao_low) & ao_rising)
+            else:
+                # Two highs above zero, second lower than first, AO turning down
+                ao_high = df['ao'].rolling(lookback).max()
+                ao_falling = df['ao'] < df['ao'].shift(1)
+                return safe_bool((df['ao'] > 0) & (df['ao'] < ao_high) & ao_falling)
+
+        # === ELDER RAY ===
+        elif strategy == 'elder_ray':
+            ema_13 = df['close'].ewm(span=13, adjust=False).mean()
+            bull_power = df['high'] - ema_13
+            bear_power = df['low'] - ema_13
+            if direction == 'long':
+                # EMA rising, bear power negative but rising
+                ema_rising = ema_13 > ema_13.shift(1)
+                bear_rising = bear_power > bear_power.shift(1)
+                return safe_bool(ema_rising & (bear_power < 0) & bear_rising)
+            else:
+                # EMA falling, bull power positive but falling
+                ema_falling = ema_13 < ema_13.shift(1)
+                bull_falling = bull_power < bull_power.shift(1)
+                return safe_bool(ema_falling & (bull_power > 0) & bull_falling)
+
+        # === COMBO STRATEGIES ===
+        elif strategy == 'rsi_macd_combo':
+            # RSI extreme + MACD confirmation
+            histogram = df['macd'] - df['macd_signal']
+            if direction == 'long':
+                rsi_oversold = df['rsi'] < 30
+                macd_bullish = histogram > histogram.shift(1)
+                return safe_bool(rsi_oversold & macd_bullish)
+            else:
+                rsi_overbought = df['rsi'] > 70
+                macd_bearish = histogram < histogram.shift(1)
+                return safe_bool(rsi_overbought & macd_bearish)
+
+        elif strategy == 'bb_rsi_combo':
+            # BB touch + RSI extreme
+            if direction == 'long':
+                bb_touch = df['close'] <= df['bb_lower']
+                rsi_oversold = df['rsi'] < 35
+                return safe_bool(bb_touch & rsi_oversold)
+            else:
+                bb_touch = df['close'] >= df['bb_upper']
+                rsi_overbought = df['rsi'] > 65
+                return safe_bool(bb_touch & rsi_overbought)
+
+        elif strategy == 'supertrend_adx_combo':
+            # Supertrend signal + ADX > 25 filter
+            direction_change = df['supertrend_dir'] - df['supertrend_dir'].shift(1)
+            adx_strong = df['adx'] > 25
+            if direction == 'long':
+                return safe_bool((direction_change > 0) & adx_strong)
+            else:
+                return safe_bool((direction_change < 0) & adx_strong)
+
+        elif strategy == 'ema_rsi_combo':
+            # EMA cross + RSI confirmation
+            ema_cross_up = (df['ema_9'] > df['ema_21']) & (df['ema_9'].shift(1) <= df['ema_21'].shift(1))
+            ema_cross_down = (df['ema_9'] < df['ema_21']) & (df['ema_9'].shift(1) >= df['ema_21'].shift(1))
+            if direction == 'long':
+                return safe_bool(ema_cross_up & (df['rsi'] > 50))
+            else:
+                return safe_bool(ema_cross_down & (df['rsi'] < 50))
+
+        elif strategy == 'macd_stoch_combo':
+            # MACD cross + Stochastic confirmation
+            macd_cross_up = (df['macd'] > df['macd_signal']) & (df['macd'].shift(1) <= df['macd_signal'].shift(1))
+            macd_cross_down = (df['macd'] < df['macd_signal']) & (df['macd'].shift(1) >= df['macd_signal'].shift(1))
+            if direction == 'long':
+                return safe_bool(macd_cross_up & (df['stoch_k'] < 50))
+            else:
+                return safe_bool(macd_cross_down & (df['stoch_k'] > 50))
 
         return pd.Series(False, index=df.index)
 

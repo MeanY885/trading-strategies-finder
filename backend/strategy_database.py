@@ -142,6 +142,21 @@ class StrategyDatabase:
             ('elite_periods_total', 'INTEGER DEFAULT 0'),   # Total periods tested
             ('elite_validation_data', 'TEXT'),           # JSON with per-period results
             ('elite_score', 'REAL DEFAULT 0'),           # Consistency score 0-100
+
+            # Dual Pool Architecture fields (TP/SL vs Indicator Exit)
+            ('pool', "TEXT DEFAULT 'tp_sl'"),            # 'tp_sl' or 'indicator_exit'
+            ('exit_type', "TEXT DEFAULT 'fixed_tp_sl'"), # 'fixed_tp_sl', 'trailing_stop', 'indicator_exit'
+            ('exit_indicator', 'TEXT'),                  # 'supertrend', 'ema_cross', 'psar', 'mcginley', etc.
+            ('trailing_atr_mult', 'REAL'),               # ATR multiplier for trailing stops
+            ('strategy_style', "TEXT DEFAULT 'unknown'"), # 'trend_following', 'mean_reversion', 'breakout'
+
+            # Trend-following metrics
+            ('avg_trade_duration_hours', 'REAL DEFAULT 0'),  # Average holding period
+            ('mfe_capture_ratio', 'REAL DEFAULT 0'),         # How much of max favorable excursion was captured
+            ('avg_winner_pct', 'REAL DEFAULT 0'),            # Average winning trade %
+            ('avg_loser_pct', 'REAL DEFAULT 0'),             # Average losing trade %
+            ('risk_reward_ratio', 'REAL DEFAULT 0'),         # avg_winner / avg_loser
+            ('trend_following_score', 'REAL DEFAULT 0'),     # Score using trend-following weights
         ]
 
         for col_name, col_type in migration_columns:

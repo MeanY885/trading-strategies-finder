@@ -530,6 +530,82 @@ class MultiEngineCalculator:
         return self.supertrend_tradingview(factor, atr_length)
 
     # =========================================================================
+    # McGinley Dynamic
+    # =========================================================================
+
+    def mcginley_dynamic(self, length: int = 14, k: float = 0.6) -> pd.Series:
+        """
+        McGinley Dynamic - Self-adjusting moving average that tracks price more closely.
+
+        The McGinley Dynamic automatically adjusts its speed based on market velocity,
+        providing smoother trend following with less lag than traditional MAs.
+
+        Formula: MD = MD[1] + (Close - MD[1]) / (k * N * (Close/MD[1])^4)
+
+        Where:
+        - MD = McGinley Dynamic value
+        - N = Period length
+        - k = Constant (0.6 in TradingView)
+
+        Args:
+            length: Lookback period (default 14)
+            k: Speed adjustment constant (default 0.6, TradingView uses 0.6)
+
+        Returns:
+            pd.Series: McGinley Dynamic values
+        """
+        close = self.df['close'].values
+        n = len(close)
+
+        md = np.full(n, np.nan)
+        md[0] = close[0]
+
+        for i in range(1, n):
+            if md[i-1] == 0 or np.isnan(md[i-1]):
+                md[i] = close[i]
+            else:
+                # McGinley Dynamic formula
+                ratio = close[i] / md[i-1]
+                # Prevent extreme ratios from causing numerical issues
+                ratio = max(0.5, min(ratio, 2.0))
+                divisor = k * length * (ratio ** 4)
+                # Ensure divisor is not zero
+                divisor = max(divisor, 0.001)
+                md[i] = md[i-1] + (close[i] - md[i-1]) / divisor
+
+        return pd.Series(md, index=self.df.index, name=f'McGinley_{length}')
+
+    def mcginley_tradingview(self, length: int = 14) -> pd.Series:
+        """McGinley Dynamic using TradingView-compatible calculation"""
+        return self.mcginley_dynamic(length, k=0.6)
+
+    def mcginley_native(self, length: int = 14) -> pd.Series:
+        """McGinley Dynamic - same implementation for both engines"""
+        return self.mcginley_dynamic(length, k=0.6)
+
+    def mcginley_direction(self, length: int = 14) -> pd.Series:
+        """
+        Get McGinley Dynamic trend direction.
+
+        Returns:
+            pd.Series: 1 for rising (bullish), -1 for falling (bearish), 0 for flat
+        """
+        md = self.mcginley_dynamic(length)
+        direction = np.zeros(len(md))
+
+        for i in range(1, len(md)):
+            if pd.isna(md.iloc[i]) or pd.isna(md.iloc[i-1]):
+                direction[i] = 0
+            elif md.iloc[i] > md.iloc[i-1]:
+                direction[i] = 1  # Rising - bullish
+            elif md.iloc[i] < md.iloc[i-1]:
+                direction[i] = -1  # Falling - bearish
+            else:
+                direction[i] = direction[i-1]  # Maintain previous
+
+        return pd.Series(direction, index=self.df.index, name='McGinley_Direction')
+
+    # =========================================================================
     # Aroon
     # =========================================================================
 
@@ -958,6 +1034,10 @@ def calculate_indicators(df: pd.DataFrame, engine: IndicatorEngine = IndicatorEn
         result['supertrend'] = supertrend
         result['supertrend_dir'] = supertrend_dir
 
+        # McGinley Dynamic
+        result['mcginley'] = calc.mcginley_tradingview()
+        result['mcginley_direction'] = calc.mcginley_direction()
+
     elif engine == IndicatorEngine.NATIVE:
         # Core indicators - TA-Lib (fast)
         result['rsi'] = calc.rsi_native()
@@ -995,6 +1075,10 @@ def calculate_indicators(df: pd.DataFrame, engine: IndicatorEngine = IndicatorEn
         supertrend, supertrend_dir = calc.supertrend_native()
         result['supertrend'] = supertrend
         result['supertrend_dir'] = supertrend_dir
+
+        # McGinley Dynamic
+        result['mcginley'] = calc.mcginley_native()
+        result['mcginley_direction'] = calc.mcginley_direction()
 
         # Native-only: Advanced indicators
         result['kama'] = calc.kama_native()

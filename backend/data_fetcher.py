@@ -97,6 +97,41 @@ class BinanceDataFetcher:
         480: '8h', 720: '12h', 1440: '1d',
     }
 
+    # ==========================================================================
+    # EXPANDED TRADING PAIRS - For Portfolio Testing
+    # ==========================================================================
+    # Top 20 crypto pairs by volume for diversified strategy testing
+    CORE_PAIRS = [
+        'BTCUSDT',   # Bitcoin - Market leader
+        'ETHUSDT',   # Ethereum - DeFi & Smart Contracts
+        'BNBUSDT',   # Binance Coin - Exchange token
+        'SOLUSDT',   # Solana - High performance L1
+        'XRPUSDT',   # Ripple - Payments
+        'ADAUSDT',   # Cardano - Academic blockchain
+        'DOGEUSDT',  # Dogecoin - Meme coin leader
+        'AVAXUSDT',  # Avalanche - Fast finality
+        'DOTUSDT',   # Polkadot - Interoperability
+        'MATICUSDT', # Polygon - Ethereum L2
+        'LINKUSDT',  # Chainlink - Oracle leader
+        'LTCUSDT',   # Litecoin - Digital silver
+        'ATOMUSDT',  # Cosmos - IBC ecosystem
+        'UNIUSDT',   # Uniswap - DEX leader
+        'NEARUSDT',  # Near Protocol - Sharded L1
+        'APTUSDT',   # Aptos - Move-based L1
+        'ARBUSDT',   # Arbitrum - Ethereum L2
+        'OPUSDT',    # Optimism - Ethereum L2
+        'INJUSDT',   # Injective - DeFi derivatives
+        'SUIUSDT',   # Sui - Move-based L1
+    ]
+
+    # Recommended timeframes for strategy testing
+    RECOMMENDED_TIMEFRAMES = [
+        {'label': '15m', 'minutes': 15, 'use_case': 'Scalping, day trading'},
+        {'label': '1h', 'minutes': 60, 'use_case': 'Intraday swing'},
+        {'label': '4h', 'minutes': 240, 'use_case': 'Swing trading'},
+        {'label': '1d', 'minutes': 1440, 'use_case': 'Position trading'},
+    ]
+
     # Expected candles per timeframe per day (for validation)
     CANDLES_PER_DAY = {
         1: 1440, 3: 480, 5: 288, 15: 96, 30: 48,
