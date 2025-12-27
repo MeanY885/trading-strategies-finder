@@ -3084,6 +3084,120 @@ async def disable_all_priority():
 
 
 # =============================================================================
+# PERIOD BOUNDARY DETECTION - Smart refresh based on calendar boundaries
+# =============================================================================
+
+def has_period_boundary_crossed(period: str, last_validated_at: str) -> bool:
+    """
+    Check if a period boundary has been crossed since last validation.
+
+    Logic:
+    - 1 week: New week started (crossed a Monday)
+    - 2 weeks: 2 weeks have passed since last validation
+    - 1 month: New month started
+    - 3 months: New quarter started (Jan/Apr/Jul/Oct)
+    - 6 months: Crossed Jan 1 or Jul 1
+    - 9 months: 9 months have passed
+    - 1 year: New year started (crossed Jan 1)
+    - 2 years: 2 Jan 1sts have passed
+    - 3 years: 3 years have passed
+    - 5 years: 5 years have passed
+    """
+    from datetime import datetime, timedelta
+
+    if not last_validated_at:
+        return True  # Never validated
+
+    try:
+        # Parse the validation timestamp
+        if 'T' in last_validated_at:
+            validated = datetime.fromisoformat(last_validated_at.replace('Z', '+00:00'))
+            if validated.tzinfo:
+                validated = validated.replace(tzinfo=None)
+        else:
+            validated = datetime.strptime(last_validated_at, '%Y-%m-%d %H:%M:%S')
+
+        now = datetime.now()
+
+        if period == "1 week":
+            # Check if we've crossed a Monday since validation
+            # Find the most recent Monday
+            days_since_monday = now.weekday()  # Monday = 0
+            this_monday = now - timedelta(days=days_since_monday)
+            this_monday = this_monday.replace(hour=0, minute=0, second=0, microsecond=0)
+            return validated < this_monday
+
+        elif period == "2 weeks":
+            # Check if 2 weeks have passed
+            return (now - validated).days >= 14
+
+        elif period == "1 month":
+            # Check if we're in a new month
+            return (now.year, now.month) != (validated.year, validated.month)
+
+        elif period == "3 months":
+            # Check if we've entered a new quarter
+            def get_quarter(dt):
+                return (dt.year, (dt.month - 1) // 3)
+            return get_quarter(now) != get_quarter(validated)
+
+        elif period == "6 months":
+            # Check if we've crossed Jan 1 or Jul 1
+            def get_half(dt):
+                return (dt.year, 0 if dt.month < 7 else 1)
+            return get_half(now) != get_half(validated)
+
+        elif period == "9 months":
+            # Check if 9 months have passed
+            months_diff = (now.year - validated.year) * 12 + (now.month - validated.month)
+            return months_diff >= 9
+
+        elif period in ["1 year", "2 years", "3 years", "5 years"]:
+            # All yearly periods refresh on Jan 1 (new year)
+            return now.year != validated.year
+
+        else:
+            # Unknown period, always refresh
+            return True
+
+    except Exception as e:
+        print(f"[Period Boundary] Error parsing date: {e}")
+        return True  # Re-validate on error
+
+
+def get_stale_periods(validation_data: dict, validation_periods: list) -> list:
+    """
+    Given existing validation data, return list of periods that need refreshing.
+    """
+    if not validation_data:
+        return validation_periods  # All periods need validation
+
+    stale = []
+    for vp in validation_periods:
+        period_name = vp["period"]
+
+        # Find this period in validation data
+        period_result = None
+        if isinstance(validation_data, list):
+            for result in validation_data:
+                if result.get("period") == period_name:
+                    period_result = result
+                    break
+
+        if not period_result:
+            # Period never validated
+            stale.append(vp)
+            continue
+
+        # Check if boundary has been crossed
+        validated_at = period_result.get("validated_at")
+        if has_period_boundary_crossed(period_name, validated_at):
+            stale.append(vp)
+
+    return stale
+
+
+# =============================================================================
 # AUTO-VALIDATION LOOP - Runs continuously in background
 # =============================================================================
 
@@ -3121,28 +3235,73 @@ async def start_auto_elite_validation():
                 elite_validation_status["message"] = f"Found {len(pending)} pending strategies to validate"
                 await validate_all_strategies_for_elite()
                 print(f"[Elite Auto-Validation] Validation batch complete, processed {elite_validation_status.get('processed', 0)} strategies")
+                # Brief pause before checking for more pending
+                await asyncio.sleep(5)
             else:
-                # No pending - re-validate oldest strategy to keep data fresh
-                validated = [s for s in strategies if s.get('elite_validated_at')]
-                if validated:
-                    # Sort by validated_at ascending (oldest first)
-                    validated.sort(key=lambda x: x.get('elite_validated_at', ''))
-                    oldest = validated[0]
+                # No pending - check if any validated strategies have stale periods
+                # that need refreshing based on calendar boundaries
+                validation_periods = [
+                    {"period": "1 week", "months": 0.25, "days": 7},
+                    {"period": "2 weeks", "months": 0.5, "days": 14},
+                    {"period": "1 month", "months": 1.0, "days": 30},
+                    {"period": "3 months", "months": 3.0, "days": 90},
+                    {"period": "6 months", "months": 6.0, "days": 180},
+                    {"period": "9 months", "months": 9.0, "days": 270},
+                    {"period": "1 year", "months": 12.0, "days": 365},
+                    {"period": "2 years", "months": 24.0, "days": 730},
+                    {"period": "3 years", "months": 36.0, "days": 1095},
+                    {"period": "5 years", "months": 60.0, "days": 1825},
+                ]
 
-                    # Reset to pending and re-validate
+                validated = [s for s in strategies if s.get('elite_validated_at')]
+                strategies_with_stale = []
+
+                for s in validated:
+                    # Check if this strategy has any stale periods
+                    existing_data = s.get('elite_validation_data')
+                    existing_results = []
+                    if existing_data:
+                        try:
+                            existing_results = json.loads(existing_data) if isinstance(existing_data, str) else existing_data
+                        except:
+                            existing_results = []
+
+                    stale = get_stale_periods(existing_results, validation_periods)
+                    if stale:
+                        strategies_with_stale.append({
+                            'strategy': s,
+                            'stale_count': len(stale),
+                            'stale_periods': [p['period'] for p in stale]
+                        })
+
+                if strategies_with_stale:
+                    # Sort by number of stale periods (most stale first)
+                    strategies_with_stale.sort(key=lambda x: -x['stale_count'])
+                    top = strategies_with_stale[0]
+                    strategy = top['strategy']
+
+                    print(f"[Elite Auto-Validation] Found {len(strategies_with_stale)} strategies with stale periods")
+                    print(f"[Elite Auto-Validation] Re-validating {strategy['strategy_name']}: {top['stale_count']} stale periods {top['stale_periods']}")
+
+                    # Mark as pending so it gets picked up by the validation function
+                    # Note: We DON'T clear validation_data so it can reuse fresh periods
                     db.update_elite_status(
-                        strategy_id=oldest['id'],
+                        strategy_id=strategy['id'],
                         elite_status='pending',
-                        periods_passed=0,
-                        periods_total=0,
-                        validation_data=None,
-                        elite_score=0
+                        periods_passed=strategy.get('elite_periods_passed', 0),
+                        periods_total=strategy.get('elite_periods_total', 0),
+                        validation_data=strategy.get('elite_validation_data'),  # Keep existing data!
+                        elite_score=strategy.get('elite_score', 0)
                     )
-                    elite_validation_status["message"] = f"Re-validating: {oldest['strategy_name']} (oldest)"
+                    elite_validation_status["message"] = f"Refreshing stale periods: {strategy['strategy_name']}"
                     await validate_all_strategies_for_elite()
+                    # Brief pause after validation
+                    await asyncio.sleep(10)
                 else:
-                    elite_validation_status["message"] = "No strategies to validate"
-                    await asyncio.sleep(60)
+                    # No stale periods anywhere - wait before checking again
+                    elite_validation_status["message"] = "All periods fresh, waiting for next boundary..."
+                    print(f"[Elite Auto-Validation] All {len(validated)} strategies have fresh periods, checking again in 1 hour")
+                    await asyncio.sleep(3600)  # Check every hour
 
         except Exception as e:
             print(f"[Elite Auto-Validation] Error: {e}")
@@ -3295,10 +3454,33 @@ async def validate_all_strategies_for_elite():
                 "profit_factor": strategy.get('profit_factor', 0),
             }
 
+            # Load existing validation data to check for stale periods
+            existing_validation_data = strategy.get('elite_validation_data')
+            existing_results = []
+            if existing_validation_data:
+                try:
+                    existing_results = json.loads(existing_validation_data) if isinstance(existing_validation_data, str) else existing_validation_data
+                except:
+                    existing_results = []
+
+            # Determine which periods need refreshing based on calendar boundaries
+            stale_periods = get_stale_periods(existing_results, validation_periods)
+
+            # If no periods are stale, skip this strategy entirely
+            if not stale_periods and existing_results:
+                print(f"[Elite Validation] Strategy {strategy_id}: All periods still fresh, skipping")
+                elite_validation_status["processed"] += 1
+                continue
+
+            stale_period_names = [p["period"] for p in stale_periods]
+            if stale_periods and existing_results:
+                print(f"[Elite Validation] Strategy {strategy_id}: Refreshing {len(stale_periods)} stale periods: {stale_period_names}")
+
             passed = 0
             total_testable = 0
             results = []
 
+            # Build results by keeping fresh results and re-running stale ones
             for vp in validation_periods:
                 # === PAUSE if optimizer starts - don't break, WAIT ===
                 while unified_status["running"]:
@@ -3306,13 +3488,32 @@ async def validate_all_strategies_for_elite():
                     elite_validation_status["message"] = f"Paused during {strategy_name} (optimizer running)"
                     await asyncio.sleep(2)
                 elite_validation_status["paused"] = False
+
+                # Check if this period is still fresh (not stale)
+                if vp["period"] not in stale_period_names and existing_results:
+                    # Keep existing result for this period
+                    existing_period_result = None
+                    for er in existing_results:
+                        if er.get("period") == vp["period"]:
+                            existing_period_result = er
+                            break
+                    if existing_period_result:
+                        results.append(existing_period_result)
+                        # Count towards totals if it was testable
+                        if existing_period_result.get("status") not in ["limit_exceeded", "insufficient_data", "error"]:
+                            total_testable += 1
+                            if existing_period_result.get("status") in ['consistent', 'minor_drop']:
+                                passed += 1
+                        continue
+
                 elite_validation_status["message"] = f"Validating: {strategy_name} ({vp['period']})"
 
                 if vp["days"] > max_days:
                     # Skip - exceeds data limit
                     results.append({
                         "period": vp["period"],
-                        "status": "limit_exceeded"
+                        "status": "limit_exceeded",
+                        "validated_at": datetime.now().isoformat()
                     })
                     continue
 
@@ -3328,7 +3529,8 @@ async def validate_all_strategies_for_elite():
                     if len(df) < 50:
                         results.append({
                             "period": vp["period"],
-                            "status": "insufficient_data"
+                            "status": "insufficient_data",
+                            "validated_at": datetime.now().isoformat()
                         })
                         continue
 
@@ -3369,13 +3571,15 @@ async def validate_all_strategies_for_elite():
                         "win_rate": round(result.win_rate, 2),
                         "pnl": round(result.total_pnl, 2),
                         "return_pct": return_pct,
+                        "validated_at": datetime.now().isoformat()
                     })
 
                 except Exception as e:
                     results.append({
                         "period": vp["period"],
                         "status": "error",
-                        "message": str(e)
+                        "message": str(e),
+                        "validated_at": datetime.now().isoformat()
                     })
 
             # Calculate elite score:
@@ -3399,7 +3603,10 @@ async def validate_all_strategies_for_elite():
 
             # Determine elite status
             if total_testable == 0:
-                elite_status = 'pending'
+                # No testable periods (all exceeded data limits or had errors)
+                # Mark as 'untestable' to prevent infinite re-validation loops
+                elite_status = 'untestable'
+                print(f"[Elite Validation] Strategy {strategy_id} has no testable periods - marking as untestable")
             elif passed == total_testable:
                 elite_status = 'elite'
             elif passed >= total_testable * 0.7:

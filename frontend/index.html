@@ -969,16 +969,9 @@
             min-width: 70px;
         }
 
-        /* Updated column */
+        /* Actions column */
         .elite-table th:nth-child(15),
         .elite-table td:nth-child(15) {
-            min-width: 70px;
-            font-size: 0.75rem;
-        }
-
-        /* Actions column */
-        .elite-table th:nth-child(16),
-        .elite-table td:nth-child(16) {
             min-width: 80px;
         }
 
@@ -1916,13 +1909,17 @@
                     <div class="input-group">
                         <label>Historical Period</label>
                         <select id="filter-period" onchange="applyHistoryFilters()">
-                            <option value="">All Time</option>
+                            <option value="">All Periods</option>
                             <option value="1w">1 Week</option>
+                            <option value="2w">2 Weeks</option>
                             <option value="1m">1 Month</option>
                             <option value="3m">3 Months</option>
                             <option value="6m">6 Months</option>
-                            <option value="12m">12 Months</option>
+                            <option value="9m">9 Months</option>
+                            <option value="1y">1 Year</option>
                             <option value="2y">2 Years</option>
+                            <option value="3y">3 Years</option>
+                            <option value="5y">5 Years</option>
                         </select>
                     </div>
 
@@ -2149,7 +2146,6 @@
                                 <th class="sortable" data-sort="3y" onclick="sortEliteTable('3y')">3Y</th>
                                 <th class="sortable" data-sort="5y" onclick="sortEliteTable('5y')">5Y</th>
                                 <th class="sortable" data-sort="status" onclick="sortEliteTable('status')">Status</th>
-                                <th class="sortable" data-sort="updated" onclick="sortEliteTable('updated')">Updated</th>
                                 <th>Actions</th>
                             </tr>
                         </thead>
@@ -2918,16 +2914,20 @@
                 // Filter by backtest data DURATION if specified (client-side)
                 // Shows only strategies tested on at least X amount of data
                 if (historyFilters.period) {
-                    // Required duration in days (with 10% tolerance)
-                    let requiredDays = 0;
-                    let periodLabel = '';
+                    // Required duration in days (with tolerance for filtering)
+                    let minDays = 0;
+                    let maxDays = 0;
                     switch (historyFilters.period) {
-                        case '1w': requiredDays = 6; periodLabel = '1 week'; break;    // ~7 days with tolerance
-                        case '1m': requiredDays = 27; periodLabel = '1 month'; break;  // ~30 days with tolerance
-                        case '3m': requiredDays = 80; periodLabel = '3 months'; break; // ~90 days with tolerance
-                        case '6m': requiredDays = 160; periodLabel = '6 months'; break; // ~180 days with tolerance
-                        case '12m': requiredDays = 330; periodLabel = '12 months'; break; // ~365 days with tolerance
-                        case '2y': requiredDays = 650; periodLabel = '2 years'; break;  // ~730 days with tolerance
+                        case '1w': minDays = 5; maxDays = 10; break;
+                        case '2w': minDays = 11; maxDays = 20; break;
+                        case '1m': minDays = 21; maxDays = 45; break;
+                        case '3m': minDays = 46; maxDays = 100; break;
+                        case '6m': minDays = 101; maxDays = 200; break;
+                        case '9m': minDays = 201; maxDays = 300; break;
+                        case '1y': minDays = 301; maxDays = 400; break;
+                        case '2y': minDays = 401; maxDays = 800; break;
+                        case '3y': minDays = 801; maxDays = 1200; break;
+                        case '5y': minDays = 1201; maxDays = 3650; break;
                     }
 
                     historyStrategies = historyStrategies.filter(s => {
@@ -2949,7 +2949,8 @@
                             // Negative or unreasonable days indicates bad data
                             if (durationDays < 0 || durationDays > 3650) return false;
 
-                            return durationDays >= requiredDays;
+                            // Match strategies within the period range
+                            return durationDays >= minDays && durationDays <= maxDays;
                         } catch (e) {
                             return false;
                         }
@@ -3707,11 +3708,16 @@
                 // Negative or unreasonable days indicates bad data
                 if (days < 0 || days > 3650) return '-';
 
-                if (days <= 10) return '1w';
-                if (days <= 45) return '1m';
-                if (days <= 100) return '3m';
-                if (days <= 200) return '6m';
-                return '12m';
+                if (days <= 10) return '1 Week';
+                if (days <= 20) return '2 Weeks';
+                if (days <= 45) return '1 Month';
+                if (days <= 100) return '3 Months';
+                if (days <= 200) return '6 Months';
+                if (days <= 300) return '9 Months';
+                if (days <= 400) return '1 Year';
+                if (days <= 800) return '2 Years';
+                if (days <= 1200) return '3 Years';
+                return '5 Years';
             } catch (e) {
                 return '-';
             }
@@ -6153,12 +6159,28 @@
             emptyMsg.style.display = 'none';
             tbody.innerHTML = '';
 
-            // Helper to format P&L cell
+            // Helper to format P&L cell with validated date
             function formatPnL(periodData) {
+                // Format the validated_at date compactly
+                function formatDate(timestamp) {
+                    if (!timestamp) return '';
+                    try {
+                        const date = new Date(timestamp);
+                        const day = date.getDate();
+                        const month = date.toLocaleString('en-GB', { month: 'short' });
+                        return `${day} ${month}`;
+                    } catch (e) {
+                        return '';
+                    }
+                }
+
+                const dateStr = formatDate(periodData?.validated_at);
+                const dateHtml = dateStr ? `<br><small style="opacity: 0.4; font-size: 0.6rem;">${dateStr}</small>` : '';
+
                 if (!periodData) return '<span style="color: var(--text-muted);">--</span>';
-                if (periodData.status === 'limit_exceeded') return '<span style="color: var(--text-muted);">N/A</span>';
-                if (periodData.status === 'no_trades') return '<span style="color: var(--text-muted);">0</span>';
-                if (periodData.status === 'error') return '<span style="color: var(--text-muted);">err</span>';
+                if (periodData.status === 'limit_exceeded') return `<span style="color: var(--text-muted);">N/A${dateHtml}</span>`;
+                if (periodData.status === 'no_trades') return `<span style="color: var(--text-muted);">0${dateHtml}</span>`;
+                if (periodData.status === 'error') return `<span style="color: var(--text-muted);">err${dateHtml}</span>`;
                 if (periodData.pnl === undefined) return '<span style="color: var(--text-muted);">--</span>';
 
                 const pnl = periodData.pnl;
@@ -6171,22 +6193,7 @@
 
                 // Always show both £ and %
                 const pctSign = returnPct >= 0 ? '+' : '';
-                return `<span class="${colorClass}">£${sign}${pnl.toFixed(0)}<br><small style="opacity: 0.7;">(${pctSign}${returnPct.toFixed(1)}%)</small></span>`;
-            }
-
-            // Helper to format validated_at timestamp
-            function formatValidatedAt(timestamp) {
-                if (!timestamp) return '--';
-                try {
-                    const date = new Date(timestamp);
-                    const day = date.getDate();
-                    const month = date.toLocaleString('en-GB', { month: 'short' });
-                    const hours = date.getHours().toString().padStart(2, '0');
-                    const mins = date.getMinutes().toString().padStart(2, '0');
-                    return `${day} ${month}<br>${hours}:${mins}`;
-                } catch (e) {
-                    return '--';
-                }
+                return `<span class="${colorClass}">£${sign}${pnl.toFixed(0)}<br><small style="opacity: 0.7;">(${pctSign}${returnPct.toFixed(1)}%)</small>${dateHtml}</span>`;
             }
 
             // Helper to get period PnL value for sorting
@@ -6258,10 +6265,6 @@
                         const statusOrder = { 'elite': 3, 'partial': 2, 'failed': 1 };
                         aVal = statusOrder[bestA.elite_status] || 0;
                         bVal = statusOrder[bestB.elite_status] || 0;
-                        break;
-                    case 'updated':
-                        aVal = new Date(bestA.elite_validated_at || 0).getTime();
-                        bVal = new Date(bestB.elite_validated_at || 0).getTime();
                         break;
                     case '1w':
                     case '2w':
@@ -6367,7 +6370,6 @@
                     <td>${formatPnL(periodData['3 years'])}</td>
                     <td>${formatPnL(periodData['5 years'])}</td>
                     <td>${statusBadge}</td>
-                    <td style="font-size: 0.75rem; color: var(--text-muted); white-space: nowrap;">${formatValidatedAt(best.elite_validated_at)}</td>
                     <td>
                         <button class="btn btn-small" onclick="event.stopPropagation(); showPineScript(${best.id})" title="Pine Script">📋</button>
                         <button class="btn btn-small" onclick="event.stopPropagation(); showExportPeriodModal(${best.id}, '${best.strategy_name.replace(/'/g, "\\'")}')" title="Export Trades CSV">📊</button>
@@ -6387,7 +6389,7 @@
                     variantsRow.className = 'elite-variants-row';
                     variantsRow.id = `elite-variants-${best.id}`;
                     variantsRow.style.display = 'none';
-                    variantsRow.innerHTML = `<td colspan="16" style="padding: 0; background: var(--bg-secondary);"></td>`;
+                    variantsRow.innerHTML = `<td colspan="15" style="padding: 0; background: var(--bg-secondary);"></td>`;
                     tbody.appendChild(variantsRow);
 
                     // Restore expanded state if this was the previously expanded group
