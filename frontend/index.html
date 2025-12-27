@@ -3096,6 +3096,7 @@
                         <div class="action-btn-group">
                             <button class="action-btn" onclick="event.stopPropagation(); copyPineScript(${bestStrategy.id})" title="Copy Pine Script">📋</button>
                             <button class="action-btn" onclick="event.stopPropagation(); downloadPineScript(${bestStrategy.id}, '${bestStrategy.strategy_name}')" title="Download Pine Script">📜</button>
+                            <button class="action-btn" onclick="event.stopPropagation(); exportTradesCSV(${bestStrategy.id}, '${bestStrategy.strategy_name}')" title="Export Trades CSV">📊</button>
                             <button class="action-btn validate" onclick="event.stopPropagation(); validateFromHistory(${bestStrategy.id})" title="Validate Strategy">🔬</button>
                             <button class="action-btn danger" onclick="event.stopPropagation(); deleteStrategy(${bestStrategy.id}, '${bestStrategy.strategy_name}')" title="Delete">🗑️</button>
                         </div>
@@ -3189,6 +3190,7 @@
                             <td style="padding: 0.4rem; text-align: center;">
                                 <button class="action-btn" onclick="event.stopPropagation(); copyPineScript(${variant.id})" title="Copy Pine Script">📋</button>
                                 <button class="action-btn" onclick="event.stopPropagation(); downloadPineScript(${variant.id}, '${variant.strategy_name}')" title="Download">📜</button>
+                                <button class="action-btn" onclick="event.stopPropagation(); exportTradesCSV(${variant.id}, '${variant.strategy_name}')" title="Export Trades CSV">📊</button>
                                 <button class="action-btn validate" onclick="event.stopPropagation(); validateFromHistory(${variant.id})" title="Validate">🔬</button>
                                 <button class="action-btn danger" onclick="event.stopPropagation(); deleteStrategy(${variant.id}, '${variant.strategy_name}')" title="Delete">🗑️</button>
                             </td>
@@ -3561,6 +3563,40 @@
             } catch (error) {
                 console.error('Failed to download Pine Script:', error);
                 alert('Failed to download Pine Script: ' + error.message);
+            }
+        }
+
+        // Export Trades CSV
+        async function exportTradesCSV(strategyId, strategyName) {
+            try {
+                showToast('Generating trades CSV...');
+                const response = await fetch(`/api/export-trades/${strategyId}`);
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.detail || 'Export failed');
+                }
+
+                // Get filename from Content-Disposition header or generate one
+                const disposition = response.headers.get('Content-Disposition');
+                let filename = `${strategyName.replace(/[^a-z0-9]/gi, '_')}_trades.csv`;
+                if (disposition) {
+                    const match = disposition.match(/filename="?([^"]+)"?/);
+                    if (match) filename = match[1];
+                }
+
+                const blob = await response.blob();
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+                showToast('Trades CSV downloaded!');
+            } catch (error) {
+                console.error('Failed to export trades:', error);
+                showToast('Export failed: ' + error.message, 'error');
             }
         }
 
@@ -6178,6 +6214,12 @@
                 '5y': '5 years'
             };
 
+            // Debug: log first strategy to see structure
+            if (strategies.length > 0) {
+                console.log('First strategy from API:', strategies[0]);
+                console.log('Strategy ID:', strategies[0].id);
+            }
+
             // Group strategies by name+symbol+timeframe+direction
             const groups = {};
             strategies.forEach(s => {
@@ -6328,6 +6370,7 @@
                     <td style="font-size: 0.75rem; color: var(--text-muted); white-space: nowrap;">${formatValidatedAt(best.elite_validated_at)}</td>
                     <td>
                         <button class="btn btn-small" onclick="event.stopPropagation(); showPineScript(${best.id})" title="Pine Script">📋</button>
+                        <button class="btn btn-small" onclick="event.stopPropagation(); showExportPeriodModal(${best.id}, '${best.strategy_name.replace(/'/g, "\\'")}')" title="Export Trades CSV">📊</button>
                         <button class="btn btn-small" onclick="event.stopPropagation(); validateFromHistory(${best.id})" title="Re-validate">🔬</button>
                     </td>
                 `;
@@ -6454,6 +6497,7 @@
                             <td style="padding: 0.4rem; text-align: center;">${statusBadge}</td>
                             <td style="padding: 0.4rem; text-align: center;">
                                 <button class="btn btn-small" onclick="event.stopPropagation(); showPineScript(${variant.id})" title="Pine Script">📋</button>
+                                <button class="btn btn-small" onclick="event.stopPropagation(); showExportPeriodModal(${variant.id}, '${variant.strategy_name.replace(/'/g, "\\'")}')" title="Export Trades CSV">📊</button>
                                 <button class="btn btn-small" onclick="event.stopPropagation(); validateFromHistory(${variant.id})" title="Re-validate">🔬</button>
                             </td>
                         </tr>`;
@@ -6760,6 +6804,32 @@
         </div>
     </div>
 
+    <!-- Export Period Selection Modal -->
+    <div id="exportPeriodModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 9999; justify-content: center; align-items: center;">
+        <div style="background: var(--bg-card); border-radius: 12px; width: 90%; max-width: 500px; display: flex; flex-direction: column; border: 1px solid var(--border);">
+            <div style="padding: 1rem 1.5rem; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;">
+                <h3 id="exportModalTitle" style="margin: 0; color: var(--text-primary);">Export Trades CSV</h3>
+                <button onclick="closeExportModal()" style="background: none; border: none; color: var(--text-muted); font-size: 1.5rem; cursor: pointer;">&times;</button>
+            </div>
+            <div style="padding: 1.5rem;">
+                <p style="color: var(--text-muted); margin: 0 0 1rem 0; font-size: 0.9rem;">Select period(s) to export:</p>
+                <div id="exportPeriodOptions" style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.5rem;">
+                    <!-- Populated dynamically -->
+                </div>
+                <div style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border);">
+                    <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; color: var(--text-primary);">
+                        <input type="checkbox" id="exportSelectAll" onchange="toggleExportSelectAll()" style="width: 18px; height: 18px;">
+                        <span>Select All (download as separate files)</span>
+                    </label>
+                </div>
+            </div>
+            <div style="padding: 1rem 1.5rem; border-top: 1px solid var(--border); display: flex; gap: 0.5rem; justify-content: flex-end;">
+                <button onclick="closeExportModal()" class="btn btn-secondary" style="font-size: 0.85rem;">Cancel</button>
+                <button onclick="executeExport()" class="btn" style="font-size: 0.85rem;">Export Selected</button>
+            </div>
+        </div>
+    </div>
+
     <script>
         function showPineModal(title, script) {
             document.getElementById('pineModalTitle').textContent = title;
@@ -6792,13 +6862,131 @@
 
         // Close modal on escape key
         document.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape') closePineModal();
+            if (e.key === 'Escape') {
+                closePineModal();
+                closeExportModal();
+            }
         });
 
         // Close modal when clicking outside
         document.getElementById('pineScriptModal')?.addEventListener('click', (e) => {
             if (e.target.id === 'pineScriptModal') closePineModal();
         });
+        document.getElementById('exportPeriodModal')?.addEventListener('click', (e) => {
+            if (e.target.id === 'exportPeriodModal') closeExportModal();
+        });
+
+        // Export Period Modal Functions
+        let currentExportStrategyId = null;
+        let currentExportStrategyName = null;
+
+        const exportPeriods = [
+            { name: '1w', label: '1 Week', months: 0.25 },
+            { name: '2w', label: '2 Weeks', months: 0.5 },
+            { name: '1m', label: '1 Month', months: 1 },
+            { name: '3m', label: '3 Months', months: 3 },
+            { name: '6m', label: '6 Months', months: 6 },
+            { name: '9m', label: '9 Months', months: 9 },
+            { name: '1y', label: '1 Year', months: 12 },
+            { name: '2y', label: '2 Years', months: 24 },
+            { name: '3y', label: '3 Years', months: 36 },
+            { name: '5y', label: '5 Years', months: 60 }
+        ];
+
+        function showExportPeriodModal(strategyId, strategyName) {
+            if (!strategyId) {
+                showToast('Error: No strategy ID provided', 'error');
+                console.error('showExportPeriodModal called with invalid strategyId:', strategyId);
+                return;
+            }
+            currentExportStrategyId = strategyId;
+            currentExportStrategyName = strategyName || 'Unknown';
+            document.getElementById('exportModalTitle').textContent = `Export Trades: ${currentExportStrategyName}`;
+
+            // Build period checkboxes
+            const container = document.getElementById('exportPeriodOptions');
+            container.innerHTML = exportPeriods.map(p => `
+                <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; padding: 0.5rem; background: var(--bg-secondary); border-radius: 6px; color: var(--text-primary);">
+                    <input type="checkbox" name="exportPeriod" value="${p.name}" data-months="${p.months}" style="width: 16px; height: 16px;">
+                    <span>${p.label}</span>
+                </label>
+            `).join('');
+
+            document.getElementById('exportSelectAll').checked = false;
+            document.getElementById('exportPeriodModal').style.display = 'flex';
+        }
+
+        function closeExportModal() {
+            document.getElementById('exportPeriodModal').style.display = 'none';
+            currentExportStrategyId = null;
+            currentExportStrategyName = null;
+        }
+
+        function toggleExportSelectAll() {
+            const selectAll = document.getElementById('exportSelectAll').checked;
+            document.querySelectorAll('input[name="exportPeriod"]').forEach(cb => {
+                cb.checked = selectAll;
+            });
+        }
+
+        async function executeExport() {
+            const selected = Array.from(document.querySelectorAll('input[name="exportPeriod"]:checked'));
+            if (selected.length === 0) {
+                showToast('Please select at least one period', 'error');
+                return;
+            }
+
+            if (!currentExportStrategyId) {
+                showToast('Error: No strategy selected', 'error');
+                console.error('executeExport: currentExportStrategyId is', currentExportStrategyId);
+                return;
+            }
+
+            closeExportModal();
+            showToast(`Exporting ${selected.length} period(s)...`);
+
+            // Export each selected period
+            for (const cb of selected) {
+                const periodName = cb.value;
+                const months = cb.dataset.months;
+                try {
+                    const url = `/api/export-trades/${currentExportStrategyId}?months=${months}&period_name=${periodName}`;
+                    console.log('Fetching:', url);
+                    const response = await fetch(url);
+                    if (!response.ok) {
+                        const errorData = await response.json().catch(() => ({ detail: 'Unknown error' }));
+                        throw new Error(errorData.detail || `HTTP ${response.status}`);
+                    }
+
+                    const disposition = response.headers.get('Content-Disposition');
+                    let filename = `${currentExportStrategyName}_${periodName}_trades.csv`;
+                    if (disposition) {
+                        const match = disposition.match(/filename="?([^"]+)"?/);
+                        if (match) filename = match[1];
+                    }
+
+                    const blob = await response.blob();
+                    const blobUrl = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = blobUrl;
+                    a.download = filename;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(blobUrl);
+
+                    // Small delay between downloads
+                    if (selected.length > 1) {
+                        await new Promise(r => setTimeout(r, 500));
+                    }
+                } catch (error) {
+                    console.error(`Failed to export ${periodName}:`, error);
+                    showToast(`Failed to export ${periodName}: ${error.message}`, 'error');
+                }
+            }
+
+            showToast(`Exported ${selected.length} CSV file(s)!`);
+        }
     </script>
 </body>
 </html>

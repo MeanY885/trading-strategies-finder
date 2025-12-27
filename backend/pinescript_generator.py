@@ -86,7 +86,7 @@ class PineScriptGenerator:
 //{val_info}
 
 //@version=6
-strategy("BTCGBP ML-Optimized Scalper", overlay=true, default_qty_type=strategy.percent_of_equity, default_qty_value=2, initial_capital=1000, commission_type=strategy.commission.percent, commission_value=0.1, process_orders_on_close=false, calc_on_every_tick=false)
+strategy("BTCGBP ML-Optimized Scalper", overlay=true, default_qty_type=strategy.cash, default_qty_value=1000, initial_capital=100000, currency=currency.NONE, commission_type=strategy.commission.percent, commission_value=0.1, process_orders_on_close=true, calc_on_every_tick=false, pyramiding=0)
 
 // =============================================================================
 // ML-OPTIMIZED PARAMETERS
@@ -161,7 +161,7 @@ tpDistance = slDistance * tpRatio
 // =============================================================================
 // TRADE EXECUTION
 // =============================================================================
-// IMPORTANT: With process_orders_on_close=false, orders fill at NEXT BAR's OPEN
+// IMPORTANT: With process_orders_on_close=true, orders fill at CURRENT BAR's CLOSE
 // This matches the Python backtester behavior exactly
 
 var bool isLong = false
@@ -496,14 +496,14 @@ mih_atr(simple int length) =>
 
     def generate_exact_match(self, strategy_name: str, params: Dict, metrics: Dict = None,
                               entry_rule: str = None, direction: str = None,
-                              position_size_pct: float = 75.0, capital: float = 1000.0,
+                              position_size_pct: float = 100.0, capital: float = 1000.0,
                               engine: str = "tradingview", date_range: Dict = None,
                               indicator_params: Dict = None) -> str:
         """
         Generate EXACT-MATCH Pine Script v6 that guarantees 1:1 match with Python backtester.
 
         Key matching rules:
-        - Entry at CLOSE of signal bar (process_orders_on_close=true)
+        - Entry at CLOSE of signal bar (process_orders_on_close=true, pyramiding=0, margin_long=100, margin_short=100)
         - Percentage-based TP/SL (not ATR-based)
         - Position size as % of equity (matches Python exactly)
         - Commission: 0.1% per side
@@ -838,9 +838,9 @@ entrySignal = true''',
 entrySignal = {"ta.crossover(close, kcUpper)" if is_long else "ta.crossunder(close, kcLower)"}''',
 
             'donchian_breakout': f'''// Donchian Channel Breakout (Turtle Trading)
-dcUpper = ta.highest(high, 20)
-dcLower = ta.lowest(low, 20)
-entrySignal = {"close > dcUpper[1]" if is_long else "close < dcLower[1]"}''',
+dcUpper = ta.highest(high, 20)[1]
+dcLower = ta.lowest(low, 20)[1]
+entrySignal = {"close > dcUpper and close[1] <= dcUpper[1]" if is_long else "close < dcLower and close[1] >= dcLower[1]"}''',
 
             'ichimoku_cross': f'''// Ichimoku Tenkan-Kijun Cross
 [tenkan, kijun, spanA, spanB, laggingSpan] = ta.ichimoku(9, 26, 52, 26)
@@ -1069,9 +1069,9 @@ entrySignal = true''',
 entrySignal = {"ta.crossover(close, kcUpper)" if is_long else "ta.crossunder(close, kcLower)"}''',
 
             'donchian_breakout': f'''// Donchian Channel Breakout (mihakralj)
-dcUpper = ta.highest(high, 20)
-dcLower = ta.lowest(low, 20)
-entrySignal = {"close > dcUpper[1]" if is_long else "close < dcLower[1]"}''',
+dcUpper = ta.highest(high, 20)[1]
+dcLower = ta.lowest(low, 20)[1]
+entrySignal = {"close > dcUpper and close[1] <= dcUpper[1]" if is_long else "close < dcLower and close[1] >= dcLower[1]"}''',
 
             'ichimoku_cross': f'''// Ichimoku Tenkan-Kijun Cross (mihakralj)
 [tenkan, kijun, spanA, spanB, laggingSpan] = ta.ichimoku(9, 26, 52, 26)
@@ -1320,10 +1320,10 @@ longEntrySignal = ta.crossover(close, kcUpper)
 shortEntrySignal = ta.crossunder(close, kcLower)''',
 
             'donchian_breakout': f'''// Donchian Channel Breakout - BIDIRECTIONAL
-dcUpper = ta.highest(high, 20)
-dcLower = ta.lowest(low, 20)
-longEntrySignal = close > dcUpper[1]
-shortEntrySignal = close < dcLower[1]''',
+dcUpper = ta.highest(high, 20)[1]
+dcLower = ta.lowest(low, 20)[1]
+longEntrySignal = close > dcUpper and close[1] <= dcUpper[1]
+shortEntrySignal = close < dcLower and close[1] >= dcLower[1]''',
 
             'ichimoku_cross': f'''// Ichimoku Tenkan-Kijun Cross - BIDIRECTIONAL
 [tenkan, kijun, spanA, spanB, laggingSpan] = ta.ichimoku(9, 26, 52, 26)
@@ -1423,7 +1423,7 @@ shortEntrySignal = false''')
 {metrics_comment}
 //
 // MATCHING RULES (DO NOT MODIFY):
-//   - Entry at CLOSE of signal bar (process_orders_on_close=true)
+//   - Entry at CLOSE of signal bar (process_orders_on_close=true, pyramiding=0, margin_long=100, margin_short=100)
 //   - TP/SL as percentage of entry price
 //   - Position size: {position_size_pct}% of equity
 //   - Commission: 0.1% per side
@@ -1433,14 +1433,14 @@ shortEntrySignal = false''')
 strategy("{strategy_name}",
          overlay=true,
          process_orders_on_close=true,  // CRITICAL: Entry at CLOSE
-         default_qty_type=strategy.percent_of_equity,
-         default_qty_value={position_size_pct},
-         initial_capital={int(capital)},
-         currency=currency.GBP,
+         default_qty_type=strategy.cash,
+         default_qty_value={int(capital)},
+         initial_capital={int(capital) * 100},
+         currency=currency.NONE,
          commission_type=strategy.commission.percent,
          commission_value=0.1,
          calc_on_every_tick=false,
-         max_bars_back=500)
+         max_bars_back=500, pyramiding=0)
 {indicator_functions}
 // =============================================================================
 // INPUTS - PERCENTAGE-BASED TP/SL (matches Python exactly)
@@ -1729,9 +1729,9 @@ if barstate.islast
 
 //@version=6
 strategy("CVD Divergence Strategy", overlay=true,
-         default_qty_type=strategy.percent_of_equity, default_qty_value=2,
-         initial_capital=1000, commission_type=strategy.commission.percent,
-         commission_value=0.1, process_orders_on_close=false)
+         default_qty_type=strategy.cash, default_qty_value=1000,
+         initial_capital=100000, currency=currency.NONE, commission_type=strategy.commission.percent,
+         commission_value=0.1, process_orders_on_close=true, pyramiding=0)
 
 // === PARAMETERS ===
 slAtrMult = input.float({sl_mult}, "Stop Loss ATR Mult", minval=0.5, maxval=5.0, step=0.1, group="Risk")
@@ -1875,9 +1875,9 @@ alertcondition(shortCondition, title="CVD Bearish Divergence", message="CVD Dive
 
 //@version=6
 strategy("BB + RSI Mean Reversion", overlay=true,
-         default_qty_type=strategy.percent_of_equity, default_qty_value=2,
-         initial_capital=1000, commission_type=strategy.commission.percent,
-         commission_value=0.1, process_orders_on_close=false)
+         default_qty_type=strategy.cash, default_qty_value=1000,
+         initial_capital=100000, currency=currency.NONE, commission_type=strategy.commission.percent,
+         commission_value=0.1, process_orders_on_close=true, pyramiding=0)
 
 // === PARAMETERS ===
 bbLength = input.int({bb_length}, "BB Length", minval=5, maxval=50, group="Bollinger Bands")
@@ -1954,9 +1954,9 @@ alertcondition(shortCondition, title="BB RSI Sell", message="BB + RSI: SELL sign
 
 //@version=6
 strategy("Supertrend Strategy", overlay=true,
-         default_qty_type=strategy.percent_of_equity, default_qty_value=2,
-         initial_capital=1000, commission_type=strategy.commission.percent,
-         commission_value=0.1, process_orders_on_close=false)
+         default_qty_type=strategy.cash, default_qty_value=1000,
+         initial_capital=100000, currency=currency.NONE, commission_type=strategy.commission.percent,
+         commission_value=0.1, process_orders_on_close=true, pyramiding=0)
 
 // === PARAMETERS ===
 stLength = input.int({st_length}, "Supertrend Length", minval=5, maxval=50, group="Supertrend")
@@ -2019,9 +2019,9 @@ alertcondition(shortCondition, title="Supertrend Sell", message="Supertrend: SEL
 
 //@version=6
 strategy("MACD Strategy", overlay=true,
-         default_qty_type=strategy.percent_of_equity, default_qty_value=2,
-         initial_capital=1000, commission_type=strategy.commission.percent,
-         commission_value=0.1, process_orders_on_close=false)
+         default_qty_type=strategy.cash, default_qty_value=1000,
+         initial_capital=100000, currency=currency.NONE, commission_type=strategy.commission.percent,
+         commission_value=0.1, process_orders_on_close=true, pyramiding=0)
 
 // === PARAMETERS ===
 fastLength = input.int({fast}, "MACD Fast", minval=5, maxval=50, group="MACD")
@@ -2099,9 +2099,9 @@ alertcondition(shortCondition, title="MACD Sell", message="MACD: SELL signal - b
 
 //@version=6
 strategy("{strategy_name.replace("_", " ").title()}", overlay=true,
-         default_qty_type=strategy.percent_of_equity, default_qty_value=2,
-         initial_capital=1000, commission_type=strategy.commission.percent,
-         commission_value=0.1, process_orders_on_close=false)
+         default_qty_type=strategy.cash, default_qty_value=1000,
+         initial_capital=100000, currency=currency.NONE, commission_type=strategy.commission.percent,
+         commission_value=0.1, process_orders_on_close=true, pyramiding=0)
 
 // === RISK PARAMETERS ===
 slAtrMult = input.float({sl_mult}, "Stop Loss ATR Mult", minval=0.5, maxval=5.0, step=0.1, group="Risk")
@@ -2164,9 +2164,9 @@ alertcondition(shortCondition, title="Sell Signal", message="{strategy_name}: SE
 
 //@version=6
 strategy("Order Block Bounce", overlay=true,
-         default_qty_type=strategy.percent_of_equity, default_qty_value=2,
-         initial_capital=1000, commission_type=strategy.commission.percent,
-         commission_value=0.1, process_orders_on_close=false)
+         default_qty_type=strategy.cash, default_qty_value=1000,
+         initial_capital=100000, currency=currency.NONE, commission_type=strategy.commission.percent,
+         commission_value=0.1, process_orders_on_close=true, pyramiding=0)
 
 // === PARAMETERS ===
 obLookback = input.int({ob_lookback}, "OB Lookback", minval=5, maxval=50, group="Order Block")
@@ -2278,9 +2278,9 @@ alertcondition(shortCondition, title="OB Sell", message="Order Block: SELL signa
 
 //@version=6
 strategy("FVG Fill Strategy", overlay=true,
-         default_qty_type=strategy.percent_of_equity, default_qty_value=2,
-         initial_capital=1000, commission_type=strategy.commission.percent,
-         commission_value=0.1, process_orders_on_close=false)
+         default_qty_type=strategy.cash, default_qty_value=1000,
+         initial_capital=100000, currency=currency.NONE, commission_type=strategy.commission.percent,
+         commission_value=0.1, process_orders_on_close=true, pyramiding=0)
 
 // === PARAMETERS ===
 minGapATR = input.float(0.5, "Min Gap Size (ATR)", minval=0.1, maxval=3.0, step=0.1, group="FVG")
@@ -2391,9 +2391,9 @@ alertcondition(shortCondition, title="FVG Sell", message="FVG Fill: SELL signal 
 
 //@version=6
 strategy("Squeeze Momentum Breakout", overlay=true,
-         default_qty_type=strategy.percent_of_equity, default_qty_value=2,
-         initial_capital=1000, commission_type=strategy.commission.percent,
-         commission_value=0.1, process_orders_on_close=false)
+         default_qty_type=strategy.cash, default_qty_value=1000,
+         initial_capital=100000, currency=currency.NONE, commission_type=strategy.commission.percent,
+         commission_value=0.1, process_orders_on_close=true, pyramiding=0)
 
 // === PARAMETERS ===
 bbLength = input.int(20, "BB Length", minval=5, maxval=50, group="Squeeze")
@@ -2500,9 +2500,9 @@ alertcondition(shortCondition, title="Squeeze Sell", message="Squeeze Momentum: 
 
 //@version=6
 strategy("Stochastic Extreme", overlay=true,
-         default_qty_type=strategy.percent_of_equity, default_qty_value=2,
-         initial_capital=1000, commission_type=strategy.commission.percent,
-         commission_value=0.1, process_orders_on_close=false)
+         default_qty_type=strategy.cash, default_qty_value=1000,
+         initial_capital=100000, currency=currency.NONE, commission_type=strategy.commission.percent,
+         commission_value=0.1, process_orders_on_close=true, pyramiding=0)
 
 // === PARAMETERS ===
 stochK = input.int({stoch_k}, "Stoch %K Length", minval=5, maxval=30, group="Stochastic")
@@ -2582,9 +2582,9 @@ alertcondition(shortCondition, title="Stoch Overbought", message="Stochastic: SE
 
 //@version=6
 strategy("Williams %R Strategy", overlay=true,
-         default_qty_type=strategy.percent_of_equity, default_qty_value=2,
-         initial_capital=1000, commission_type=strategy.commission.percent,
-         commission_value=0.1, process_orders_on_close=false)
+         default_qty_type=strategy.cash, default_qty_value=1000,
+         initial_capital=100000, currency=currency.NONE, commission_type=strategy.commission.percent,
+         commission_value=0.1, process_orders_on_close=true, pyramiding=0)
 
 // === PARAMETERS ===
 willrLength = input.int({willr_len}, "Williams %R Length", minval=5, maxval=50, group="Williams %R")
@@ -2659,9 +2659,9 @@ alertcondition(shortCondition, title="WillR Overbought", message="Williams %R: S
 
 //@version=6
 strategy("CCI Extreme Strategy", overlay=true,
-         default_qty_type=strategy.percent_of_equity, default_qty_value=2,
-         initial_capital=1000, commission_type=strategy.commission.percent,
-         commission_value=0.1, process_orders_on_close=false)
+         default_qty_type=strategy.cash, default_qty_value=1000,
+         initial_capital=100000, currency=currency.NONE, commission_type=strategy.commission.percent,
+         commission_value=0.1, process_orders_on_close=true, pyramiding=0)
 
 // === PARAMETERS ===
 cciLength = input.int({cci_len}, "CCI Length", minval=5, maxval=50, group="CCI")
@@ -2735,9 +2735,9 @@ alertcondition(shortCondition, title="CCI Overbought", message="CCI: SELL signal
 
 //@version=6
 strategy("ADX + DI Trend Strategy", overlay=true,
-         default_qty_type=strategy.percent_of_equity, default_qty_value=2,
-         initial_capital=1000, commission_type=strategy.commission.percent,
-         commission_value=0.1, process_orders_on_close=false)
+         default_qty_type=strategy.cash, default_qty_value=1000,
+         initial_capital=100000, currency=currency.NONE, commission_type=strategy.commission.percent,
+         commission_value=0.1, process_orders_on_close=true, pyramiding=0)
 
 // === PARAMETERS ===
 adxLength = input.int({adx_len}, "ADX Length", minval=5, maxval=50, group="ADX")
@@ -2817,9 +2817,9 @@ alertcondition(shortCondition, title="ADX Bear", message="ADX DI: SELL signal - 
 
 //@version=6
 strategy("BB Squeeze Breakout", overlay=true,
-         default_qty_type=strategy.percent_of_equity, default_qty_value=2,
-         initial_capital=1000, commission_type=strategy.commission.percent,
-         commission_value=0.1, process_orders_on_close=false)
+         default_qty_type=strategy.cash, default_qty_value=1000,
+         initial_capital=100000, currency=currency.NONE, commission_type=strategy.commission.percent,
+         commission_value=0.1, process_orders_on_close=true, pyramiding=0)
 
 // === PARAMETERS ===
 bbLength = input.int(20, "BB Length", minval=5, maxval=50, group="BB Squeeze")
@@ -2907,9 +2907,9 @@ alertcondition(shortCondition, title="BB Squeeze Sell", message="BB Squeeze: SEL
 
 //@version=6
 strategy("Connors RSI Strategy", overlay=true,
-         default_qty_type=strategy.percent_of_equity, default_qty_value=2,
-         initial_capital=1000, commission_type=strategy.commission.percent,
-         commission_value=0.1, process_orders_on_close=false)
+         default_qty_type=strategy.cash, default_qty_value=1000,
+         initial_capital=100000, currency=currency.NONE, commission_type=strategy.commission.percent,
+         commission_value=0.1, process_orders_on_close=true, pyramiding=0)
 
 // === PARAMETERS ===
 rsiLen = input.int({crsi_rsi_len}, "RSI Length", minval=2, maxval=10, group="Connors RSI")
@@ -3007,9 +3007,9 @@ alertcondition(shortCondition, title="CRSI Overbought", message="Connors RSI: SE
 
 //@version=6
 strategy("Nadaraya-Watson Strategy", overlay=true,
-         default_qty_type=strategy.percent_of_equity, default_qty_value=2,
-         initial_capital=1000, commission_type=strategy.commission.percent,
-         commission_value=0.1, process_orders_on_close=false)
+         default_qty_type=strategy.cash, default_qty_value=1000,
+         initial_capital=100000, currency=currency.NONE, commission_type=strategy.commission.percent,
+         commission_value=0.1, process_orders_on_close=true, pyramiding=0)
 
 // === PARAMETERS ===
 bandwidth = input.int({nw_bandwidth}, "Bandwidth", minval=3, maxval=20, group="N-W Kernel")
@@ -3097,9 +3097,9 @@ alertcondition(shortCondition, title="N-W Sell", message="Nadaraya-Watson: SELL 
 
 //@version=6
 strategy("3-Wave Divergence (Vdubus)", overlay=true,
-         default_qty_type=strategy.percent_of_equity, default_qty_value=2,
-         initial_capital=1000, commission_type=strategy.commission.percent,
-         commission_value=0.1, process_orders_on_close=false)
+         default_qty_type=strategy.cash, default_qty_value=1000,
+         initial_capital=100000, currency=currency.NONE, commission_type=strategy.commission.percent,
+         commission_value=0.1, process_orders_on_close=true, pyramiding=0)
 
 // === PARAMETERS ===
 divLookback = input.int({div_lookback}, "Divergence Lookback", minval=30, maxval=100, group="Divergence")
@@ -3290,9 +3290,9 @@ alertcondition(shortCondition, title="3Wave Sell", message="3-Wave Divergence: S
 
 //@version=6
 strategy("BB + Stochastic", overlay=true,
-         default_qty_type=strategy.percent_of_equity, default_qty_value=2,
-         initial_capital=1000, commission_type=strategy.commission.percent,
-         commission_value=0.1, process_orders_on_close=false)
+         default_qty_type=strategy.cash, default_qty_value=1000,
+         initial_capital=100000, currency=currency.NONE, commission_type=strategy.commission.percent,
+         commission_value=0.1, process_orders_on_close=true, pyramiding=0)
 
 // === PARAMETERS ===
 bbLength = input.int({bb_length}, "BB Length", minval=5, maxval=50, group="BB")
@@ -3360,9 +3360,9 @@ plotshape(shortCondition, "Sell", shape.triangledown, location.abovebar, color.r
 
 //@version=6
 strategy("Keltner + RSI", overlay=true,
-         default_qty_type=strategy.percent_of_equity, default_qty_value=2,
-         initial_capital=1000, commission_type=strategy.commission.percent,
-         commission_value=0.1, process_orders_on_close=false)
+         default_qty_type=strategy.cash, default_qty_value=1000,
+         initial_capital=100000, currency=currency.NONE, commission_type=strategy.commission.percent,
+         commission_value=0.1, process_orders_on_close=true, pyramiding=0)
 
 // === PARAMETERS ===
 kcLength = input.int({kc_length}, "KC Length", minval=5, maxval=50, group="Keltner")
@@ -3423,9 +3423,9 @@ plotshape(shortCondition, "Sell", shape.triangledown, location.abovebar, color.r
 
 //@version=6
 strategy("Z-Score Reversion", overlay=true,
-         default_qty_type=strategy.percent_of_equity, default_qty_value=2,
-         initial_capital=1000, commission_type=strategy.commission.percent,
-         commission_value=0.1, process_orders_on_close=false)
+         default_qty_type=strategy.cash, default_qty_value=1000,
+         initial_capital=100000, currency=currency.NONE, commission_type=strategy.commission.percent,
+         commission_value=0.1, process_orders_on_close=true, pyramiding=0)
 
 // === PARAMETERS ===
 zLength = input.int({z_length}, "Z-Score Length", minval=10, maxval=100, group="Z-Score")
@@ -3486,9 +3486,9 @@ plotshape(shortCondition, "Sell", shape.triangledown, location.abovebar, color.r
 
 //@version=6
 strategy("EMA Crossover", overlay=true,
-         default_qty_type=strategy.percent_of_equity, default_qty_value=2,
-         initial_capital=1000, commission_type=strategy.commission.percent,
-         commission_value=0.1, process_orders_on_close=false)
+         default_qty_type=strategy.cash, default_qty_value=1000,
+         initial_capital=100000, currency=currency.NONE, commission_type=strategy.commission.percent,
+         commission_value=0.1, process_orders_on_close=true, pyramiding=0)
 
 // === PARAMETERS ===
 fastLen = input.int({ema_fast}, "Fast EMA", minval=5, maxval=50, group="EMA")
@@ -3527,35 +3527,39 @@ bgcolor(emaFast > emaSlow ? color.new(color.green, 90) : color.new(color.red, 90
 '''
 
     def _generate_donchian_breakout(self, params: Dict, metrics: Dict = None) -> str:
-        """Generate Pine Script for Donchian Breakout strategy"""
+        """Generate Pine Script for Donchian Breakout strategy
+
+        Uses PERCENTAGE-BASED SL/TP to match Python backtester exactly.
+        """
         params = normalize_params(params)
-        dc_length = int(params.get('dc_length', 25))
-        sl_mult = params.get('sl_atr_mult', 3.8)
-        tp_ratio = params.get('tp_ratio', 3.2)
+        dc_length = int(params.get('dc_length', params.get('donchian_length', 20)))
+        # Use percentage-based SL/TP to match Python backtester
+        sl_percent = params.get('sl_percent', 6.1)
+        tp_percent = params.get('tp_percent', 3.1)
         gen_date = datetime.now().strftime("%Y-%m-%d %H:%M")
         metrics_comment = self._get_metrics_comment(metrics)
 
         return f'''// Donchian Channel Breakout Strategy
 // Generated: {gen_date}
 // Strategy Type: BREAKOUT
+// Uses percentage-based SL/TP to match Python backtester
 {metrics_comment}
 
 //@version=6
 strategy("Donchian Breakout", overlay=true,
-         default_qty_type=strategy.percent_of_equity, default_qty_value=2,
-         initial_capital=1000, commission_type=strategy.commission.percent,
-         commission_value=0.1, process_orders_on_close=false)
+         default_qty_type=strategy.cash, default_qty_value=1000,
+         initial_capital=100000, currency=currency.NONE, commission_type=strategy.commission.percent,
+         commission_value=0.1, process_orders_on_close=true, pyramiding=0)
 
 // === PARAMETERS ===
 dcLength = input.int({dc_length}, "Donchian Length", minval=5, maxval=100, group="Donchian")
-slAtrMult = input.float({sl_mult}, "SL ATR Mult", minval=0.5, maxval=5.0, step=0.1, group="Risk")
-tpRatio = input.float({tp_ratio}, "TP Ratio", minval=0.5, maxval=5.0, step=0.1, group="Risk")
+slPercent = input.float({sl_percent}, "Stop Loss %", minval=0.5, maxval=20.0, step=0.1, group="Risk")
+tpPercent = input.float({tp_percent}, "Take Profit %", minval=0.5, maxval=20.0, step=0.1, group="Risk")
 
 // === CALCULATIONS ===
 dcUpper = ta.highest(high, dcLength)[1]
 dcLower = ta.lowest(low, dcLength)[1]
 dcMid = (dcUpper + dcLower) / 2
-atr = ta.atr(14)
 
 // === BREAKOUT SIGNALS ===
 breakoutUp = close > dcUpper and close[1] <= dcUpper[1]
@@ -3568,11 +3572,16 @@ if breakoutUp and strategy.position_size == 0
 if breakoutDn and strategy.position_size == 0
     strategy.entry("Short", strategy.short)
 
+// Percentage-based exits (matches Python backtester)
 if strategy.position_size > 0
-    strategy.exit("Long Exit", "Long", stop=strategy.position_avg_price - atr * slAtrMult, limit=strategy.position_avg_price + atr * slAtrMult * tpRatio)
+    longSL = strategy.position_avg_price * (1 - slPercent / 100)
+    longTP = strategy.position_avg_price * (1 + tpPercent / 100)
+    strategy.exit("Long Exit", "Long", stop=longSL, limit=longTP)
 
 if strategy.position_size < 0
-    strategy.exit("Short Exit", "Short", stop=strategy.position_avg_price + atr * slAtrMult, limit=strategy.position_avg_price - atr * slAtrMult * tpRatio)
+    shortSL = strategy.position_avg_price * (1 + slPercent / 100)
+    shortTP = strategy.position_avg_price * (1 - tpPercent / 100)
+    strategy.exit("Short Exit", "Short", stop=shortSL, limit=shortTP)
 
 // === VISUALS ===
 plot(dcUpper, "Upper", color=color.red)
@@ -3597,9 +3606,9 @@ plotshape(breakoutDn, "Sell", shape.triangledown, location.abovebar, color.red)
 
 //@version=6
 strategy("Stiff Surge V1", overlay=true,
-         default_qty_type=strategy.percent_of_equity, default_qty_value=2,
-         initial_capital=1000, commission_type=strategy.commission.percent,
-         commission_value=0.1, process_orders_on_close=false)
+         default_qty_type=strategy.cash, default_qty_value=1000,
+         initial_capital=100000, currency=currency.NONE, commission_type=strategy.commission.percent,
+         commission_value=0.1, process_orders_on_close=true, pyramiding=0)
 
 // === PARAMETERS ===
 jmaLength = input.int(43, "JMA Length", minval=10, maxval=100, group="JMA")
@@ -3669,9 +3678,9 @@ plotshape(shortCondition, "Sell", shape.triangledown, location.abovebar, color.r
 
 //@version=6
 strategy("Range Filter ADX", overlay=true,
-         default_qty_type=strategy.percent_of_equity, default_qty_value=2,
-         initial_capital=1000, commission_type=strategy.commission.percent,
-         commission_value=0.1, process_orders_on_close=false)
+         default_qty_type=strategy.cash, default_qty_value=1000,
+         initial_capital=100000, currency=currency.NONE, commission_type=strategy.commission.percent,
+         commission_value=0.1, process_orders_on_close=true, pyramiding=0)
 
 // === PARAMETERS ===
 rfPeriod = input.int({rf_period}, "Range Filter Period", minval=50, maxval=200, group="Range Filter")
@@ -3732,9 +3741,9 @@ plotshape(shortCondition, "Sell", shape.triangledown, location.abovebar, color.r
 
 //@version=6
 strategy("Supertrend Confluence", overlay=true,
-         default_qty_type=strategy.percent_of_equity, default_qty_value=2,
-         initial_capital=1000, commission_type=strategy.commission.percent,
-         commission_value=0.1, process_orders_on_close=false)
+         default_qty_type=strategy.cash, default_qty_value=1000,
+         initial_capital=100000, currency=currency.NONE, commission_type=strategy.commission.percent,
+         commission_value=0.1, process_orders_on_close=true, pyramiding=0)
 
 // === PARAMETERS ===
 stLen = input.int(10, "Supertrend Length", minval=5, maxval=50, group="Supertrend")
@@ -3805,9 +3814,9 @@ plotshape(shortCondition, "Sell", shape.triangledown, location.abovebar, color.r
 
 //@version=6
 strategy("Percentage Drop Buy ({drop_pct}%/{rise_pct}%)", overlay=true,
-         default_qty_type=strategy.percent_of_equity, default_qty_value=2,
-         initial_capital=1000, commission_type=strategy.commission.percent,
-         commission_value=0.1)
+         default_qty_type=strategy.cash, default_qty_value=1000,
+         initial_capital=100000, currency=currency.NONE, commission_type=strategy.commission.percent,
+         commission_value=0.1, pyramiding=0)
 
 // === PARAMETERS ===
 dropPercent = input.float({drop_pct}, "Buy after X% drop", minval=0.5, maxval=10, step=0.5, group="Entry")
@@ -3877,9 +3886,9 @@ alertcondition(buySignal, title="Buy Signal", message="Percentage Drop Buy: Entr
 
 //@version=6
 strategy("SMA Cross ({fast}/{slow})", overlay=true,
-         default_qty_type=strategy.percent_of_equity, default_qty_value=2,
-         initial_capital=1000, commission_type=strategy.commission.percent,
-         commission_value=0.1)
+         default_qty_type=strategy.cash, default_qty_value=1000,
+         initial_capital=100000, currency=currency.NONE, commission_type=strategy.commission.percent,
+         commission_value=0.1, pyramiding=0)
 
 // === PARAMETERS ===
 fastPeriod = input.int({fast}, "Fast SMA", minval=5, maxval=50, group="Moving Averages")
@@ -3945,9 +3954,9 @@ alertcondition(bearishCross, title="Bearish Cross", message="SMA Crossover: SELL
 
 //@version=6
 strategy("Consecutive Candles Reversal ({n_candles})", overlay=true,
-         default_qty_type=strategy.percent_of_equity, default_qty_value=2,
-         initial_capital=1000, commission_type=strategy.commission.percent,
-         commission_value=0.1)
+         default_qty_type=strategy.cash, default_qty_value=1000,
+         initial_capital=100000, currency=currency.NONE, commission_type=strategy.commission.percent,
+         commission_value=0.1, pyramiding=0)
 
 // === PARAMETERS ===
 consecCount = input.int({n_candles}, "Consecutive candles", minval=2, maxval=6, group="Pattern")
@@ -4023,9 +4032,9 @@ alertcondition(bearishReversal, title="Bearish Reversal", message="Consecutive C
 
 //@version=6
 strategy("RSI Extremes ({rsi_len})", overlay=true,
-         default_qty_type=strategy.percent_of_equity, default_qty_value=2,
-         initial_capital=1000, commission_type=strategy.commission.percent,
-         commission_value=0.1)
+         default_qty_type=strategy.cash, default_qty_value=1000,
+         initial_capital=100000, currency=currency.NONE, commission_type=strategy.commission.percent,
+         commission_value=0.1, pyramiding=0)
 
 // === PARAMETERS ===
 rsiPeriod = input.int({rsi_len}, "RSI Period", minval=5, maxval=30, group="RSI")
@@ -4094,9 +4103,9 @@ alertcondition(sellSignal, title="RSI Overbought", message="RSI Extremes: SELL s
 
 //@version=6
 strategy("Range Breakout ({lookback})", overlay=true,
-         default_qty_type=strategy.percent_of_equity, default_qty_value=2,
-         initial_capital=1000, commission_type=strategy.commission.percent,
-         commission_value=0.1)
+         default_qty_type=strategy.cash, default_qty_value=1000,
+         initial_capital=100000, currency=currency.NONE, commission_type=strategy.commission.percent,
+         commission_value=0.1, pyramiding=0)
 
 // === PARAMETERS ===
 lookback = input.int({lookback}, "Range Lookback", minval=5, maxval=50, group="Range")
@@ -4167,9 +4176,9 @@ alertcondition(breakoutShort, title="Breakout Down", message="Range Breakout: SE
 
 //@version=6
 strategy("Engulfing Pattern", overlay=true,
-         default_qty_type=strategy.percent_of_equity, default_qty_value=2,
-         initial_capital=1000, commission_type=strategy.commission.percent,
-         commission_value=0.1)
+         default_qty_type=strategy.cash, default_qty_value=1000,
+         initial_capital=100000, currency=currency.NONE, commission_type=strategy.commission.percent,
+         commission_value=0.1, pyramiding=0)
 
 // === PARAMETERS ===
 minSizeMult = input.float({min_size}, "Min Size Multiplier", minval=1.0, maxval=3.0, step=0.1, group="Pattern")
@@ -4241,9 +4250,9 @@ alertcondition(bearishEngulf, title="Bearish Engulfing", message="Engulfing Patt
 
 //@version=6
 strategy("{strategy_name.replace("_", " ").title()}", overlay=true,
-         default_qty_type=strategy.percent_of_equity, default_qty_value=2,
-         initial_capital=1000, commission_type=strategy.commission.percent,
-         commission_value=0.1)
+         default_qty_type=strategy.cash, default_qty_value=1000,
+         initial_capital=100000, currency=currency.NONE, commission_type=strategy.commission.percent,
+         commission_value=0.1, pyramiding=0)
 
 // === RISK PARAMETERS ===
 slAtrMult = input.float({sl_mult}, "Stop Loss ATR Mult", minval=0.5, maxval=5.0, step=0.1, group="Risk")

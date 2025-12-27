@@ -1116,7 +1116,7 @@ async def get_unified_pinescript(rank: int = 1, engine: str = "tradingview"):
     direction = strategy_data.get("direction")
 
     # Get trading parameters from report (passed from UI)
-    position_size_pct = report.get("position_size_pct", 75.0)
+    position_size_pct = report.get("position_size_pct", 100.0)
     capital = report.get("capital", 1000.0)
     date_range = report.get("date_range")
 
@@ -1161,7 +1161,7 @@ async def get_all_unified_pinescripts(engine: str = "tradingview"):
     generator = PineScriptGenerator()
 
     # Get trading parameters from report (passed from UI)
-    position_size_pct = unified_status["report"].get("position_size_pct", 75.0)
+    position_size_pct = unified_status["report"].get("position_size_pct", 100.0)
     capital = unified_status["report"].get("capital", 1000.0)
     date_range = unified_status["report"].get("date_range")
 
@@ -1316,6 +1316,165 @@ async def download_trades_csv(rank: int = 1):
     )
 
 
+@app.get("/api/export-trades/{strategy_id}")
+async def export_strategy_trades(
+    strategy_id: int,
+    months: float = None,
+    period_name: str = None
+):
+    """
+    Export trades CSV for a stored strategy from the database.
+    Re-runs the backtest with the stored parameters to generate the trades list.
+
+    Args:
+        strategy_id: Database ID of the strategy
+        months: Optional - specific period in months (e.g., 0.25 for 1 week, 12 for 1 year)
+        period_name: Optional - human-readable period name for filename (e.g., "1w", "3m", "1y")
+    """
+    if not HAS_DATABASE:
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    try:
+        db = get_strategy_db()
+        strategy = db.get_strategy_by_id(strategy_id)
+        if not strategy:
+            raise HTTPException(status_code=404, detail="Strategy not found")
+
+        # Extract parameters from strategy
+        params = strategy.get('params', {})
+        symbol = strategy.get('symbol', 'BTCUSDT')
+        timeframe = strategy.get('timeframe', '15m')
+        tp_percent = strategy.get('tp_percent', 2.0)
+        sl_percent = strategy.get('sl_percent', 5.0)
+        entry_rule = params.get('entry_rule', 'rsi_oversold')
+        direction = params.get('direction', strategy.get('trade_mode', 'long'))
+        strategy_name = strategy.get('strategy_name', 'Unknown')
+
+        # Use provided months or calculate original period
+        if months is not None:
+            target_months = months
+        else:
+            # Get original period from run metadata or calculate from data dates
+            target_months = 1.0
+            run_id = strategy.get('optimization_run_id')
+            if run_id:
+                run = db.get_optimization_run_by_id(run_id)
+                if run:
+                    target_months = run.get('months', 1.0)
+
+            # Also try to calculate from data_start/data_end if available
+            data_start = strategy.get('data_start')
+            data_end = strategy.get('data_end')
+            if data_start and data_end:
+                try:
+                    from datetime import datetime as dt
+                    start = dt.fromisoformat(data_start.replace('Z', '+00:00'))
+                    end = dt.fromisoformat(data_end.replace('Z', '+00:00'))
+                    days = (end - start).days
+                    target_months = max(0.25, days / 30)  # At least 1 week
+                except:
+                    pass
+
+        # Position size and capital
+        position_size_pct = params.get('position_size_pct', 100.0)
+        capital = params.get('capital', 1000.0)
+
+        # Detect data source
+        data_source = strategy.get('data_source')
+        if not data_source:
+            if '-' in symbol:
+                data_source = 'yahoo'
+            else:
+                data_source = 'binance'
+
+        # Convert timeframe to minutes
+        if 'h' in timeframe:
+            tf_minutes = int(timeframe.replace('h', '')) * 60
+        elif 'd' in timeframe:
+            tf_minutes = 1440
+        else:
+            tf_minutes = int(timeframe.replace('m', ''))
+
+        # Fetch data for target period
+        if data_source and 'binance' in data_source.lower():
+            fetcher = BinanceDataFetcher()
+        else:
+            fetcher = YFinanceDataFetcher()
+
+        df = await fetcher.fetch_ohlcv(pair=symbol, interval=tf_minutes, months=target_months)
+
+        if len(df) < 50:
+            raise HTTPException(status_code=400, detail=f"Insufficient data: only {len(df)} candles")
+
+        # Run backtest to generate trades
+        engine = StrategyEngine(df)
+        result = engine.backtest(
+            strategy=entry_rule,
+            direction=direction,
+            tp_percent=tp_percent,
+            sl_percent=sl_percent,
+            initial_capital=capital,
+            position_size_pct=position_size_pct,
+            commission_pct=0.1
+        )
+
+        trades_list = result.trades_list if result.trades_list else []
+        if not trades_list:
+            raise HTTPException(status_code=404, detail="No trades generated for this strategy")
+
+        # Build CSV content (TradingView-compatible format)
+        csv_lines = [
+            "Trade #,Type,Entry Time,Exit Time,Entry Price,Exit Price,"
+            "Position Size,Position Size (qty),Net P&L,Net P&L %,"
+            "Run-up,Run-up %,Drawdown,Drawdown %,Cumulative P&L,Result"
+        ]
+
+        for trade in trades_list:
+            csv_lines.append(
+                f"{trade['trade_num']},"
+                f"{trade['direction'].upper()},"
+                f"{trade['entry_time']},"
+                f"{trade['exit_time']},"
+                f"{trade['entry']},"
+                f"{trade['exit']},"
+                f"{trade['position_size']},"
+                f"{trade['position_qty']},"
+                f"{trade['pnl']},"
+                f"{trade['pnl_pct']},"
+                f"{trade['run_up']},"
+                f"{trade['run_up_pct']},"
+                f"{trade['drawdown']},"
+                f"{trade['drawdown_pct']},"
+                f"{trade['cumulative_pnl']},"
+                f"{trade['result']}"
+            )
+
+        csv_content = "\n".join(csv_lines)
+
+        # Create output file
+        from datetime import datetime
+        date_str = datetime.now().strftime("%Y-%m-%d")
+        safe_name = strategy_name.replace(' ', '_').replace('/', '-')[:30]
+        # Include period in filename if specified
+        period_suffix = f"_{period_name}" if period_name else ""
+        filename = f"{safe_name}_{symbol}{period_suffix}_{date_str}_trades.csv"
+        output_path = OUTPUT_DIR / filename
+
+        with open(output_path, "w") as f:
+            f.write(csv_content)
+
+        return FileResponse(
+            output_path,
+            media_type="text/csv",
+            filename=filename
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/tradingview-link/{rank}")
 async def get_tradingview_link(rank: int = 1, engine: str = "tradingview"):
     """
@@ -1400,7 +1559,7 @@ async def get_tradingview_link(rank: int = 1, engine: str = "tradingview"):
     direction = strategy_data.get("direction")
 
     # Get trading parameters from report
-    position_size_pct = report.get("position_size_pct", 75.0)
+    position_size_pct = report.get("position_size_pct", 100.0)
     capital = report.get("capital", 1000.0)
     date_range = report.get("date_range")
 
@@ -1597,13 +1756,13 @@ async def get_strategy_pinescript_from_db(strategy_id: int):
         direction = params.get('direction') or strategy.get('trade_mode', 'long')
 
         # Get position_size_pct from optimization run (stored as risk_percent)
-        position_size_pct = 75.0  # default
+        position_size_pct = 100.0  # default
         capital = 1000.0  # default
         run_id = strategy.get('optimization_run_id')
         if run_id:
             run = db.get_optimization_run_by_id(run_id)
             if run:
-                position_size_pct = run.get('risk_percent', 75.0)
+                position_size_pct = run.get('risk_percent', 100.0)
                 capital = run.get('capital', 1000.0)
 
         # Also check if stored in params (override if present)
@@ -1720,7 +1879,7 @@ async def validate_strategy(request: ValidateStrategyRequest):
         if run_id:
             run = db.get_optimization_run_by_id(run_id)
             if run:
-                original_position_size_pct = run.get('risk_percent', 75.0)
+                original_position_size_pct = run.get('risk_percent', 100.0)
                 original_capital = run.get('capital', 1000.0)
                 original_months = run.get('months', 1.0)
         original_position_size_pct = params.get('position_size_pct', original_position_size_pct)

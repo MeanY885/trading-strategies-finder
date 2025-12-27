@@ -1372,7 +1372,7 @@ class StrategyEngine:
     def __init__(self, df: pd.DataFrame, status_callback: Dict = None,
                  streaming_callback: Callable = None,
                  capital: float = 1000.0,
-                 position_size_pct: float = 75.0,
+                 position_size_pct: float = 100.0,
                  calc_engine: str = "tradingview",
                  progress_min: int = 0,
                  progress_max: int = 100,
@@ -2185,12 +2185,23 @@ class StrategyEngine:
 
         elif strategy == 'donchian_breakout':
             # Donchian Channel breakout (Turtle Trading style)
+            # Uses CROSSOVER/CROSSUNDER logic to match TradingView Pine Script exactly:
+            # Pine: breakoutUp = close > dcUpper and close[1] <= dcUpper[1]
+            # Pine: breakoutDn = close < dcLower and close[1] >= dcLower[1]
             if direction == 'long':
-                # Long: price breaks above upper Donchian channel
-                return safe_bool((df['close'] > df['dc_upper'].shift(1)))
+                # Long: price CROSSES above upper Donchian channel
+                # Current close > previous dc_upper AND previous close <= 2-bars-ago dc_upper
+                return safe_bool(
+                    (df['close'] > df['dc_upper'].shift(1)) &
+                    (df['close'].shift(1) <= df['dc_upper'].shift(2))
+                )
             else:
-                # Short: price breaks below lower Donchian channel
-                return safe_bool((df['close'] < df['dc_lower'].shift(1)))
+                # Short: price CROSSES below lower Donchian channel
+                # Current close < previous dc_lower AND previous close >= 2-bars-ago dc_lower
+                return safe_bool(
+                    (df['close'] < df['dc_lower'].shift(1)) &
+                    (df['close'].shift(1) >= df['dc_lower'].shift(2))
+                )
 
         elif strategy == 'ichimoku_cross':
             # Ichimoku Tenkan-Kijun cross
@@ -2288,7 +2299,7 @@ class StrategyEngine:
     def backtest(self, strategy: str, direction: str,
                  tp_percent: float, sl_percent: float,
                  initial_capital: float = 1000.0,
-                 position_size_pct: float = 75.0,
+                 position_size_pct: float = 100.0,
                  commission_pct: float = 0.1,
                  source_currency: str = "USD",
                  fx_fetcher=None) -> StrategyResult:
@@ -2660,7 +2671,7 @@ class StrategyEngine:
     def backtest_bidirectional(self, strategy: str,
                                tp_percent: float, sl_percent: float,
                                initial_capital: float = 1000.0,
-                               position_size_pct: float = 75.0,
+                               position_size_pct: float = 100.0,
                                commission_pct: float = 0.1,
                                source_currency: str = "USD",
                                fx_fetcher=None) -> StrategyResult:
@@ -3039,7 +3050,7 @@ class StrategyEngine:
                         symbol: str = None,
                         timeframe: str = None,
                         n_trials: int = 300,
-                        mode: str = "separate") -> List[StrategyResult]:
+                        mode: str = "all") -> List[StrategyResult]:
         """
         Find all profitable strategies.
         Saves winners to database for future reference.
@@ -3619,7 +3630,7 @@ class StrategyEngine:
     def _backtest_with_custom_df(self, df: pd.DataFrame, strategy: str, direction: str,
                                   tp_percent: float, sl_percent: float,
                                   initial_capital: float = 1000.0,
-                                  position_size_pct: float = 75.0,
+                                  position_size_pct: float = 100.0,
                                   commission_pct: float = 0.1) -> StrategyResult:
         """
         Run backtest using a custom dataframe (for tuning).
@@ -4201,7 +4212,7 @@ def run_strategy_finder(df: pd.DataFrame,
                         timeframe: str = None,
                         exchange: str = None,
                         capital: float = 1000.0,
-                        position_size_pct: float = 75.0,
+                        position_size_pct: float = 100.0,
                         engine: str = "tradingview",
                         n_trials: int = 300,
                         progress_min: int = 0,
