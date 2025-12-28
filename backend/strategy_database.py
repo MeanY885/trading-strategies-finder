@@ -33,10 +33,27 @@ class StrategyDatabase:
         # Auto-clean duplicates on startup
         self._auto_deduplicate()
 
+    def _get_connection(self):
+        """
+        Get a database connection with proper settings for concurrent access.
+        Uses WAL mode for better read/write concurrency.
+        """
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("PRAGMA busy_timeout=30000")  # Wait up to 30s for lock
+        return conn
+
     def _init_database(self):
         """Create database tables if they don't exist."""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
+
+        # Enable WAL mode for better concurrent read/write performance
+        # WAL allows multiple readers while one writer is active
+        cursor.execute("PRAGMA journal_mode=WAL")
+        # Set busy timeout to 30 seconds - wait for lock instead of failing immediately
+        cursor.execute("PRAGMA busy_timeout=30000")
+        # Synchronous=NORMAL is safe with WAL and faster than FULL
+        cursor.execute("PRAGMA synchronous=NORMAL")
 
         # Main strategies table
         cursor.execute('''
@@ -107,6 +124,23 @@ class StrategyDatabase:
                 status TEXT DEFAULT 'running'
             )
         ''')
+
+        # Completed optimizations tracking table - for accurate resume functionality
+        # Tracks exactly which (pair, period, timeframe, granularity) combinations have been completed
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS completed_optimizations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                pair TEXT NOT NULL,
+                period_label TEXT NOT NULL,
+                timeframe_label TEXT NOT NULL,
+                granularity_label TEXT NOT NULL,
+                strategies_found INTEGER DEFAULT 0,
+                completed_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                source TEXT DEFAULT 'binance',
+                UNIQUE(pair, period_label, timeframe_label, granularity_label)
+            )
+        ''')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_completed_combo ON completed_optimizations(pair, period_label, timeframe_label, granularity_label)')
 
         # Create indexes for fast querying
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_win_rate ON strategies(win_rate)')
@@ -701,6 +735,96 @@ class StrategyDatabase:
 
         print(f"Cleared {count} strategies from database")
         return count
+
+    # =========================================================================
+    # COMPLETED OPTIMIZATIONS TRACKING - For accurate resume functionality
+    # =========================================================================
+
+    def record_completed_optimization(self, pair: str, period_label: str,
+                                       timeframe_label: str, granularity_label: str,
+                                       strategies_found: int = 0, source: str = 'binance'):
+        """
+        Record that an optimization combination has been completed.
+        Uses INSERT OR REPLACE to update if already exists.
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute('''
+            INSERT OR REPLACE INTO completed_optimizations
+            (pair, period_label, timeframe_label, granularity_label, strategies_found, completed_at, source)
+            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
+        ''', (pair, period_label, timeframe_label, granularity_label, strategies_found, source))
+
+        conn.commit()
+        conn.close()
+
+    def is_optimization_completed(self, pair: str, period_label: str,
+                                   timeframe_label: str, granularity_label: str) -> bool:
+        """Check if a specific combination has been completed."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute('''
+            SELECT 1 FROM completed_optimizations
+            WHERE pair = ? AND period_label = ? AND timeframe_label = ? AND granularity_label = ?
+        ''', (pair, period_label, timeframe_label, granularity_label))
+
+        result = cursor.fetchone() is not None
+        conn.close()
+        return result
+
+    def get_completed_optimizations(self) -> set:
+        """
+        Get all completed optimization combinations as a set of tuples.
+        Returns: set of (pair, period_label, timeframe_label, granularity_label)
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute('''
+            SELECT pair, period_label, timeframe_label, granularity_label
+            FROM completed_optimizations
+        ''')
+
+        completed = {(row[0], row[1], row[2], row[3]) for row in cursor.fetchall()}
+        conn.close()
+        return completed
+
+    def get_completed_optimizations_count(self) -> int:
+        """Get count of completed optimizations."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT COUNT(*) FROM completed_optimizations')
+        count = cursor.fetchone()[0]
+        conn.close()
+        return count
+
+    def clear_completed_optimizations(self, pair: str = None, granularity_label: str = None):
+        """
+        Clear completed optimization records.
+        - No args: clear all
+        - pair only: clear all for that pair
+        - granularity only: clear all for that granularity
+        - both: clear specific pair+granularity combos
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        if pair and granularity_label:
+            cursor.execute('DELETE FROM completed_optimizations WHERE pair = ? AND granularity_label = ?',
+                          (pair, granularity_label))
+        elif pair:
+            cursor.execute('DELETE FROM completed_optimizations WHERE pair = ?', (pair,))
+        elif granularity_label:
+            cursor.execute('DELETE FROM completed_optimizations WHERE granularity_label = ?', (granularity_label,))
+        else:
+            cursor.execute('DELETE FROM completed_optimizations')
+
+        deleted = cursor.rowcount
+        conn.commit()
+        conn.close()
+        return deleted
 
     # =========================================================================
     # PRIORITY QUEUE MANAGEMENT

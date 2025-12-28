@@ -20,11 +20,77 @@ import pandas as pd
 import io
 import queue
 import threading
+import psutil
+
+# Import logging first so it's available for startup messages
+from logging_config import log, autonomous_logger, elite_logger, startup_logger, UVICORN_LOG_CONFIG
 
 # Thread pool for running blocking optimization - use all available CPU cores
 max_workers = os.cpu_count() or 4
 thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
-print(f"[Startup] Thread pool initialized with {max_workers} workers (CPU cores detected)")
+log(f"[Startup] Thread pool initialized with {max_workers} workers")
+
+# =============================================================================
+# PARALLEL PROCESSING CONFIGURATION
+# =============================================================================
+# Auto-scale based on available system resources
+
+def calculate_max_concurrent_optimizations() -> int:
+    """
+    Calculate optimal number of concurrent optimizations based on system resources.
+
+    Each optimization uses approximately:
+    - 300-500MB RAM peak
+    - 1 CPU core during calculation phases
+    - Significant I/O for data fetching
+
+    Returns a balanced number that uses available resources without overloading.
+    """
+    cpu_cores = os.cpu_count() or 4
+
+    # Get memory info
+    mem = psutil.virtual_memory()
+    total_mem_gb = mem.total / (1024**3)
+    available_mem_gb = mem.available / (1024**3)
+
+    # Reserve memory for system (4GB) and calculate based on 500MB per optimization
+    mem_per_optimization_gb = 0.5
+    mem_based_workers = max(1, int((available_mem_gb - 2) / mem_per_optimization_gb))
+
+    # CPU-based: Leave 1-2 cores for system
+    cpu_based_workers = max(1, cpu_cores - 2)
+
+    # Take the minimum of CPU and memory limits, cap at 8 for sanity
+    optimal = min(cpu_based_workers, mem_based_workers, 8)
+    optimal = max(2, optimal)  # At least 2 for parallelism benefit
+
+    return optimal
+
+# Calculate at startup
+MAX_CONCURRENT_OPTIMIZATIONS = calculate_max_concurrent_optimizations()
+
+# Semaphore to limit concurrent optimizations (shared by autonomous + Elite)
+optimization_semaphore = asyncio.Semaphore(MAX_CONCURRENT_OPTIMIZATIONS)
+
+# Track all running optimizations for status display
+running_optimizations = {}  # combo_id -> status dict
+running_optimizations_lock = threading.Lock()
+
+# Concurrency configuration (can be changed at runtime via API)
+concurrency_config = {
+    "max_concurrent": MAX_CONCURRENT_OPTIMIZATIONS,
+    "auto_detected": MAX_CONCURRENT_OPTIMIZATIONS,
+    "cpu_cores": os.cpu_count() or 4,
+    "memory_total_gb": round(psutil.virtual_memory().total / (1024**3), 1),
+    "memory_available_gb": round(psutil.virtual_memory().available / (1024**3), 1),
+    "parallel_enabled": True,  # Master switch for parallel mode
+    "elite_parallel": True,    # Allow Elite to run alongside optimization
+}
+
+log(f"[Startup] Parallel processing configured:")
+log(f"[Startup]   CPU cores: {concurrency_config['cpu_cores']}")
+log(f"[Startup]   Memory: {concurrency_config['memory_available_gb']:.1f}GB available / {concurrency_config['memory_total_gb']:.1f}GB total")
+log(f"[Startup]   Max concurrent optimizations: {MAX_CONCURRENT_OPTIMIZATIONS}")
 
 from data_fetcher import BinanceDataFetcher, YFinanceDataFetcher, KrakenDataFetcher
 from pinescript_generator import PineScriptGenerator
@@ -39,17 +105,17 @@ HAS_DATABASE = True
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Handle startup and shutdown events."""
-    print("[Startup] Application starting...")
+    log("[Startup] Application starting...")
 
     # Define delayed startup to avoid blocking during app initialization
     async def delayed_startup():
         # Wait for the app to be fully ready
         await asyncio.sleep(5)
-        print("[Startup] Starting background tasks...")
+        log("[Startup] Starting background tasks...")
         asyncio.create_task(start_auto_elite_validation())
-        print("[Startup] Elite auto-validation loop started")
+        log("[Startup] Elite auto-validation loop started")
         asyncio.create_task(start_autonomous_optimizer())
-        print("[Startup] Autonomous optimizer auto-started")
+        log("[Startup] Autonomous optimizer auto-started")
 
     # Schedule delayed startup without blocking
     asyncio.create_task(delayed_startup())
@@ -136,8 +202,13 @@ autonomous_optimizer_status = {
 
     # Queue tracking for UI
     "queue_completed": [],       # List of completed combos with results (last 10)
-    "queue_current": None,       # Current in-progress combo details
+    "queue_current": None,       # Current in-progress combo details (legacy - single)
     "combinations_list": [],     # Full list of combinations for queue display
+
+    # Parallel processing tracking
+    "parallel_running": [],      # List of currently running parallel optimizations
+    "parallel_count": 0,         # Number of currently running parallel tasks
+    "max_parallel": MAX_CONCURRENT_OPTIMIZATIONS,  # Max concurrent (from config)
 }
 
 # History of autonomous optimizer runs (kept in memory, most recent first)
@@ -318,6 +389,83 @@ async def get_system_resources():
             "optimal_workers": OPTIMAL_WORKERS,
             "thread_pool_workers": max_workers
         }
+    }
+
+
+@app.get("/api/concurrency")
+async def get_concurrency_config():
+    """Get current parallel processing configuration and status"""
+    global concurrency_config, running_optimizations, optimization_semaphore
+
+    # Get fresh memory reading
+    mem = psutil.virtual_memory()
+
+    return {
+        "config": {
+            "max_concurrent": concurrency_config["max_concurrent"],
+            "auto_detected": concurrency_config["auto_detected"],
+            "parallel_enabled": concurrency_config["parallel_enabled"],
+            "elite_parallel": concurrency_config["elite_parallel"],
+        },
+        "resources": {
+            "cpu_cores": concurrency_config["cpu_cores"],
+            "memory_total_gb": concurrency_config["memory_total_gb"],
+            "memory_available_gb": round(mem.available / (1024**3), 1),
+            "memory_used_percent": round(mem.percent, 1),
+        },
+        "status": {
+            "semaphore_available": optimization_semaphore._value,
+            "running_count": len(running_optimizations),
+            "running_optimizations": list(running_optimizations.values()),
+        }
+    }
+
+
+class ConcurrencyUpdate(BaseModel):
+    max_concurrent: Optional[int] = None
+    parallel_enabled: Optional[bool] = None
+    elite_parallel: Optional[bool] = None
+
+
+@app.post("/api/concurrency")
+async def update_concurrency_config(update: ConcurrencyUpdate):
+    """Update parallel processing configuration"""
+    global concurrency_config, optimization_semaphore, MAX_CONCURRENT_OPTIMIZATIONS
+
+    changes = []
+
+    if update.max_concurrent is not None:
+        # Validate range
+        if update.max_concurrent < 1 or update.max_concurrent > 16:
+            raise HTTPException(status_code=400, detail="max_concurrent must be between 1 and 16")
+
+        old_value = concurrency_config["max_concurrent"]
+        concurrency_config["max_concurrent"] = update.max_concurrent
+
+        # Recreate semaphore with new limit
+        # Note: This won't affect currently running tasks, only new ones
+        optimization_semaphore = asyncio.Semaphore(update.max_concurrent)
+        MAX_CONCURRENT_OPTIMIZATIONS = update.max_concurrent
+
+        changes.append(f"max_concurrent: {old_value} -> {update.max_concurrent}")
+        log(f"[Concurrency] Max concurrent changed: {old_value} -> {update.max_concurrent}")
+
+    if update.parallel_enabled is not None:
+        old_value = concurrency_config["parallel_enabled"]
+        concurrency_config["parallel_enabled"] = update.parallel_enabled
+        changes.append(f"parallel_enabled: {old_value} -> {update.parallel_enabled}")
+        log(f"[Concurrency] Parallel enabled: {old_value} -> {update.parallel_enabled}")
+
+    if update.elite_parallel is not None:
+        old_value = concurrency_config["elite_parallel"]
+        concurrency_config["elite_parallel"] = update.elite_parallel
+        changes.append(f"elite_parallel: {old_value} -> {update.elite_parallel}")
+        log(f"[Concurrency] Elite parallel: {old_value} -> {update.elite_parallel}")
+
+    return {
+        "success": True,
+        "changes": changes,
+        "current_config": concurrency_config
     }
 
 
@@ -2656,7 +2804,7 @@ async def toggle_autonomous_optimizer():
         # Signal any running optimization to abort
         if current_optimization_status:
             current_optimization_status["abort"] = True
-            print("[Autonomous Optimizer] Abort signal sent to running optimization")
+            log("[Autonomous Optimizer] Abort signal sent to running optimization", level='WARNING')
 
         return {"status": "disabled", "message": "Autonomous optimizer stopped"}
     else:
@@ -2702,7 +2850,7 @@ async def stop_autonomous():
     # Signal any running optimization to abort
     if current_optimization_status:
         current_optimization_status["abort"] = True
-        print("[Autonomous Optimizer] Abort signal sent to running optimization")
+        log("[Autonomous Optimizer] Abort signal sent to running optimization", level='WARNING')
 
     return {"status": "stopped", "message": "Autonomous optimizer stopped"}
 
@@ -3249,7 +3397,9 @@ def get_stale_periods(validation_data: dict, validation_periods: list) -> list:
 async def start_auto_elite_validation():
     """
     Continuous background loop that automatically validates strategies.
-    Runs when optimizer is idle, pauses when optimizer is active.
+
+    PARALLEL MODE: Runs alongside the optimizer using shared semaphore.
+    No longer pauses when optimizer is active - both run concurrently.
     Checks for new pending strategies every 60 seconds.
     """
     global elite_validation_status
@@ -3258,17 +3408,23 @@ async def start_auto_elite_validation():
         return  # Already running
 
     elite_validation_status["auto_running"] = True
-    print("[Elite Auto-Validation] Starting continuous background validation...")
+    log("[Elite Validation] Starting continuous background validation (parallel mode)...")
 
     while elite_validation_status["auto_running"]:
         try:
-            # Wait for optimizer to be idle
-            while unified_status["running"]:
-                elite_validation_status["message"] = "Waiting for optimizer to finish..."
-                elite_validation_status["paused"] = True
-                await asyncio.sleep(5)
-            elite_validation_status["paused"] = False
-            print(f"[Elite Auto-Validation] Optimizer idle, checking for pending strategies...")
+            # PARALLEL MODE: Check config to decide behavior
+            if concurrency_config.get("elite_parallel", True):
+                # Run alongside optimizer - no pause needed
+                elite_validation_status["paused"] = False
+            else:
+                # Legacy mode: Wait for optimizer to be idle
+                while unified_status["running"]:
+                    elite_validation_status["message"] = "Waiting for optimizer to finish..."
+                    elite_validation_status["paused"] = True
+                    await asyncio.sleep(5)
+                elite_validation_status["paused"] = False
+
+            log(f"[Elite Validation] Checking for pending strategies...")
 
             # Check if there are pending strategies
             db = get_strategy_db()
@@ -3276,10 +3432,10 @@ async def start_auto_elite_validation():
             pending = [s for s in strategies if s.get('elite_status') in [None, 'pending']]
 
             if pending:
-                print(f"[Elite Auto-Validation] Found {len(pending)} pending strategies to validate")
+                log(f"[Elite Validation] Found {len(pending)} pending strategies to validate")
                 elite_validation_status["message"] = f"Found {len(pending)} pending strategies to validate"
                 await validate_all_strategies_for_elite()
-                print(f"[Elite Auto-Validation] Validation batch complete, processed {elite_validation_status.get('processed', 0)} strategies")
+                log(f"[Elite Validation] Batch complete - processed {elite_validation_status.get('processed', 0)} strategies")
                 # Brief pause before checking for more pending
                 await asyncio.sleep(5)
             else:
@@ -3325,8 +3481,8 @@ async def start_auto_elite_validation():
                     top = strategies_with_stale[0]
                     strategy = top['strategy']
 
-                    print(f"[Elite Auto-Validation] Found {len(strategies_with_stale)} strategies with stale periods")
-                    print(f"[Elite Auto-Validation] Re-validating {strategy['strategy_name']}: {top['stale_count']} stale periods {top['stale_periods']}")
+                    log(f"[Elite Validation] Found {len(strategies_with_stale)} strategies with stale periods")
+                    log(f"[Elite Validation] Re-validating {strategy['strategy_name']}: {top['stale_count']} stale periods")
 
                     # Mark as pending so it gets picked up by the validation function
                     # Note: We DON'T clear validation_data so it can reuse fresh periods
@@ -3345,15 +3501,15 @@ async def start_auto_elite_validation():
                 else:
                     # No stale periods anywhere - wait before checking again
                     elite_validation_status["message"] = "All periods fresh, waiting for next boundary..."
-                    print(f"[Elite Auto-Validation] All {len(validated)} strategies have fresh periods, checking again in 1 hour")
+                    log(f"[Elite Validation] All {len(validated)} strategies have fresh periods, checking in 1 hour")
                     await asyncio.sleep(3600)  # Check every hour
 
         except Exception as e:
-            print(f"[Elite Auto-Validation] Error: {e}")
+            log(f"[Elite Validation] Error: {e}", level='ERROR')
             elite_validation_status["message"] = f"Error: {str(e)}"
             await asyncio.sleep(30)  # Wait before retrying
 
-    print("[Elite Auto-Validation] Stopped")
+    log("[Elite Validation] Stopped")
 
 
 async def validate_all_strategies_for_elite():
@@ -3404,7 +3560,7 @@ async def validate_all_strategies_for_elite():
                 return priority_lookup.get(key, 999999)  # Unprioritized at end
 
             pending.sort(key=get_strategy_priority)
-            print(f"[Elite Validation] Sorted {len(pending)} strategies by priority order")
+            log(f"[Elite Validation] Sorted {len(pending)} strategies by priority order")
 
         elite_validation_status["running"] = True
         elite_validation_status["total"] = len(pending)
@@ -3412,17 +3568,19 @@ async def validate_all_strategies_for_elite():
         elite_validation_status["message"] = f"Validating {len(pending)} strategies..."
 
         for strategy in pending:
-            # === PRIORITY CHECK: Pause if optimizer starts ===
-            if unified_status["running"]:
-                print(f"[Elite Validation] Optimizer started, pausing before strategy {strategy.get('id')}...")
-            while unified_status["running"]:
-                elite_validation_status["paused"] = True
-                elite_validation_status["message"] = "Paused (optimizer running)"
-                await asyncio.sleep(2)  # Check every 2 seconds
-            elite_validation_status["paused"] = False
+            # === PRIORITY CHECK: Only pause if not in parallel mode ===
+            if not concurrency_config.get("elite_parallel", True):
+                if unified_status["running"]:
+                    log(f"[Elite Validation] Optimizer started, pausing (legacy mode)...")
+                while unified_status["running"]:
+                    elite_validation_status["paused"] = True
+                    elite_validation_status["message"] = "Paused (optimizer running)"
+                    await asyncio.sleep(2)  # Check every 2 seconds
+                elite_validation_status["paused"] = False
             strategy_name = strategy.get('strategy_name', 'Unknown')
             elite_validation_status["message"] = f"Validating: {strategy_name}"
-            print(f"[Elite Validation] Starting strategy {strategy.get('id')}: {strategy_name}")
+            log(f"[Elite Validation] === VALIDATING STRATEGY #{strategy.get('id')} ===")
+            log(f"[Elite Validation]   Name: {strategy_name}")
 
             strategy_id = strategy.get('id')
             strategy_name = strategy.get('strategy_name', 'Unknown')
@@ -3439,7 +3597,7 @@ async def validate_all_strategies_for_elite():
             supported_quotes = ['USDT', 'USDC', 'BUSD']
             symbol_supported = any(symbol.endswith(q) for q in supported_quotes)
             if not symbol_supported:
-                print(f"[Elite Validation] Skipping {strategy_name} - {symbol} not supported (USDT pairs only)")
+                log(f"[Elite Validation] SKIPPED: {strategy_name} - {symbol} not supported (USDT pairs only)", level='WARNING')
                 elite_validation_status["processed"] += 1
                 # Mark as "validated" to prevent infinite retry loops
                 try:
@@ -3455,7 +3613,7 @@ async def validate_all_strategies_for_elite():
                         elite_score=0
                     )
                 except Exception as e:
-                    print(f"[Elite Validation] Error updating skipped strategy: {e}")
+                    log(f"[Elite Validation] Error updating skipped strategy: {e}", level='ERROR')
                 continue
 
             # Detect data source from symbol format if not stored
@@ -3513,13 +3671,13 @@ async def validate_all_strategies_for_elite():
 
             # If no periods are stale, skip this strategy entirely
             if not stale_periods and existing_results:
-                print(f"[Elite Validation] Strategy {strategy_id}: All periods still fresh, skipping")
+                log(f"[Elite Validation] Strategy #{strategy_id}: All periods still fresh, skipping")
                 elite_validation_status["processed"] += 1
                 continue
 
             stale_period_names = [p["period"] for p in stale_periods]
             if stale_periods and existing_results:
-                print(f"[Elite Validation] Strategy {strategy_id}: Refreshing {len(stale_periods)} stale periods: {stale_period_names}")
+                log(f"[Elite Validation]   Refreshing {len(stale_periods)} stale periods: {', '.join(stale_period_names)}")
 
             passed = 0
             total_testable = 0
@@ -3527,12 +3685,13 @@ async def validate_all_strategies_for_elite():
 
             # Build results by keeping fresh results and re-running stale ones
             for vp in validation_periods:
-                # === PAUSE if optimizer starts - don't break, WAIT ===
-                while unified_status["running"]:
-                    elite_validation_status["paused"] = True
-                    elite_validation_status["message"] = f"Paused during {strategy_name} (optimizer running)"
-                    await asyncio.sleep(2)
-                elite_validation_status["paused"] = False
+                # === PAUSE if optimizer starts - only in legacy mode ===
+                if not concurrency_config.get("elite_parallel", True):
+                    while unified_status["running"]:
+                        elite_validation_status["paused"] = True
+                        elite_validation_status["message"] = f"Paused during {strategy_name} (optimizer running)"
+                        await asyncio.sleep(2)
+                    elite_validation_status["paused"] = False
 
                 # Check if this period is still fresh (not stale)
                 if vp["period"] not in stale_period_names and existing_results:
@@ -3651,7 +3810,7 @@ async def validate_all_strategies_for_elite():
                 # No testable periods (all exceeded data limits or had errors)
                 # Mark as 'untestable' to prevent infinite re-validation loops
                 elite_status = 'untestable'
-                print(f"[Elite Validation] Strategy {strategy_id} has no testable periods - marking as untestable")
+                log(f"[Elite Validation]   No testable periods - marking as UNTESTABLE", level='WARNING')
             elif passed == total_testable:
                 elite_status = 'elite'
             elif passed >= total_testable * 0.7:
@@ -3670,7 +3829,19 @@ async def validate_all_strategies_for_elite():
             )
 
             elite_validation_status["processed"] += 1
-            print(f"[Elite Validation] Completed strategy {strategy_id}: {elite_status} ({passed}/{total_testable} periods, score={elite_score:.1f})")
+
+            # Log result with status-specific formatting
+            status_label = {
+                'elite': 'ELITE',
+                'partial': 'PARTIAL',
+                'failed': 'FAILED',
+                'untestable': 'UNTESTABLE'
+            }.get(elite_status, elite_status.upper())
+
+            log(f"[Elite Validation] === RESULT: {status_label} ===")
+            log(f"[Elite Validation]   Strategy: {strategy_name} (#{strategy_id})")
+            log(f"[Elite Validation]   Periods Passed: {passed}/{total_testable}")
+            log(f"[Elite Validation]   Elite Score: {elite_score:.1f}")
 
         elite_validation_status["message"] = f"Complete! Validated {elite_validation_status['processed']} strategies"
 
@@ -3743,7 +3914,7 @@ def build_optimization_combinations():
                                         }
                                     })
 
-                    print(f"[Autonomous Optimizer] Built {len(combinations)} combinations from 4-list priority system (Granularity→Timeframe→Period→Pair)")
+                    log(f"[Autonomous Optimizer] Built {len(combinations)} combinations from priority system")
                     return combinations
 
             # Try legacy single priority list
@@ -3759,11 +3930,11 @@ def build_optimization_combinations():
                         "granularity": combo["granularity"],
                     })
 
-                print(f"[Autonomous Optimizer] Using {len(combinations)} priority items from legacy database")
+                log(f"[Autonomous Optimizer] Using {len(combinations)} priority items from legacy database")
                 return combinations
 
         except Exception as e:
-            print(f"[Autonomous Optimizer] Error loading priority list: {e}, using defaults")
+            log(f"[Autonomous Optimizer] Error loading priority list: {e}, using defaults", level='WARNING')
 
     # Fallback: Hardcoded order - Granularity → Timeframe → Period → Pair (innermost)
     # Same combo runs across all pairs before moving to next combo
@@ -3782,7 +3953,7 @@ def build_optimization_combinations():
                             "granularity": granularity,
                         })
 
-    print(f"[Autonomous Optimizer] Using default order (Granularity→Timeframe→Period→Pair): {len(combinations)} combinations")
+    log(f"[Autonomous Optimizer] Using default order: {len(combinations)} combinations")
     return combinations
 
 
@@ -3955,6 +4126,11 @@ async def run_autonomous_optimization(combo: dict) -> str:
     data_validation = validate_data_range(df, period, timeframe)
     autonomous_optimizer_status["data_validation"] = data_validation
 
+    # Log data validation result
+    if data_validation["valid"]:
+        log(f"[Autonomous Optimizer] Data OK: {data_validation['actual_days']:.1f}/{data_validation['expected_days']:.1f} days "
+            f"({data_validation['coverage_pct']:.0f}% coverage, {data_validation.get('actual_candles', len(df)):,} candles)")
+
     if not data_validation["valid"]:
         # SKIP this optimization - data is insufficient
         skip_reason = data_validation['message']
@@ -3979,7 +4155,10 @@ async def run_autonomous_optimization(combo: dict) -> str:
         autonomous_optimizer_status["skipped_count"] += 1
         autonomous_optimizer_status["message"] = f"⚠ SKIPPED {pair} {period['label']} - {skip_reason}"
 
-        print(f"[Autonomous] SKIPPED {pair} {period['label']} {timeframe['label']}: {skip_reason}")
+        log(f"[Autonomous Optimizer] SKIPPED: {pair} {period['label']} {timeframe['label']}", level='WARNING')
+        log(f"[Autonomous Optimizer]   Reason: {skip_reason}", level='WARNING')
+        log(f"[Autonomous Optimizer]   Coverage: {data_validation.get('coverage_pct', 0):.0f}% "
+            f"({data_validation.get('actual_days', 0):.1f}/{data_validation.get('expected_days', 0):.1f} days)")
         return "skipped"  # Skip to next combination
 
     # Step 2: Run optimization
@@ -4002,12 +4181,15 @@ async def run_autonomous_optimization(combo: dict) -> str:
 
     # Background task to update progress from temp_status
     async def update_progress():
+        last_logged_pct = 0  # Track last logged percentage for 5% intervals
+        import re
+
         while temp_status["running"]:
             # Check if optimizer was disabled - signal abort
             if not autonomous_optimizer_status["enabled"]:
                 temp_status["abort"] = True
                 autonomous_optimizer_status["message"] = "Stopping optimization..."
-                print("[Autonomous Optimizer] Detected disabled state, setting abort flag")
+                log("[Autonomous Optimizer] Detected disabled state, setting abort flag", level='WARNING')
 
             # Map temp_status progress (0-100) to our range (15-95)
             inner_progress = temp_status.get("progress", 0)
@@ -4017,7 +4199,6 @@ async def run_autonomous_optimization(combo: dict) -> str:
             # Extract progress info from message if available
             # Format: "[1/5] RSI_14 LONG | 50,000/400,000 (45.2%) | Found: 3"
             msg = temp_status.get("message", "")
-            import re
 
             # Extract strategy name: "[1/5] RSI_14 LONG |"
             strategy_match = re.search(r'\[\d+/\d+\]\s*([^|]+)\s*\|', msg)
@@ -4031,6 +4212,15 @@ async def run_autonomous_optimization(combo: dict) -> str:
                 autonomous_optimizer_status["trial_current"] = current_trial
                 autonomous_optimizer_status["trial_total"] = total_trials
                 autonomous_optimizer_status["current_strategy"] = strategy_name
+
+                # Log progress at 5% intervals
+                if total_trials > 0:
+                    current_pct = int((current_trial / total_trials) * 100)
+                    if current_pct >= last_logged_pct + 5:
+                        strat_info = f" testing {strategy_name}" if strategy_name else ""
+                        log(f"[Autonomous Optimizer] Trial {current_trial:,}/{total_trials:,} ({current_pct}%){strat_info}")
+                        last_logged_pct = current_pct
+
                 if temp_status.get("abort"):
                     autonomous_optimizer_status["message"] = f"Stopping... {current_trial:,}/{total_trials:,}"
                 else:
@@ -4065,7 +4255,7 @@ async def run_autonomous_optimization(combo: dict) -> str:
     # Check if we were aborted
     if temp_status.get("abort"):
         autonomous_optimizer_status["message"] = "Stopped by user"
-        print("[Autonomous Optimizer] Optimization aborted")
+        log("[Autonomous Optimizer] Optimization aborted", level='WARNING')
         return "aborted"
 
     # Step 3: Process results
@@ -4098,6 +4288,14 @@ async def run_autonomous_optimization(combo: dict) -> str:
     global autonomous_runs_history
     strategies_found = len(temp_status.get("report", {}).get("top_10", [])) if temp_status.get("report") else 0
     best_pnl = temp_status.get("report", {}).get("top_10", [{}])[0].get("metrics", {}).get("total_pnl", 0) if strategies_found > 0 else 0
+    best_strategy_name = temp_status.get("report", {}).get("top_10", [{}])[0].get("strategy_name", "None") if strategies_found > 0 else "None"
+
+    # Log results summary
+    log(f"[Autonomous Optimizer] === COMPLETED {pair} {timeframe['label']} {period['label']} ===")
+    log(f"[Autonomous Optimizer]   Strategies Found: {strategies_found}")
+    if strategies_found > 0:
+        log(f"[Autonomous Optimizer]   Best Strategy: {best_strategy_name}")
+        log(f"[Autonomous Optimizer]   Best PnL: ${best_pnl:.2f}")
 
     history_entry = {
         "completed_at": datetime.now().isoformat(),
@@ -4141,7 +4339,7 @@ async def wait_for_elite_validation():
     pending = [s for s in strategies if s.get('elite_status') in [None, 'pending']]
 
     if not pending:
-        print("[Autonomous Optimizer] No pending strategies, continuing...")
+        log("[Autonomous Optimizer] No pending strategies, continuing...")
         await asyncio.sleep(2)
         return
 
@@ -4152,7 +4350,8 @@ async def wait_for_elite_validation():
 
     autonomous_optimizer_status["message"] = f"Waiting for Elite: {initial_pending} pending..."
     autonomous_optimizer_status["running"] = False
-    print(f"[Autonomous Optimizer] PAUSING - Waiting for Elite to validate ALL {initial_pending} pending strategies...")
+    log(f"[Autonomous Optimizer] PAUSING - Waiting for Elite validation")
+    log(f"[Autonomous Optimizer]   Pending strategies: {initial_pending}")
 
     # Give Elite a moment to detect that optimizer stopped
     await asyncio.sleep(3)
@@ -4171,7 +4370,7 @@ async def wait_for_elite_validation():
 
         # Check if disabled
         if not autonomous_optimizer_status["enabled"]:
-            print("[Autonomous Optimizer] Disabled during Elite wait, exiting...")
+            log("[Autonomous Optimizer] Disabled during Elite wait, exiting...", level='WARNING')
             return
 
         # Check Elite status
@@ -4186,7 +4385,7 @@ async def wait_for_elite_validation():
             # Elite thinks optimizer is running - force it to see we're not
             autonomous_optimizer_status["message"] = f"Waiting for Elite to unpause..."
             unified_status["running"] = False  # Reinforce
-            print(f"[Autonomous Optimizer] Elite still paused, reinforcing unified_status=False")
+            log(f"[Autonomous Optimizer] Elite still paused, waiting...")
 
         # Check database progress
         strategies = db.get_all_strategies()
@@ -4195,41 +4394,39 @@ async def wait_for_elite_validation():
 
         # Track progress for stall detection
         if current_pending != last_pending:
-            print(f"[Autonomous Optimizer] Elite progress: {validated_this_session} validated, {current_pending} still pending")
+            log(f"[Autonomous Optimizer] Elite progress: {validated_this_session}/{initial_pending} validated, {current_pending} remaining")
             last_pending = current_pending
             last_progress_time = current_time  # Reset stall timer
 
         # Check exit conditions
         if validated_this_session >= min_to_validate:
-            print(f"[Autonomous Optimizer] Elite validated {validated_this_session} strategies - resuming optimization")
+            log(f"[Autonomous Optimizer] Elite completed - resuming optimization")
             break
 
         if current_pending == 0:
-            print(f"[Autonomous Optimizer] All strategies validated!")
+            log(f"[Autonomous Optimizer] All strategies validated!")
             break
 
         # Check if Elite has finished (not running and no progress in a while)
         if not is_elite_running and not is_elite_paused:
             # Elite is idle - check if it just finished or if it never started
             if validated_this_session > 0:
-                print(f"[Autonomous Optimizer] Elite finished - validated {validated_this_session} strategies")
+                log(f"[Autonomous Optimizer] Elite finished - validated {validated_this_session} strategies")
                 break
             elif current_time - last_progress_time > 30:
                 # Elite hasn't started after 30 seconds - something might be wrong
-                print(f"[Autonomous Optimizer] Elite idle with {current_pending} pending - giving it more time...")
+                log(f"[Autonomous Optimizer] Elite idle with {current_pending} pending - giving it more time...")
 
         # Check for stall (no progress for stall_timeout seconds)
         time_since_progress = current_time - last_progress_time
         if time_since_progress > stall_timeout:
-            print(f"[Autonomous Optimizer] No progress in {int(time_since_progress)}s - continuing with optimization")
-            print(f"[Autonomous Optimizer] Elite running={is_elite_running}, paused={is_elite_paused}, validated={validated_this_session}")
+            log(f"[Autonomous Optimizer] Stalled - no progress in {int(time_since_progress)}s", level='WARNING')
+            log(f"[Autonomous Optimizer]   Continuing with optimization despite incomplete validation")
             break
 
-        # Periodic status update
-        if int(time_since_progress) % 30 == 0 and int(time_since_progress) > 0:
-            print(f"[Autonomous Optimizer] Waiting... Elite running={is_elite_running}, paused={is_elite_paused}, "
-                  f"validated={validated_this_session}/{min_to_validate}, pending={current_pending}, "
-                  f"last_progress={int(time_since_progress)}s ago")
+        # Periodic status update (every 60s)
+        if int(time_since_progress) % 60 == 0 and int(time_since_progress) > 0:
+            log(f"[Autonomous Optimizer] Still waiting for Elite... ({validated_this_session}/{initial_pending} done, {current_pending} remaining)")
 
     autonomous_optimizer_status["message"] = "Resuming optimization..."
     await asyncio.sleep(2)
@@ -4238,58 +4435,160 @@ async def wait_for_elite_validation():
 def find_resume_index(combinations: list, db) -> int:
     """
     Find the index to resume from by checking which combinations
-    have already been optimized (have strategies in the database).
+    have already been optimized (tracked in completed_optimizations table).
+
+    Now properly tracks granularity - a combination is only "done" if
+    it was completed at the SAME granularity level.
 
     Returns the index of the first un-optimized combination.
     """
-    strategies = db.get_all_strategies()
+    # Get completed optimizations from tracking table
+    # Returns set of (pair, period_label, timeframe_label, granularity_label)
+    completed = db.get_completed_optimizations()
 
-    # Build a set of already-optimized combinations
-    # Key: (pair, timeframe, period_label)
-    # We consider a combination "done" if there are strategies for it
-    optimized = set()
-    for s in strategies:
-        pair = s.get('symbol', '')
-        tf = s.get('timeframe', '')
-        # Calculate period from data_start/data_end
-        data_start = s.get('data_start')
-        data_end = s.get('data_end')
-        if data_start and data_end:
-            try:
-                start = pd.to_datetime(data_start)
-                end = pd.to_datetime(data_end)
-                days = (end - start).days
-                if days <= 10:
-                    period = "1 week"
-                elif days <= 45:
-                    period = "1 month"
-                elif days <= 100:
-                    period = "3 months"
-                elif days <= 200:
-                    period = "6 months"
-                else:
-                    period = "12 months"
-                optimized.add((pair, tf, period))
-            except:
-                pass
+    log(f"[Resume] Found {len(completed)} completed optimization records in database")
 
-    # Find first combination not in optimized set
+    # Find first combination not in completed set
     for i, combo in enumerate(combinations):
-        key = (combo['pair'], combo['timeframe']['label'], combo['period']['label'])
-        if key not in optimized:
+        key = (
+            combo['pair'],
+            combo['period']['label'],
+            combo['timeframe']['label'],
+            combo['granularity']['label']
+        )
+        if key not in completed:
             return i
 
     # All combinations done, start from beginning
+    log("[Resume] All combinations completed, will restart from beginning")
     return 0
+
+
+async def process_single_combination(combo: dict, combo_index: int, combinations: list):
+    """
+    Process a single optimization combination with semaphore control.
+    This function acquires the semaphore, runs the optimization, and releases.
+    Designed to be run as a concurrent task alongside other combinations.
+    """
+    global autonomous_optimizer_status, running_optimizations
+
+    combo_id = f"auto_{combo_index}_{combo['pair']}_{combo['timeframe']['label']}"
+
+    # Wait for semaphore (limits concurrency)
+    async with optimization_semaphore:
+        # Check if still enabled
+        if not autonomous_optimizer_status["enabled"]:
+            return "aborted"
+
+        # Wait for manual optimizer if running
+        while unified_status["running"]:
+            if not autonomous_optimizer_status["enabled"]:
+                return "aborted"
+            await asyncio.sleep(1)
+
+        # Register this optimization as running
+        combo_status = {
+            "id": combo_id,
+            "index": combo_index,
+            "pair": combo["pair"],
+            "period": combo["period"]["label"],
+            "timeframe": combo["timeframe"]["label"],
+            "granularity": combo["granularity"]["label"],
+            "status": "running",
+            "started_at": datetime.now().isoformat(),
+            "progress": 0,
+            "message": f"Starting {combo['pair']}...",
+        }
+
+        with running_optimizations_lock:
+            running_optimizations[combo_id] = combo_status
+            autonomous_optimizer_status["parallel_running"] = list(running_optimizations.values())
+            autonomous_optimizer_status["parallel_count"] = len(running_optimizations)
+
+        log(f"[Parallel Optimizer] Starting: {combo['pair']} {combo['timeframe']['label']} ({combo['period']['label']}) [Slot {len(running_optimizations)}/{concurrency_config['max_concurrent']}]")
+
+        try:
+            # Run the actual optimization
+            result = await run_autonomous_optimization(combo)
+
+            # Build completed item
+            completed_item = {
+                "index": combo_index,
+                "pair": combo["pair"],
+                "period": combo["period"]["label"],
+                "timeframe": combo["timeframe"]["label"],
+                "granularity": combo["granularity"]["label"],
+                "completed_at": datetime.now().isoformat(),
+            }
+
+            if result == "completed":
+                autonomous_optimizer_status["completed_count"] += 1
+                autonomous_optimizer_status["last_completed_at"] = datetime.now().isoformat()
+                strategies_found = 0
+                if autonomous_optimizer_status.get("last_result"):
+                    strategies_found = autonomous_optimizer_status["last_result"].get("strategies_found", 0)
+                completed_item["status"] = "completed"
+                completed_item["strategies_found"] = strategies_found
+
+                # Record completion in database for accurate resume (includes granularity)
+                db = get_strategy_db()
+                db.record_completed_optimization(
+                    pair=combo["pair"],
+                    period_label=combo["period"]["label"],
+                    timeframe_label=combo["timeframe"]["label"],
+                    granularity_label=combo["granularity"]["label"],
+                    strategies_found=strategies_found,
+                    source=combo.get("source", "binance")
+                )
+
+                log(f"[Parallel Optimizer] Completed: {combo['pair']} - {strategies_found} strategies found")
+            elif result == "skipped":
+                autonomous_optimizer_status["skipped_count"] += 1
+                completed_item["status"] = "skipped"
+                completed_item["strategies_found"] = 0
+                log(f"[Parallel Optimizer] Skipped: {combo['pair']} (insufficient data)")
+            elif result == "error":
+                autonomous_optimizer_status["error_count"] += 1
+                completed_item["status"] = "error"
+                completed_item["strategies_found"] = 0
+                log(f"[Parallel Optimizer] Error: {combo['pair']}", level='WARNING')
+            elif result == "aborted":
+                log(f"[Parallel Optimizer] Aborted: {combo['pair']}", level='WARNING')
+                return "aborted"
+
+            # Add to completed queue (thread-safe)
+            with running_optimizations_lock:
+                autonomous_optimizer_status["queue_completed"].insert(0, completed_item)
+                autonomous_optimizer_status["queue_completed"] = autonomous_optimizer_status["queue_completed"][:20]
+
+            return result
+
+        except Exception as e:
+            log(f"[Parallel Optimizer] Exception in {combo['pair']}: {e}", level='ERROR')
+            autonomous_optimizer_status["error_count"] += 1
+            return "error"
+
+        finally:
+            # Unregister this optimization
+            with running_optimizations_lock:
+                if combo_id in running_optimizations:
+                    del running_optimizations[combo_id]
+                autonomous_optimizer_status["parallel_running"] = list(running_optimizations.values())
+                autonomous_optimizer_status["parallel_count"] = len(running_optimizations)
 
 
 async def start_autonomous_optimizer():
     """
-    Continuous background loop that automatically optimizes strategies
-    across all source/pair/period/timeframe/granularity combinations.
+    PARALLEL Continuous background optimizer.
 
-    Runs when manual optimizer is idle, pauses when optimizer is active.
-    Uses priority ordering: starts with 1 month, 15min, 0.5% granularity.
+    Automatically optimizes strategies across all combinations using
+    parallel processing to maximize resource utilization.
+
+    Key features:
+    - Runs multiple optimizations concurrently (configurable)
+    - Auto-scales based on available CPU/memory
+    - Elite validation runs in parallel (not paused)
+    - Graceful degradation under load
     """
     global autonomous_optimizer_status, unified_status
 
@@ -4297,9 +4596,12 @@ async def start_autonomous_optimizer():
         return  # Already running
 
     autonomous_optimizer_status["auto_running"] = True
-    print("[Autonomous Optimizer] Starting continuous background optimization...")
+    autonomous_optimizer_status["max_parallel"] = concurrency_config["max_concurrent"]
 
-    # Brief delay to let Elite validation initialize and check pending count
+    log("[Parallel Optimizer] Starting with parallel processing...")
+    log(f"[Parallel Optimizer] Max concurrent: {concurrency_config['max_concurrent']} | CPU: {concurrency_config['cpu_cores']} cores | RAM: {concurrency_config['memory_available_gb']:.1f}GB available")
+
+    # Brief delay to let other systems initialize
     await asyncio.sleep(3)
 
     # Build the full combination list with priority ordering
@@ -4320,6 +4622,8 @@ async def start_autonomous_optimizer():
     # Reset queue tracking
     autonomous_optimizer_status["queue_completed"] = []
     autonomous_optimizer_status["queue_current"] = None
+    autonomous_optimizer_status["parallel_running"] = []
+    autonomous_optimizer_status["parallel_count"] = 0
 
     # Smart resume: Find first un-optimized combination
     db = get_strategy_db()
@@ -4327,9 +4631,13 @@ async def start_autonomous_optimizer():
     autonomous_optimizer_status["cycle_index"] = start_index
 
     if start_index > 0:
-        print(f"[Autonomous Optimizer] Resuming from combination {start_index+1}/{len(combinations)} (skipping {start_index} already done)")
+        log(f"[Parallel Optimizer] Resuming from combination {start_index+1}/{len(combinations)} (skipping {start_index} already done)")
     else:
-        print(f"[Autonomous Optimizer] Starting fresh with {len(combinations)} combinations")
+        log(f"[Parallel Optimizer] Starting fresh with {len(combinations)} combinations")
+
+    # Track active tasks
+    active_tasks = set()
+    current_index = start_index
 
     while autonomous_optimizer_status["auto_running"] and autonomous_optimizer_status["enabled"]:
         try:
@@ -4337,165 +4645,102 @@ async def start_autonomous_optimizer():
             if not autonomous_optimizer_status["enabled"]:
                 break
 
-            # Wait for manual optimizer to be idle
-            while unified_status["running"]:
-                if not autonomous_optimizer_status["enabled"]:
-                    break
+            # Wait for manual optimizer to be idle before spawning new tasks
+            if unified_status["running"]:
                 autonomous_optimizer_status["paused"] = True
                 autonomous_optimizer_status["message"] = "Paused - waiting for manual optimizer..."
-                await asyncio.sleep(2)  # Check more frequently
-
-            if not autonomous_optimizer_status["enabled"]:
-                break
-
-            autonomous_optimizer_status["paused"] = False
-
-            # === CHECK FOR PENDING ELITE STRATEGIES ===
-            # Auto-optimizer must NOT run if there are Elite strategies in the backlog
-            # Re-fetch db to ensure we have latest state
-            db = get_strategy_db()
-            strategies = db.get_all_strategies()
-            pending_elite = len([s for s in strategies if s.get('elite_status') in [None, 'pending']])
-            if pending_elite > 0:
-                print(f"[Autonomous Optimizer] Detected {pending_elite} pending elite strategies, pausing...")
-            while pending_elite > 0:
-                if not autonomous_optimizer_status["enabled"]:
-                    break
-                autonomous_optimizer_status["paused"] = True
-                autonomous_optimizer_status["message"] = f"⏸ Paused (elite backlog: {pending_elite})"
-                await asyncio.sleep(10)
-                strategies = db.get_all_strategies()
-                pending_elite = len([s for s in strategies if s.get('elite_status') in [None, 'pending']])
-
-            if not autonomous_optimizer_status["enabled"]:
-                break
-
-            autonomous_optimizer_status["paused"] = False
-
-            # Get current combination
-            if autonomous_optimizer_status["cycle_index"] >= len(combinations):
-                # Completed full cycle, restart
-                autonomous_optimizer_status["cycle_index"] = 0
-                autonomous_optimizer_status["message"] = "Completed full cycle, restarting..."
-                print("[Autonomous Optimizer] Completed full cycle, restarting from beginning")
-                await asyncio.sleep(60)  # Brief pause before restarting
+                # Wait for existing tasks to complete
+                if active_tasks:
+                    await asyncio.sleep(2)
+                    continue
+                await asyncio.sleep(2)
                 continue
 
-            combo = combinations[autonomous_optimizer_status["cycle_index"]]
+            autonomous_optimizer_status["paused"] = False
 
-            # Update status
-            autonomous_optimizer_status["current_source"] = combo["source"]
-            autonomous_optimizer_status["current_pair"] = combo["pair"]
-            autonomous_optimizer_status["current_period"] = combo["period"]["label"]
-            autonomous_optimizer_status["current_timeframe"] = combo["timeframe"]["label"]
-            autonomous_optimizer_status["current_granularity"] = combo["granularity"]["label"]
-            autonomous_optimizer_status["running"] = True
+            # Check if we've completed a full cycle
+            if current_index >= len(combinations):
+                # Wait for all active tasks to complete before restarting
+                if active_tasks:
+                    autonomous_optimizer_status["message"] = f"Finishing {len(active_tasks)} remaining tasks before restart..."
+                    done, active_tasks = await asyncio.wait(active_tasks, timeout=1)
+                    continue
 
-            # Track current combo in queue
-            autonomous_optimizer_status["queue_current"] = {
-                "index": autonomous_optimizer_status["cycle_index"],
-                "pair": combo["pair"],
-                "period": combo["period"]["label"],
-                "timeframe": combo["timeframe"]["label"],
-                "granularity": combo["granularity"]["label"],
-                "status": "in_progress",
-                "started_at": datetime.now().isoformat(),
-            }
+                # Completed full cycle, restart
+                current_index = 0
+                autonomous_optimizer_status["cycle_index"] = 0
+                autonomous_optimizer_status["message"] = "Completed full cycle, restarting..."
+                log("[Parallel Optimizer] Completed full cycle, restarting from beginning")
+                await asyncio.sleep(30)  # Brief pause before restarting
+                continue
 
-            # Set unified_status to signal we're running (for Elite validation interleaving)
-            unified_status["running"] = True
-            autonomous_optimizer_status["message"] = f"Optimizing {combo['pair']} {combo['timeframe']['label']} ({combo['period']['label']})..."
+            # Clean up completed tasks
+            if active_tasks:
+                done, active_tasks = await asyncio.wait(active_tasks, timeout=0.1, return_when=asyncio.FIRST_COMPLETED)
+                # Check for any exceptions in completed tasks
+                for task in done:
+                    try:
+                        task.result()
+                    except Exception as e:
+                        log(f"[Parallel Optimizer] Task exception: {e}", level='ERROR')
 
-            print(f"[Autonomous Optimizer] {autonomous_optimizer_status['cycle_index']+1}/{len(combinations)}: "
-                  f"{combo['pair']} {combo['timeframe']['label']} {combo['period']['label']} {combo['granularity']['label']}")
+            # Calculate how many new tasks we can spawn
+            max_concurrent = concurrency_config["max_concurrent"]
+            available_slots = max_concurrent - len(active_tasks)
 
-            # Run the optimization
-            try:
-                result = await run_autonomous_optimization(combo)
+            if available_slots > 0 and current_index < len(combinations):
+                # Spawn new tasks up to available slots
+                tasks_to_spawn = min(available_slots, len(combinations) - current_index)
 
-                # Build completed item for queue
-                completed_item = {
-                    "index": autonomous_optimizer_status["cycle_index"],
-                    "pair": combo["pair"],
-                    "period": combo["period"]["label"],
-                    "timeframe": combo["timeframe"]["label"],
-                    "granularity": combo["granularity"]["label"],
-                    "completed_at": datetime.now().isoformat(),
-                }
+                for _ in range(tasks_to_spawn):
+                    if current_index >= len(combinations):
+                        break
 
-                if result == "completed":
-                    autonomous_optimizer_status["completed_count"] += 1
-                    autonomous_optimizer_status["last_completed_at"] = datetime.now().isoformat()
-                    # Get strategies found from last_result
-                    strategies_found = 0
-                    if autonomous_optimizer_status.get("last_result"):
-                        strategies_found = autonomous_optimizer_status["last_result"].get("strategies_found", 0)
-                    completed_item["status"] = "completed"
-                    completed_item["strategies_found"] = strategies_found
-                    print(f"[Autonomous Optimizer] Completed {combo['pair']} - waiting for Elite validation...")
-                elif result == "skipped":
-                    completed_item["status"] = "skipped"
-                    completed_item["strategies_found"] = 0
-                    print(f"[Autonomous Optimizer] Skipped {combo['pair']} - moving to next combination...")
-                elif result == "aborted":
-                    # User disabled the optimizer - don't add to queue
-                    print(f"[Autonomous Optimizer] Aborted {combo['pair']} - stopping...")
-                    autonomous_optimizer_status["running"] = False
-                    autonomous_optimizer_status["queue_current"] = None
-                    unified_status["running"] = False
-                    break
-                elif result == "error":
-                    autonomous_optimizer_status["error_count"] += 1
-                    completed_item["status"] = "error"
-                    completed_item["strategies_found"] = 0
+                    combo = combinations[current_index]
+                    task = asyncio.create_task(
+                        process_single_combination(combo, current_index, combinations)
+                    )
+                    active_tasks.add(task)
+                    current_index += 1
+                    autonomous_optimizer_status["cycle_index"] = current_index
 
-                # Add to queue_completed (keep last 10)
-                if result != "aborted":
-                    autonomous_optimizer_status["queue_completed"].insert(0, completed_item)
-                    autonomous_optimizer_status["queue_completed"] = autonomous_optimizer_status["queue_completed"][:10]
+                # Update status message
+                running_pairs = [r["pair"] for r in autonomous_optimizer_status.get("parallel_running", [])]
+                if running_pairs:
+                    autonomous_optimizer_status["message"] = f"Running {len(active_tasks)} parallel: {', '.join(running_pairs[:3])}{'...' if len(running_pairs) > 3 else ''}"
+                else:
+                    autonomous_optimizer_status["message"] = f"Running {len(active_tasks)} optimizations..."
 
-            except Exception as e:
-                print(f"[Autonomous Optimizer] Error: {e}")
-                autonomous_optimizer_status["error_count"] += 1
-                autonomous_optimizer_status["message"] = f"Error: {str(e)}"
+                autonomous_optimizer_status["running"] = len(active_tasks) > 0
 
-            # Clear current queue item
-            autonomous_optimizer_status["queue_current"] = None
-
-            # Move to next combination
-            autonomous_optimizer_status["cycle_index"] += 1
-            autonomous_optimizer_status["running"] = False
-            unified_status["running"] = False  # Allow Elite validation to run
-
-            # Check if disabled before waiting
-            if not autonomous_optimizer_status["enabled"]:
-                break
-
-            # Wait for Elite validation to process any pending strategies
-            if result == "completed":
-                await wait_for_elite_validation()
-            elif result not in ["aborted"]:
-                # For skipped/error, just a brief pause
-                await asyncio.sleep(2)
-
-            # Check again after waiting
-            if not autonomous_optimizer_status["enabled"]:
-                break
+            # Small delay to prevent tight loop
+            await asyncio.sleep(0.5)
 
         except Exception as e:
-            print(f"[Autonomous Optimizer] Loop error: {e}")
+            log(f"[Parallel Optimizer] Loop error: {e}", level='ERROR')
             autonomous_optimizer_status["message"] = f"Error: {str(e)}"
-            unified_status["running"] = False
-            await asyncio.sleep(5)  # Shorter wait, check enabled more often
+            await asyncio.sleep(5)
             if not autonomous_optimizer_status["enabled"]:
                 break
 
-    # Cleanup on exit
+    # Cleanup: Cancel any remaining tasks
+    if active_tasks:
+        log(f"[Parallel Optimizer] Cancelling {len(active_tasks)} remaining tasks...")
+        for task in active_tasks:
+            task.cancel()
+        await asyncio.gather(*active_tasks, return_exceptions=True)
+
+    # Clear running optimizations
+    with running_optimizations_lock:
+        running_optimizations.clear()
+
     autonomous_optimizer_status["auto_running"] = False
     autonomous_optimizer_status["running"] = False
+    autonomous_optimizer_status["parallel_running"] = []
+    autonomous_optimizer_status["parallel_count"] = 0
     autonomous_optimizer_status["message"] = "Stopped"
     unified_status["running"] = False
-    print("[Autonomous Optimizer] Stopped")
+    log("[Parallel Optimizer] Stopped")
 
 
 # Mount static files
@@ -4504,5 +4749,5 @@ app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8080)
+    uvicorn.run(app, host="0.0.0.0", port=8080, log_config=UVICORN_LOG_CONFIG)
 
