@@ -2104,16 +2104,6 @@
                     </div>
 
                     <div class="input-group">
-                        <label>Status</label>
-                        <select id="elite-filter-status" onchange="applyEliteFilters()">
-                            <option value="">All Status</option>
-                            <option value="elite">Elite Only</option>
-                            <option value="partial">Partial Only</option>
-                            <option value="failed">Failed Only</option>
-                        </select>
-                    </div>
-
-                    <div class="input-group">
                         <label>Direction</label>
                         <select id="elite-filter-direction" onchange="applyEliteFilters()">
                             <option value="">All</option>
@@ -2145,7 +2135,6 @@
                                 <th class="sortable" data-sort="2y" onclick="sortEliteTable('2y')">2Y</th>
                                 <th class="sortable" data-sort="3y" onclick="sortEliteTable('3y')">3Y</th>
                                 <th class="sortable" data-sort="5y" onclick="sortEliteTable('5y')">5Y</th>
-                                <th class="sortable" data-sort="status" onclick="sortEliteTable('status')">Status</th>
                                 <th>Actions</th>
                             </tr>
                         </thead>
@@ -6316,16 +6305,6 @@
                 else if (rank === 2) medal = '🥈';
                 else if (rank === 3) medal = '🥉';
 
-                // Status badge
-                let statusBadge = '';
-                if (best.elite_status === 'elite') {
-                    statusBadge = '<span class="elite-badge elite-status">ELITE</span>';
-                } else if (best.elite_status === 'partial') {
-                    statusBadge = '<span class="elite-badge partial-status">PARTIAL</span>';
-                } else if (best.elite_status === 'failed') {
-                    statusBadge = '<span class="elite-badge failed-status">FAILED</span>';
-                }
-
                 // Parse validation data for best strategy
                 let periodData = {};
                 try {
@@ -6369,7 +6348,6 @@
                     <td>${formatPnL(periodData['2 years'])}</td>
                     <td>${formatPnL(periodData['3 years'])}</td>
                     <td>${formatPnL(periodData['5 years'])}</td>
-                    <td>${statusBadge}</td>
                     <td>
                         <button class="btn btn-small" onclick="event.stopPropagation(); showPineScript(${best.id})" title="Pine Script">📋</button>
                         <button class="btn btn-small" onclick="event.stopPropagation(); showExportPeriodModal(${best.id}, '${best.strategy_name.replace(/'/g, "\\'")}')" title="Export Trades CSV">📊</button>
@@ -6389,7 +6367,7 @@
                     variantsRow.className = 'elite-variants-row';
                     variantsRow.id = `elite-variants-${best.id}`;
                     variantsRow.style.display = 'none';
-                    variantsRow.innerHTML = `<td colspan="15" style="padding: 0; background: var(--bg-secondary);"></td>`;
+                    variantsRow.innerHTML = `<td colspan="14" style="padding: 0; background: var(--bg-secondary);"></td>`;
                     tbody.appendChild(variantsRow);
 
                     // Restore expanded state if this was the previously expanded group
@@ -6452,7 +6430,6 @@
                                 <th style="padding: 0.3rem; text-align: center; color: var(--text-muted);">2Y</th>
                                 <th style="padding: 0.3rem; text-align: center; color: var(--text-muted);">3Y</th>
                                 <th style="padding: 0.3rem; text-align: center; color: var(--text-muted);">5Y</th>
-                                <th style="padding: 0.3rem; text-align: center; color: var(--text-muted);">Status</th>
                                 <th style="padding: 0.3rem; text-align: center; color: var(--text-muted);">Actions</th>
                             </tr>
                         </thead>
@@ -6471,16 +6448,6 @@
                         validationResults.forEach(r => { periodData[r.period] = r; });
                     } catch (e) {}
 
-                    // Status badge
-                    let statusBadge = '';
-                    if (variant.elite_status === 'elite') {
-                        statusBadge = '<span class="elite-badge elite-status" style="font-size: 0.7rem; padding: 0.15rem 0.4rem;">ELITE</span>';
-                    } else if (variant.elite_status === 'partial') {
-                        statusBadge = '<span class="elite-badge partial-status" style="font-size: 0.7rem; padding: 0.15rem 0.4rem;">PARTIAL</span>';
-                    } else if (variant.elite_status === 'failed') {
-                        statusBadge = '<span class="elite-badge failed-status" style="font-size: 0.7rem; padding: 0.15rem 0.4rem;">FAILED</span>';
-                    }
-
                     html += `
                         <tr style="border-bottom: 1px solid var(--border-subtle); ${isBest ? 'background: rgba(34, 197, 94, 0.1);' : ''}">
                             <td style="padding: 0.4rem; color: var(--success);">${tp}${isBest ? ' <span style="color: var(--success); font-size: 0.7rem;">★ Best</span>' : ''}</td>
@@ -6496,7 +6463,6 @@
                             <td style="padding: 0.4rem; text-align: center;">${formatPnL(periodData['2 years'])}</td>
                             <td style="padding: 0.4rem; text-align: center;">${formatPnL(periodData['3 years'])}</td>
                             <td style="padding: 0.4rem; text-align: center;">${formatPnL(periodData['5 years'])}</td>
-                            <td style="padding: 0.4rem; text-align: center;">${statusBadge}</td>
                             <td style="padding: 0.4rem; text-align: center;">
                                 <button class="btn btn-small" onclick="event.stopPropagation(); showPineScript(${variant.id})" title="Pine Script">📋</button>
                                 <button class="btn btn-small" onclick="event.stopPropagation(); showExportPeriodModal(${variant.id}, '${variant.strategy_name.replace(/'/g, "\\'")}')" title="Export Trades CSV">📊</button>
