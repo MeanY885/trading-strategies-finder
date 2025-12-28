@@ -608,6 +608,34 @@ class StrategyDatabase:
             'timeframes_tested': timeframes
         }
 
+    def get_filter_options(self) -> Dict:
+        """Get distinct symbols, timeframes, and date range for filter dropdowns."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        # Get distinct symbols
+        cursor.execute("SELECT DISTINCT symbol FROM strategies WHERE symbol IS NOT NULL ORDER BY symbol")
+        symbols = [row[0] for row in cursor.fetchall()]
+
+        # Get distinct timeframes
+        cursor.execute("SELECT DISTINCT timeframe FROM strategies WHERE timeframe IS NOT NULL ORDER BY timeframe")
+        timeframes = [row[0] for row in cursor.fetchall()]
+
+        # Get date range
+        cursor.execute("SELECT MIN(created_at), MAX(created_at) FROM strategies")
+        date_row = cursor.fetchone()
+        date_range = {
+            "min": date_row[0] if date_row[0] else None,
+            "max": date_row[1] if date_row[1] else None
+        }
+
+        conn.close()
+        return {
+            "symbols": symbols,
+            "timeframes": timeframes,
+            "date_range": date_range
+        }
+
     def _row_to_dict(self, row: sqlite3.Row) -> Dict:
         """Convert a database row to a dictionary with parsed JSON fields."""
         d = dict(row)

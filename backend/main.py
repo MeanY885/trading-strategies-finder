@@ -31,51 +31,192 @@ thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
 log(f"[Startup] Thread pool initialized with {max_workers} workers")
 
 # =============================================================================
-# PARALLEL PROCESSING CONFIGURATION
+# DYNAMIC RESOURCE MONITORING & ADAPTIVE CONCURRENCY
 # =============================================================================
-# Auto-scale based on available system resources
+# Real-time monitoring of CPU and memory with dynamic scaling
 
-def calculate_max_concurrent_optimizations() -> int:
+class ResourceMonitor:
     """
-    Calculate optimal number of concurrent optimizations based on system resources.
-
-    Each optimization uses approximately:
-    - 300-500MB RAM peak
-    - 1 CPU core during calculation phases
-    - Significant I/O for data fetching
-
-    Returns a balanced number that uses available resources without overloading.
+    Monitors system resources in real-time and provides adaptive concurrency recommendations.
+    Tracks CPU usage, memory availability, and adjusts max workers dynamically.
     """
-    cpu_cores = os.cpu_count() or 4
 
-    # Get memory info
-    mem = psutil.virtual_memory()
-    total_mem_gb = mem.total / (1024**3)
-    available_mem_gb = mem.available / (1024**3)
+    def __init__(self):
+        self.cpu_cores = os.cpu_count() or 4
+        self.mem_total_gb = psutil.virtual_memory().total / (1024**3)
 
-    # Reserve memory for system (4GB) and calculate based on 400MB per optimization
-    mem_per_optimization_gb = 0.4
-    mem_based_workers = max(1, int((available_mem_gb - 4) / mem_per_optimization_gb))
+        # Resource thresholds
+        self.cpu_target_usage = 70  # Target CPU usage percentage
+        self.cpu_max_usage = 85     # Max before scaling down
+        self.mem_min_available_gb = 4  # Minimum free memory to maintain
+        self.mem_per_worker_gb = 0.4   # Estimated memory per optimization
 
-    # CPU-based: Use most cores, leave 2-4 for system depending on core count
-    if cpu_cores >= 16:
-        cpu_based_workers = cpu_cores - 4  # High-end: leave 4 for system
-    elif cpu_cores >= 8:
-        cpu_based_workers = cpu_cores - 2  # Mid-range: leave 2
-    else:
-        cpu_based_workers = max(1, cpu_cores - 1)  # Low-end: leave 1
+        # Tracking
+        self.cpu_samples = []  # Rolling window of CPU samples
+        self.sample_window = 10  # Number of samples to average
+        self.last_adjustment = 0  # Timestamp of last scaling adjustment
+        self.adjustment_cooldown = 30  # Seconds between adjustments
 
-    # Take the minimum of CPU and memory limits
-    # Cap at 24 for very high-end systems to prevent resource exhaustion
-    optimal = min(cpu_based_workers, mem_based_workers, 24)
-    optimal = max(2, optimal)  # At least 2 for parallelism benefit
+        # Current state
+        self._current_max = self._calculate_initial_max()
+        self._lock = threading.Lock()
 
-    return optimal
+    def _calculate_initial_max(self) -> int:
+        """Calculate initial max workers based on system specs."""
+        mem = psutil.virtual_memory()
+        available_mem_gb = mem.available / (1024**3)
 
-# Calculate at startup
-MAX_CONCURRENT_OPTIMIZATIONS = calculate_max_concurrent_optimizations()
+        # Memory-based limit
+        mem_workers = max(1, int((available_mem_gb - self.mem_min_available_gb) / self.mem_per_worker_gb))
+
+        # CPU-based limit - scale with core count
+        if self.cpu_cores >= 24:
+            cpu_workers = self.cpu_cores - 4  # Leave 4 for system on high-end
+        elif self.cpu_cores >= 16:
+            cpu_workers = self.cpu_cores - 3
+        elif self.cpu_cores >= 8:
+            cpu_workers = self.cpu_cores - 2
+        else:
+            cpu_workers = max(1, self.cpu_cores - 1)
+
+        # No artificial cap - let the system decide based on actual resources
+        optimal = min(cpu_workers, mem_workers)
+        return max(2, optimal)
+
+    def get_current_resources(self) -> dict:
+        """Get current system resource state."""
+        cpu_percent = psutil.cpu_percent(interval=0.1)
+        mem = psutil.virtual_memory()
+
+        return {
+            "cpu_cores": self.cpu_cores,
+            "cpu_percent": round(cpu_percent, 1),
+            "cpu_per_core": [round(x, 1) for x in psutil.cpu_percent(percpu=True, interval=0)],
+            "memory_total_gb": round(self.mem_total_gb, 1),
+            "memory_available_gb": round(mem.available / (1024**3), 1),
+            "memory_used_percent": round(mem.percent, 1),
+            "memory_free_gb": round((mem.total - mem.used) / (1024**3), 1),
+        }
+
+    def sample_cpu(self):
+        """Take a CPU sample and add to rolling window."""
+        cpu = psutil.cpu_percent(interval=0)
+        with self._lock:
+            self.cpu_samples.append(cpu)
+            if len(self.cpu_samples) > self.sample_window:
+                self.cpu_samples.pop(0)
+
+    def get_avg_cpu(self) -> float:
+        """Get average CPU usage from samples."""
+        with self._lock:
+            if not self.cpu_samples:
+                return 0
+            return sum(self.cpu_samples) / len(self.cpu_samples)
+
+    def calculate_optimal_workers(self, current_workers: int) -> int:
+        """
+        Calculate optimal number of workers based on current resource usage.
+        Returns recommended worker count (may be same, higher, or lower).
+        """
+        import time
+
+        resources = self.get_current_resources()
+        avg_cpu = self.get_avg_cpu()
+
+        # Memory check - hard limit
+        available_mem = resources["memory_available_gb"]
+        mem_headroom = available_mem - self.mem_min_available_gb
+        mem_max_workers = max(1, int(mem_headroom / self.mem_per_worker_gb) + current_workers)
+
+        # CPU-based scaling
+        if avg_cpu < 30 and current_workers > 0:
+            # Very underutilized - can add more workers
+            cpu_suggested = min(current_workers + 4, self.cpu_cores - 2)
+        elif avg_cpu < self.cpu_target_usage:
+            # Room to grow
+            headroom = self.cpu_target_usage - avg_cpu
+            additional = max(1, int(headroom / 10))  # Add 1 worker per 10% headroom
+            cpu_suggested = current_workers + additional
+        elif avg_cpu > self.cpu_max_usage:
+            # Overloaded - scale down
+            overage = avg_cpu - self.cpu_target_usage
+            reduce = max(1, int(overage / 10))
+            cpu_suggested = max(2, current_workers - reduce)
+        else:
+            # In target range
+            cpu_suggested = current_workers
+
+        # Apply limits
+        optimal = min(cpu_suggested, mem_max_workers, self.cpu_cores - 2)
+        optimal = max(2, optimal)  # Always at least 2
+
+        return optimal
+
+    def should_scale(self) -> tuple:
+        """
+        Determine if scaling should occur.
+        Returns (should_scale: bool, new_target: int, reason: str)
+        """
+        import time
+
+        current_time = time.time()
+        if current_time - self.last_adjustment < self.adjustment_cooldown:
+            return False, self._current_max, "Cooldown active"
+
+        with running_optimizations_lock:
+            current_running = len(running_optimizations)
+
+        optimal = self.calculate_optimal_workers(current_running)
+
+        if optimal != self._current_max:
+            diff = optimal - self._current_max
+            if abs(diff) >= 2 or (optimal > self._current_max and current_running >= self._current_max):
+                reason = f"Scaling {'up' if diff > 0 else 'down'}: {self._current_max} → {optimal}"
+                return True, optimal, reason
+
+        return False, self._current_max, "No change needed"
+
+    def apply_scaling(self, new_max: int):
+        """Apply new max worker limit."""
+        import time
+        with self._lock:
+            old_max = self._current_max
+            self._current_max = new_max
+            self.last_adjustment = time.time()
+        log(f"[ResourceMonitor] Scaled workers: {old_max} → {new_max}")
+
+    @property
+    def current_max(self) -> int:
+        with self._lock:
+            return self._current_max
+
+    def get_status(self) -> dict:
+        """Get full resource monitor status."""
+        resources = self.get_current_resources()
+        with running_optimizations_lock:
+            current_running = len(running_optimizations)
+
+        return {
+            **resources,
+            "current_max_workers": self._current_max,
+            "current_running": current_running,
+            "avg_cpu_usage": round(self.get_avg_cpu(), 1),
+            "cpu_target": self.cpu_target_usage,
+            "cpu_max_threshold": self.cpu_max_usage,
+            "mem_min_available_gb": self.mem_min_available_gb,
+            "mem_per_worker_gb": self.mem_per_worker_gb,
+            "can_scale_up": current_running >= self._current_max and self.get_avg_cpu() < self.cpu_target_usage,
+            "recommended_workers": self.calculate_optimal_workers(current_running),
+        }
+
+# Initialize resource monitor
+resource_monitor = ResourceMonitor()
+
+# Calculate initial max based on system resources
+MAX_CONCURRENT_OPTIMIZATIONS = resource_monitor.current_max
 
 # Semaphore to limit concurrent optimizations (shared by autonomous + Elite)
+# Note: We'll dynamically adjust this based on resource monitoring
 optimization_semaphore = asyncio.Semaphore(MAX_CONCURRENT_OPTIMIZATIONS)
 
 # Track all running optimizations for status display
@@ -86,17 +227,19 @@ running_optimizations_lock = threading.Lock()
 concurrency_config = {
     "max_concurrent": MAX_CONCURRENT_OPTIMIZATIONS,
     "auto_detected": MAX_CONCURRENT_OPTIMIZATIONS,
-    "cpu_cores": os.cpu_count() or 4,
-    "memory_total_gb": round(psutil.virtual_memory().total / (1024**3), 1),
+    "cpu_cores": resource_monitor.cpu_cores,
+    "memory_total_gb": round(resource_monitor.mem_total_gb, 1),
     "memory_available_gb": round(psutil.virtual_memory().available / (1024**3), 1),
     "parallel_enabled": True,  # Master switch for parallel mode
     "elite_parallel": True,    # Allow Elite to run alongside optimization
+    "adaptive_scaling": True,  # Enable dynamic scaling based on resources
 }
 
-log(f"[Startup] Parallel processing configured:")
+log(f"[Startup] Dynamic Resource Monitor initialized:")
 log(f"[Startup]   CPU cores: {concurrency_config['cpu_cores']}")
 log(f"[Startup]   Memory: {concurrency_config['memory_available_gb']:.1f}GB available / {concurrency_config['memory_total_gb']:.1f}GB total")
-log(f"[Startup]   Max concurrent optimizations: {MAX_CONCURRENT_OPTIMIZATIONS}")
+log(f"[Startup]   Initial max workers: {MAX_CONCURRENT_OPTIMIZATIONS}")
+log(f"[Startup]   Adaptive scaling: ENABLED")
 
 from data_fetcher import BinanceDataFetcher, YFinanceDataFetcher, KrakenDataFetcher
 from pinescript_generator import PineScriptGenerator
@@ -401,28 +544,64 @@ async def get_system_resources():
 @app.get("/api/concurrency")
 async def get_concurrency_config():
     """Get current parallel processing configuration and status"""
-    global concurrency_config, running_optimizations, optimization_semaphore
+    global concurrency_config, running_optimizations, optimization_semaphore, resource_monitor
 
-    # Get fresh memory reading
-    mem = psutil.virtual_memory()
+    # Get real-time resource status from monitor
+    resource_status = resource_monitor.get_status()
 
     return {
         "config": {
-            "max_concurrent": concurrency_config["max_concurrent"],
+            "max_concurrent": resource_monitor.current_max,
             "auto_detected": concurrency_config["auto_detected"],
             "parallel_enabled": concurrency_config["parallel_enabled"],
             "elite_parallel": concurrency_config["elite_parallel"],
+            "adaptive_scaling": concurrency_config.get("adaptive_scaling", True),
         },
         "resources": {
-            "cpu_cores": concurrency_config["cpu_cores"],
-            "memory_total_gb": concurrency_config["memory_total_gb"],
-            "memory_available_gb": round(mem.available / (1024**3), 1),
-            "memory_used_percent": round(mem.percent, 1),
+            "cpu_cores": resource_status["cpu_cores"],
+            "cpu_percent": resource_status["cpu_percent"],
+            "cpu_per_core": resource_status["cpu_per_core"],
+            "avg_cpu_usage": resource_status["avg_cpu_usage"],
+            "memory_total_gb": resource_status["memory_total_gb"],
+            "memory_available_gb": resource_status["memory_available_gb"],
+            "memory_used_percent": resource_status["memory_used_percent"],
         },
         "status": {
             "semaphore_available": optimization_semaphore._value,
-            "running_count": len(running_optimizations),
+            "running_count": resource_status["current_running"],
+            "max_workers": resource_status["current_max_workers"],
+            "recommended_workers": resource_status["recommended_workers"],
+            "can_scale_up": resource_status["can_scale_up"],
             "running_optimizations": list(running_optimizations.values()),
+        },
+        "thresholds": {
+            "cpu_target": resource_status["cpu_target"],
+            "cpu_max": resource_status["cpu_max_threshold"],
+            "mem_min_available_gb": resource_status["mem_min_available_gb"],
+            "mem_per_worker_gb": resource_status["mem_per_worker_gb"],
+        }
+    }
+
+
+@app.get("/api/resources")
+async def get_resource_status():
+    """Get real-time system resource status for monitoring"""
+    global resource_monitor
+
+    # Sample CPU for rolling average
+    resource_monitor.sample_cpu()
+
+    status = resource_monitor.get_status()
+
+    # Check if scaling should occur
+    should_scale, new_target, reason = resource_monitor.should_scale()
+
+    return {
+        **status,
+        "scaling": {
+            "should_scale": should_scale,
+            "target": new_target,
+            "reason": reason,
         }
     }
 
@@ -431,25 +610,27 @@ class ConcurrencyUpdate(BaseModel):
     max_concurrent: Optional[int] = None
     parallel_enabled: Optional[bool] = None
     elite_parallel: Optional[bool] = None
+    adaptive_scaling: Optional[bool] = None
 
 
 @app.post("/api/concurrency")
 async def update_concurrency_config(update: ConcurrencyUpdate):
     """Update parallel processing configuration"""
-    global concurrency_config, optimization_semaphore, MAX_CONCURRENT_OPTIMIZATIONS
+    global concurrency_config, optimization_semaphore, MAX_CONCURRENT_OPTIMIZATIONS, resource_monitor
 
     changes = []
 
     if update.max_concurrent is not None:
-        # Validate range
-        if update.max_concurrent < 1 or update.max_concurrent > 16:
-            raise HTTPException(status_code=400, detail="max_concurrent must be between 1 and 16")
+        # Validate range - no artificial cap, just sanity check
+        max_allowed = resource_monitor.cpu_cores
+        if update.max_concurrent < 1 or update.max_concurrent > max_allowed:
+            raise HTTPException(status_code=400, detail=f"max_concurrent must be between 1 and {max_allowed}")
 
-        old_value = concurrency_config["max_concurrent"]
+        old_value = resource_monitor.current_max
+        resource_monitor.apply_scaling(update.max_concurrent)
         concurrency_config["max_concurrent"] = update.max_concurrent
 
         # Recreate semaphore with new limit
-        # Note: This won't affect currently running tasks, only new ones
         optimization_semaphore = asyncio.Semaphore(update.max_concurrent)
         MAX_CONCURRENT_OPTIMIZATIONS = update.max_concurrent
 
@@ -467,6 +648,12 @@ async def update_concurrency_config(update: ConcurrencyUpdate):
         concurrency_config["elite_parallel"] = update.elite_parallel
         changes.append(f"elite_parallel: {old_value} -> {update.elite_parallel}")
         log(f"[Concurrency] Elite parallel: {old_value} -> {update.elite_parallel}")
+
+    if update.adaptive_scaling is not None:
+        old_value = concurrency_config.get("adaptive_scaling", True)
+        concurrency_config["adaptive_scaling"] = update.adaptive_scaling
+        changes.append(f"adaptive_scaling: {old_value} -> {update.adaptive_scaling}")
+        log(f"[Concurrency] Adaptive scaling: {old_value} -> {update.adaptive_scaling}")
 
     return {
         "success": True,
@@ -1809,31 +1996,8 @@ async def get_filter_options():
 
     try:
         db = get_strategy_db()
-        conn = sqlite3.connect(db.db_path)
-        cursor = conn.cursor()
-
-        # Get distinct symbols
-        cursor.execute("SELECT DISTINCT symbol FROM strategies WHERE symbol IS NOT NULL ORDER BY symbol")
-        symbols = [row[0] for row in cursor.fetchall()]
-
-        # Get distinct timeframes
-        cursor.execute("SELECT DISTINCT timeframe FROM strategies WHERE timeframe IS NOT NULL ORDER BY timeframe")
-        timeframes = [row[0] for row in cursor.fetchall()]
-
-        # Get date range
-        cursor.execute("SELECT MIN(created_at), MAX(created_at) FROM strategies")
-        date_row = cursor.fetchone()
-        date_range = {
-            "min": date_row[0] if date_row[0] else None,
-            "max": date_row[1] if date_row[1] else None
-        }
-
-        conn.close()
-        return {
-            "symbols": symbols,
-            "timeframes": timeframes,
-            "date_range": date_range
-        }
+        # Use database's connection method for proper WAL mode and timeout
+        return db.get_filter_options()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -4710,8 +4874,20 @@ async def start_autonomous_optimizer():
                     except Exception as e:
                         log(f"[Parallel Optimizer] Task exception: {e}", level='ERROR')
 
-            # Calculate how many new tasks we can spawn
-            max_concurrent = concurrency_config["max_concurrent"]
+            # ADAPTIVE SCALING: Sample CPU and check if we should scale
+            resource_monitor.sample_cpu()
+
+            if concurrency_config.get("adaptive_scaling", True):
+                should_scale, new_target, reason = resource_monitor.should_scale()
+                if should_scale:
+                    old_max = resource_monitor.current_max
+                    resource_monitor.apply_scaling(new_target)
+                    concurrency_config["max_concurrent"] = new_target
+                    autonomous_optimizer_status["max_parallel"] = new_target
+                    log(f"[Adaptive Scaling] {reason} (CPU: {resource_monitor.get_avg_cpu():.1f}%)")
+
+            # Calculate how many new tasks we can spawn using dynamic max
+            max_concurrent = resource_monitor.current_max
             available_slots = max_concurrent - len(active_tasks)
 
             if available_slots > 0 and current_index < len(combinations):
@@ -4730,14 +4906,21 @@ async def start_autonomous_optimizer():
                     current_index += 1
                     autonomous_optimizer_status["cycle_index"] = current_index
 
-                # Update status message
+                # Update status message with resource info
                 running_pairs = [r["pair"] for r in autonomous_optimizer_status.get("parallel_running", [])]
-                if running_pairs:
-                    autonomous_optimizer_status["message"] = f"Running {len(active_tasks)} parallel: {', '.join(running_pairs[:3])}{'...' if len(running_pairs) > 3 else ''}"
-                else:
-                    autonomous_optimizer_status["message"] = f"Running {len(active_tasks)} optimizations..."
+                cpu_usage = resource_monitor.get_avg_cpu()
+                mem_avail = resource_monitor.get_current_resources()["memory_available_gb"]
 
+                if running_pairs:
+                    autonomous_optimizer_status["message"] = f"Running {len(active_tasks)}/{max_concurrent} parallel: {', '.join(running_pairs[:3])}{'...' if len(running_pairs) > 3 else ''}"
+                else:
+                    autonomous_optimizer_status["message"] = f"Running {len(active_tasks)}/{max_concurrent} optimizations..."
+
+                # Update resource stats in status
                 autonomous_optimizer_status["running"] = len(active_tasks) > 0
+                autonomous_optimizer_status["max_parallel"] = max_concurrent
+                autonomous_optimizer_status["cpu_usage"] = round(cpu_usage, 1)
+                autonomous_optimizer_status["memory_available_gb"] = round(mem_avail, 1)
 
             # Small delay to prevent tight loop
             await asyncio.sleep(0.5)
