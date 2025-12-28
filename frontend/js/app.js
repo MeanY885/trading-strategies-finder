@@ -85,18 +85,11 @@
                     wsConnected = false;
                     updateConnectionStatus('disconnected');
 
-                    // Attempt reconnection with exponential backoff
-                    if (wsReconnectAttempts < wsMaxReconnectAttempts) {
-                        wsReconnectAttempts++;
-                        const delay = Math.min(wsReconnectDelay * Math.pow(1.5, wsReconnectAttempts - 1), 30000);
-                        console.log(`[WebSocket] Reconnecting in ${delay}ms (attempt ${wsReconnectAttempts}/${wsMaxReconnectAttempts})`);
-                        setTimeout(initWebSocket, delay);
-                    } else {
-                        console.error('[WebSocket] Max reconnection attempts reached, falling back to polling');
-                        updateConnectionStatus('fallback');
-                        // Fall back to legacy polling
-                        startPolling();
-                    }
+                    // Always reconnect with exponential backoff (no polling fallback)
+                    wsReconnectAttempts++;
+                    const delay = Math.min(wsReconnectDelay * Math.pow(1.5, wsReconnectAttempts - 1), 30000);
+                    console.log(`[WebSocket] Reconnecting in ${delay}ms (attempt ${wsReconnectAttempts})`);
+                    setTimeout(initWebSocket, delay);
                 };
 
                 // Send periodic pings to keep connection alive
@@ -109,8 +102,8 @@
             } catch (e) {
                 console.error('[WebSocket] Failed to create connection:', e);
                 updateConnectionStatus('error');
-                // Fall back to polling
-                startPolling();
+                // Retry connection after delay (no polling fallback)
+                setTimeout(initWebSocket, 5000);
             }
         }
 
@@ -189,8 +182,7 @@
                 'connecting': { text: '🔄 Connecting...', class: 'ws-connecting' },
                 'connected': { text: '🟢 Live', class: 'ws-connected' },
                 'disconnected': { text: '🔴 Disconnected', class: 'ws-disconnected' },
-                'error': { text: '⚠️ Error', class: 'ws-error' },
-                'fallback': { text: '📡 Polling', class: 'ws-fallback' }
+                'error': { text: '⚠️ Error', class: 'ws-error' }
             };
 
             const info = statusMap[status] || { text: status, class: '' };
@@ -3124,13 +3116,9 @@
                     document.getElementById('dataProgressFill').style.width = '100%';
                     document.getElementById('dataProgressPercent').textContent = '100%';
                     document.getElementById('dataProgressMessage').textContent = data.message;
-                    
+
                     addLog(data.message);
-                    
-                    // Update status after brief delay
-                    setTimeout(() => {
-                        startPolling();
-                    }, 500);
+                    // WebSocket will receive status updates automatically
                 } else {
                     addLog(`Error: ${data.detail || 'Upload failed'}`);
                     loadingProgress.style.display = 'none';
