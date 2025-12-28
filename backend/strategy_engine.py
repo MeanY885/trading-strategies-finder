@@ -20,6 +20,9 @@ from dataclasses import dataclass
 from datetime import datetime
 import os
 import psutil
+import threading
+import concurrent.futures
+from itertools import product
 
 # Import database
 try:
@@ -4534,8 +4537,11 @@ class StrategyEngine:
         bidirectional_total = num_strategies * num_tp * num_sl if mode in ['bidirectional', 'all'] else 0
         total = separate_total + bidirectional_total
 
-        tested = 0
-        profitable_count = 0
+        # Thread-safe counters for parallel execution
+        progress_lock = threading.Lock()
+        tested_counter = [0]  # Use list for mutability in nested function
+        profitable_counter = [0]
+        abort_flag = [False]
 
         # Progress phases:
         # 0-2%: Initialization (already done)
@@ -4544,7 +4550,10 @@ class StrategyEngine:
         # 95-100%: Saving to DB
 
         mode_desc = "bidirectional" if mode == "bidirectional" else ("separate + bidirectional" if mode == "all" else "separate (long/short)")
-        self._update_status(f"Testing {total:,} combinations ({num_strategies} strategies, {mode_desc}, {num_tp}×{num_sl} TP/SL @ {increment:.2f}% steps)...", 2)
+
+        # Determine number of workers based on CPU cores
+        num_workers = max(2, psutil.cpu_count(logical=True) - 2)
+        self._update_status(f"Testing {total:,} combinations with {num_workers} parallel workers ({num_strategies} strategies, {mode_desc}, {num_tp}×{num_sl} TP/SL @ {increment:.2f}% steps)...", 2)
 
         # Start database run if available
         db_run_id = None
@@ -4555,105 +4564,111 @@ class StrategyEngine:
                 data_rows=len(self.df)
             )
 
-        # Calculate update frequency - update at least every 1% of progress or every 25 tests
-        update_interval = max(1, min(25, total // 100))
+        # Calculate update frequency - update at least every 1% of progress or every 100 tests
+        update_interval = max(1, min(100, total // 100))
 
-        # === SEPARATE DIRECTION TESTING (long/short independently) ===
-        if directions:  # Only run if mode is "separate" or "all"
-            for strat_idx, strategy in enumerate(strategies):
-                # Check for abort signal
-                if self.status and self.status.get("abort"):
-                    self._update_status("Optimization aborted by user", 95)
-                    break
+        # === GENERATE ALL COMBINATIONS UPFRONT ===
+        separate_combos = []
+        if directions:
+            separate_combos = list(product(strategies, directions, tp_range, sl_range))
 
-                for dir_idx, direction in enumerate(directions):
-                    # Check for abort signal
-                    if self.status and self.status.get("abort"):
-                        break
-
-                    # Update at start of each strategy/direction combination
-                    combo_num = strat_idx * num_directions + dir_idx + 1
-                    combo_total = num_strategies * num_directions
-
-                    for tp in tp_range:
-                        # Check for abort signal
-                        if self.status and self.status.get("abort"):
-                            break
-
-                        for sl in sl_range:
-                            # Check for abort signal
-                            if self.status and self.status.get("abort"):
-                                break
-
-                            result = self.backtest(strategy, direction, tp, sl,
-                                                   initial_capital=self.capital,
-                                                   position_size_pct=self.position_size_pct,
-                                                   source_currency=self.source_currency,
-                                                   fx_fetcher=self.fx_fetcher)
-                            tested += 1
-
-                            # Update progress more frequently
-                            if tested % update_interval == 0 or tested == total:
-                                # Progress from 2% to 90% during testing phase
-                                progress = int(2 + (tested / total) * 88)
-                                # Calculate actual overall progress percentage for display
-                                overall_pct = self.progress_min + ((progress / 100) * (self.progress_max - self.progress_min))
-                                self._update_status(
-                                    f"[{combo_num}/{combo_total}] {strategy} {direction.upper()} | {tested:,}/{total:,} ({overall_pct:.1f}%) | Found: {profitable_count}",
-                                    progress
-                                )
-
-                            if result.total_trades >= min_trades and (result.win_rate or 0) >= min_win_rate:
-                                results.append(result)
-
-                                # Stream profitable ones
-                                if result.total_pnl is not None and result.total_pnl > 0:
-                                    profitable_count += 1
-                                    self._publish_result(result)
-
-        # === BIDIRECTIONAL TESTING (combined long+short) ===
+        bidir_combos = []
         if mode in ['bidirectional', 'all']:
-            for strat_idx, strategy in enumerate(strategies):
-                # Check for abort signal
-                if self.status and self.status.get("abort"):
-                    self._update_status("Optimization aborted by user", 95)
-                    break
+            bidir_combos = list(product(strategies, tp_range, sl_range))
 
-                combo_num = strat_idx + 1
+        # === PARALLEL BACKTEST WORKER ===
+        def run_backtest_separate(args):
+            """Worker function for separate direction backtests."""
+            strategy, direction, tp, sl = args
 
-                for tp in tp_range:
-                    # Check for abort signal
-                    if self.status and self.status.get("abort"):
-                        break
+            # Check abort
+            if abort_flag[0] or (self.status and self.status.get("abort")):
+                abort_flag[0] = True
+                return None
 
-                    for sl in sl_range:
-                        # Check for abort signal
-                        if self.status and self.status.get("abort"):
-                            break
+            result = self.backtest(strategy, direction, tp, sl,
+                                   initial_capital=self.capital,
+                                   position_size_pct=self.position_size_pct,
+                                   source_currency=self.source_currency,
+                                   fx_fetcher=self.fx_fetcher)
 
-                        result = self.backtest_bidirectional(strategy, tp, sl,
-                                                             initial_capital=self.capital,
-                                                             position_size_pct=self.position_size_pct,
-                                                             source_currency=self.source_currency,
-                                                             fx_fetcher=self.fx_fetcher)
-                        tested += 1
+            # Update progress (thread-safe)
+            with progress_lock:
+                tested_counter[0] += 1
+                tested = tested_counter[0]
 
-                        # Update progress more frequently
-                        if tested % update_interval == 0 or tested == total:
-                            progress = int(2 + (tested / total) * 88)
-                            overall_pct = self.progress_min + ((progress / 100) * (self.progress_max - self.progress_min))
-                            self._update_status(
-                                f"[{combo_num}/{num_strategies}] {strategy} BIDIRECTIONAL | {tested:,}/{total:,} ({overall_pct:.1f}%) | Found: {profitable_count}",
-                                progress
-                            )
+                if tested % update_interval == 0:
+                    progress = int(2 + (tested / total) * 88)
+                    overall_pct = self.progress_min + ((progress / 100) * (self.progress_max - self.progress_min))
+                    self._update_status(
+                        f"[Parallel] {tested:,}/{total:,} ({overall_pct:.1f}%) | Found: {profitable_counter[0]}",
+                        progress
+                    )
 
-                        if result.total_trades >= min_trades and (result.win_rate or 0) >= min_win_rate:
-                            results.append(result)
+            return result
 
-                            # Stream profitable ones
-                            if result.total_pnl is not None and result.total_pnl > 0:
-                                profitable_count += 1
-                                self._publish_result(result)
+        def run_backtest_bidir(args):
+            """Worker function for bidirectional backtests."""
+            strategy, tp, sl = args
+
+            # Check abort
+            if abort_flag[0] or (self.status and self.status.get("abort")):
+                abort_flag[0] = True
+                return None
+
+            result = self.backtest_bidirectional(strategy, tp, sl,
+                                                  initial_capital=self.capital,
+                                                  position_size_pct=self.position_size_pct,
+                                                  source_currency=self.source_currency,
+                                                  fx_fetcher=self.fx_fetcher)
+
+            # Update progress (thread-safe)
+            with progress_lock:
+                tested_counter[0] += 1
+                tested = tested_counter[0]
+
+                if tested % update_interval == 0:
+                    progress = int(2 + (tested / total) * 88)
+                    overall_pct = self.progress_min + ((progress / 100) * (self.progress_max - self.progress_min))
+                    self._update_status(
+                        f"[Parallel] {tested:,}/{total:,} ({overall_pct:.1f}%) | Found: {profitable_counter[0]}",
+                        progress
+                    )
+
+            return result
+
+        # === EXECUTE IN PARALLEL ===
+        with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
+            # Process separate direction combinations
+            if separate_combos:
+                for result in executor.map(run_backtest_separate, separate_combos):
+                    if result is None:
+                        continue
+                    if result.total_trades >= min_trades and (result.win_rate or 0) >= min_win_rate:
+                        results.append(result)
+                        if result.total_pnl is not None and result.total_pnl > 0:
+                            with progress_lock:
+                                profitable_counter[0] += 1
+                            self._publish_result(result)
+
+            # Process bidirectional combinations
+            if bidir_combos:
+                for result in executor.map(run_backtest_bidir, bidir_combos):
+                    if result is None:
+                        continue
+                    if result.total_trades >= min_trades and (result.win_rate or 0) >= min_win_rate:
+                        results.append(result)
+                        if result.total_pnl is not None and result.total_pnl > 0:
+                            with progress_lock:
+                                profitable_counter[0] += 1
+                            self._publish_result(result)
+
+        # Check if aborted
+        if abort_flag[0]:
+            self._update_status("Optimization aborted by user", 95)
+
+        tested = tested_counter[0]
+        profitable_count = profitable_counter[0]
 
         # Phase: Sorting results (90-95%)
         self._update_status(f"Sorting {len(results):,} results by composite score...", 90)

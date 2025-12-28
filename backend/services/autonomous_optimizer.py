@@ -29,8 +29,9 @@ from logging_config import log
 # Semaphore for limiting parallel optimizations
 optimization_semaphore: Optional[asyncio.Semaphore] = None
 
-# Lock for data fetching (only one fetch at a time to avoid rate limits)
-data_fetch_lock: Optional[asyncio.Lock] = None
+# Semaphore for data fetching (allow multiple concurrent fetches within rate limits)
+# Binance allows ~10 req/sec, so 3 concurrent is safe
+data_fetch_semaphore: Optional[asyncio.Semaphore] = None
 
 # Running optimizations tracking (for parallel mode)
 running_optimizations: Dict[str, dict] = {}
@@ -45,11 +46,12 @@ current_optimization_status: Optional[dict] = None
 
 def init_async_primitives():
     """Initialize asyncio primitives. Must be called from async context."""
-    global optimization_semaphore, data_fetch_lock
+    global optimization_semaphore, data_fetch_semaphore
     max_concurrent = concurrency_config.get("max_concurrent", 4)
     optimization_semaphore = asyncio.Semaphore(max_concurrent)
-    data_fetch_lock = asyncio.Lock()
-    log(f"[Autonomous Optimizer] Initialized with max_concurrent={max_concurrent}")
+    # Allow 3 concurrent data fetches (Binance rate limit is ~10 req/sec)
+    data_fetch_semaphore = asyncio.Semaphore(3)
+    log(f"[Autonomous Optimizer] Initialized with max_concurrent={max_concurrent}, fetch_concurrent=3")
 
 
 # =============================================================================
@@ -391,39 +393,54 @@ async def run_single_optimization(
                         parallel_running=list(running_optimizations.values())
                     )
 
-    # Fetch data
+    # Fetch data (with caching)
     from data_fetcher import BinanceDataFetcher
+    from services.ohlcv_cache import ohlcv_cache
 
-    update_parallel_status(f"Fetching {pair}...", 5)
+    update_parallel_status(f"Loading {pair}...", 5)
     app_state.update_autonomous_status(
-        message=f"Fetching {pair}...",
+        message=f"Loading {pair}...",
         progress=5,
         trial_current=0,
         trial_total=granularity["n_trials"]
     )
 
-    async with data_fetch_lock:
-        fetcher = BinanceDataFetcher()
-        try:
-            df = await asyncio.wait_for(
-                fetcher.fetch_ohlcv(
-                    pair=pair,
-                    interval=timeframe["minutes"],
-                    months=period["months"]
-                ),
-                timeout=300
-            )
-        except asyncio.TimeoutError:
-            log(f"[Autonomous Optimizer] Data fetch TIMEOUT for {pair}", level='ERROR')
-            return "error"
-        except Exception as e:
-            log(f"[Autonomous Optimizer] Data fetch error: {e}", level='ERROR')
-            return "error"
+    # Check cache first (no lock needed for reads)
+    df = ohlcv_cache.get(pair, timeframe["minutes"], period["months"])
 
-        if df is None or len(df) < 100:
-            return "error"
+    if df is not None:
+        log(f"[Autonomous Optimizer] Cache HIT: {pair} {timeframe['label']} {period['label']}")
+        update_parallel_status(f"Cached {pair}", 10)
+    else:
+        # Cache miss - fetch from Binance (with semaphore for rate limiting)
+        update_parallel_status(f"Fetching {pair}...", 5)
+        async with data_fetch_semaphore:
+            fetcher = BinanceDataFetcher()
+            try:
+                df = await asyncio.wait_for(
+                    fetcher.fetch_ohlcv(
+                        pair=pair,
+                        interval=timeframe["minutes"],
+                        months=period["months"]
+                    ),
+                    timeout=300
+                )
+            except asyncio.TimeoutError:
+                log(f"[Autonomous Optimizer] Data fetch TIMEOUT for {pair}", level='ERROR')
+                return "error"
+            except Exception as e:
+                log(f"[Autonomous Optimizer] Data fetch error: {e}", level='ERROR')
+                return "error"
 
-        data_validation = validate_data_range(df, period, timeframe)
+            if df is not None and len(df) >= 100:
+                # Store in cache for future use
+                ohlcv_cache.set(pair, timeframe["minutes"], period["months"], df)
+                log(f"[Autonomous Optimizer] Cached: {pair} {timeframe['label']} {period['label']} ({len(df):,} rows)")
+
+    if df is None or len(df) < 100:
+        return "error"
+
+    data_validation = validate_data_range(df, period, timeframe)
 
     app_state.update_autonomous_status(data_validation=data_validation)
 
