@@ -826,8 +826,13 @@ async def start_autonomous_optimizer(thread_pool):
                 )
 
             log(f"[Parallel Optimizer] Broadcasting... active={len(active_tasks)}, index={current_index}")
-            from services.websocket_manager import broadcast_autonomous_status
-            broadcast_autonomous_status(app_state.get_autonomous_status())
+            # Use async broadcast directly since we're in async context
+            from services.websocket_manager import ws_manager, _get_queue_data_from_status
+            status = app_state.get_autonomous_status()
+            await ws_manager.broadcast("autonomous_status", {
+                "autonomous": status,
+                "queue": _get_queue_data_from_status(status)
+            })
 
             await asyncio.sleep(0.5)
 
