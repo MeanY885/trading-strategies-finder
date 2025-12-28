@@ -6220,14 +6220,14 @@
         }
 
         function startElitePolling() {
-            // Poll every 5 seconds to show live status
+            // Poll every 2 seconds for responsive updates
             setInterval(async () => {
                 // Only poll if elite tab is visible
                 const eliteTab = document.getElementById('elite-tab');
                 if (eliteTab && eliteTab.style.display !== 'none') {
                     await loadEliteData();
                 }
-            }, 5000);
+            }, 2000);
         }
 
         async function renderEliteTable(eliteStrategies, status) {
@@ -6645,7 +6645,8 @@
         function startAutonomousPolling() {
             if (autonomousPollingInterval) return;
 
-            autonomousPollingInterval = setInterval(updateAutonomousStatus, 3000);
+            // Poll every 1 second for responsive updates
+            autonomousPollingInterval = setInterval(updateAutonomousStatus, 1000);
         }
 
         function stopAutonomousPolling() {
@@ -6703,8 +6704,31 @@
                     `;
                 });
 
-                // Current item (in progress)
-                if (queue.current) {
+                // PARALLEL: Show all running items (multiple in parallel)
+                const runningItems = queue.running || [];
+                if (runningItems.length > 0) {
+                    runningItems.forEach((item, idx) => {
+                        const progress = item.progress || 0;
+                        const message = item.message || 'Processing...';
+
+                        html += `
+                            <div class="task-queue-item in-progress">
+                                <span class="task-status-icon"><span class="spinner"></span></span>
+                                <span>${item.pair}</span>
+                                <span>${item.period}</span>
+                                <span>${item.timeframe}</span>
+                                <span>${item.granularity}</span>
+                                <div class="task-progress">
+                                    <div class="task-progress-bar">
+                                        <div class="task-progress-fill" style="width: ${progress}%"></div>
+                                    </div>
+                                    <span class="task-progress-text">${message}</span>
+                                </div>
+                            </div>
+                        `;
+                    });
+                } else if (queue.current) {
+                    // Fallback for legacy single item
                     const progress = queue.trial_total > 0
                         ? Math.round((queue.trial_current / queue.trial_total) * 100)
                         : 0;
@@ -6741,11 +6765,19 @@
                     `;
                 });
 
-                // Show remaining count
+                // Show remaining count and parallel info
+                let footerText = '';
+                if (queue.parallel_count > 0) {
+                    footerText += `<span style="color: var(--success);">⚡ ${queue.parallel_count}/${queue.max_parallel} parallel</span>`;
+                }
                 if (queue.pending_remaining > 0) {
+                    footerText += ` · +${queue.pending_remaining} more combinations`;
+                }
+
+                if (footerText) {
                     html += `
                         <div class="task-queue-more">
-                            ... +${queue.pending_remaining} more combinations
+                            ${footerText}
                         </div>
                     `;
                 }
@@ -6766,11 +6798,17 @@
                 const response = await fetch('/api/autonomous/status');
                 const status = await response.json();
 
-                // Update badge
+                // Update badge - check parallel_count for parallel processing
                 const badge = document.getElementById('autonomousStatusBadge');
                 const message = document.getElementById('autonomousStatusMessage');
+                const parallelCount = status.parallel_count || 0;
+                const maxParallel = status.max_parallel || 1;
 
-                if (status.running) {
+                if (parallelCount > 0) {
+                    // Parallel processing active
+                    badge.className = 'status-badge success';
+                    badge.textContent = `Running ${parallelCount}`;
+                } else if (status.running) {
                     badge.className = 'status-badge success';
                     badge.textContent = 'Running';
                 } else if (status.paused) {
@@ -6779,9 +6817,12 @@
                 } else if (status.enabled && status.auto_running) {
                     badge.className = 'status-badge success';
                     badge.textContent = 'Active';
+                } else if (status.enabled) {
+                    badge.className = 'status-badge neutral';
+                    badge.textContent = 'Waiting';
                 } else {
                     badge.className = 'status-badge neutral';
-                    badge.textContent = 'Idle';
+                    badge.textContent = 'Off';
                 }
 
                 message.textContent = status.message || 'Not running';

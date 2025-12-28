@@ -2895,16 +2895,24 @@ async def get_autonomous_history(limit: int = 50):
 
 @app.get("/api/autonomous/queue")
 async def get_autonomous_queue():
-    """Get queue state for UI task list display"""
+    """Get queue state for UI task list display - supports parallel processing"""
     cycle_index = autonomous_optimizer_status.get("cycle_index", 0)
     combinations = autonomous_optimizer_status.get("combinations_list", [])
     total = len(combinations)
 
-    # Get pending items (next 5 after current)
-    pending_start = cycle_index + 1
+    # Get currently running items (parallel processing)
+    parallel_running = autonomous_optimizer_status.get("parallel_running", [])
+
+    # For backwards compatibility, also check queue_current
+    current = autonomous_optimizer_status.get("queue_current")
+
+    # Get pending items (next 5 after current index)
+    pending_start = cycle_index
     pending_items = []
-    for i in range(pending_start, min(pending_start + 5, total)):
-        if i < total:
+    running_indices = {r.get("index") for r in parallel_running}
+
+    for i in range(pending_start, min(pending_start + 10, total)):
+        if i < total and i not in running_indices:
             combo = combinations[i]
             pending_items.append({
                 "index": i,
@@ -2914,15 +2922,20 @@ async def get_autonomous_queue():
                 "granularity": combo["granularity"],
                 "status": "pending"
             })
+            if len(pending_items) >= 5:
+                break
 
     return {
         "completed": autonomous_optimizer_status.get("queue_completed", []),
-        "current": autonomous_optimizer_status.get("queue_current"),
+        "current": current,  # Legacy single item
+        "running": parallel_running,  # NEW: Multiple parallel items
+        "parallel_count": len(parallel_running),  # NEW: Count of parallel tasks
+        "max_parallel": concurrency_config.get("max_concurrent", 1),  # NEW: Max allowed
         "pending": pending_items,
-        "pending_remaining": max(0, total - pending_start - len(pending_items)),
+        "pending_remaining": max(0, total - cycle_index - len(pending_items)),
         "total": total,
         "cycle_index": cycle_index,
-        # Current progress info
+        # Current progress info (aggregated from parallel tasks)
         "trial_current": autonomous_optimizer_status.get("trial_current", 0),
         "trial_total": autonomous_optimizer_status.get("trial_total", 0),
         "current_strategy": autonomous_optimizer_status.get("current_strategy"),
@@ -4079,14 +4092,18 @@ def run_autonomous_optimization_sync(df, combo, status):
         status["message"] = f"Error: {str(e)}"
 
 
-async def run_autonomous_optimization(combo: dict) -> str:
+async def run_autonomous_optimization(combo: dict, combo_id: str = None) -> str:
     """
     Run a single optimization for the given combination.
     Fetches data, runs optimizer, stores results.
 
+    Args:
+        combo: The combination dict with pair, period, timeframe, granularity
+        combo_id: Optional ID for tracking in running_optimizations (for parallel mode)
+
     Returns: "completed", "skipped", or "error"
     """
-    global autonomous_optimizer_status
+    global autonomous_optimizer_status, running_optimizations
 
     source = combo["source"]
     pair = combo["pair"]
@@ -4094,14 +4111,27 @@ async def run_autonomous_optimization(combo: dict) -> str:
     timeframe = combo["timeframe"]
     granularity = combo["granularity"]
 
+    def update_parallel_status(message: str, progress: int = None):
+        """Update the running_optimizations entry for this combo if in parallel mode."""
+        if combo_id and combo_id in running_optimizations:
+            with running_optimizations_lock:
+                if combo_id in running_optimizations:
+                    running_optimizations[combo_id]["message"] = message
+                    if progress is not None:
+                        running_optimizations[combo_id]["progress"] = progress
+                    # Update the parallel_running list
+                    autonomous_optimizer_status["parallel_running"] = list(running_optimizations.values())
+
     # Step 1: Fetch data from Binance via CCXT
     # Single source: Binance USDT pairs - use BINANCE:SYMBOL on TradingView
     from data_fetcher import BinanceDataFetcher
 
-    autonomous_optimizer_status["message"] = f"Fetching {pair} from Binance..."
+    fetch_msg = f"Fetching {pair}..."
+    autonomous_optimizer_status["message"] = fetch_msg
     autonomous_optimizer_status["progress"] = 5
     autonomous_optimizer_status["trial_current"] = 0
     autonomous_optimizer_status["trial_total"] = granularity["n_trials"]
+    update_parallel_status(fetch_msg, 5)
 
     fetcher = BinanceDataFetcher()
 
@@ -4213,6 +4243,9 @@ async def run_autonomous_optimization(combo: dict) -> str:
                 autonomous_optimizer_status["trial_total"] = total_trials
                 autonomous_optimizer_status["current_strategy"] = strategy_name
 
+                # Calculate progress percentage
+                progress_pct = int((current_trial / total_trials) * 100) if total_trials > 0 else 0
+
                 # Log progress at 5% intervals
                 if total_trials > 0:
                     current_pct = int((current_trial / total_trials) * 100)
@@ -4222,14 +4255,20 @@ async def run_autonomous_optimization(combo: dict) -> str:
                         last_logged_pct = current_pct
 
                 if temp_status.get("abort"):
-                    autonomous_optimizer_status["message"] = f"Stopping... {current_trial:,}/{total_trials:,}"
+                    status_msg = f"Stopping... {current_trial:,}/{total_trials:,}"
+                    autonomous_optimizer_status["message"] = status_msg
+                    update_parallel_status(status_msg, progress_pct)
                 else:
                     strat_info = f" - {strategy_name}" if strategy_name else ""
-                    autonomous_optimizer_status["message"] = f"Optimizing {pair} {timeframe['label']}{strat_info} - {current_trial:,}/{total_trials:,}..."
+                    status_msg = f"{pair}{strat_info} - {current_trial:,}/{total_trials:,}"
+                    autonomous_optimizer_status["message"] = f"Optimizing {status_msg}..."
+                    update_parallel_status(status_msg, progress_pct)
             elif msg:
+                status_msg = f"{pair} ({granularity['label']})"
                 autonomous_optimizer_status["message"] = f"Optimizing {pair} {timeframe['label']} ({granularity['label']})..."
+                update_parallel_status(status_msg, 10)
 
-            await asyncio.sleep(0.5)  # Update every 500ms
+            await asyncio.sleep(0.3)  # Update every 300ms for more responsive UI
 
     # Run optimization and progress updater concurrently
     loop = asyncio.get_event_loop()
@@ -4508,8 +4547,8 @@ async def process_single_combination(combo: dict, combo_index: int, combinations
         log(f"[Parallel Optimizer] Starting: {combo['pair']} {combo['timeframe']['label']} ({combo['period']['label']}) [Slot {len(running_optimizations)}/{concurrency_config['max_concurrent']}]")
 
         try:
-            # Run the actual optimization
-            result = await run_autonomous_optimization(combo)
+            # Run the actual optimization (pass combo_id for parallel status tracking)
+            result = await run_autonomous_optimization(combo, combo_id=combo_id)
 
             # Build completed item
             completed_item = {
