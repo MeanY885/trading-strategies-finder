@@ -2805,6 +2805,11 @@
                     if (message.optimization) updateOptimizationStatus(message.optimization);
                     if (message.autonomous) updateAutonomousUI(message.autonomous);
                     if (message.elite) updateEliteUI(message.elite);
+                    // Queue data for autonomous tab
+                    if (message.queue) {
+                        cachedQueueData = message.queue;
+                        renderTaskQueueFromCache(message.queue);
+                    }
                     break;
 
                 case 'data_status':
@@ -2817,6 +2822,11 @@
 
                 case 'autonomous_status':
                     if (message.autonomous) updateAutonomousUI(message.autonomous);
+                    // Queue data is now included in autonomous_status broadcasts
+                    if (message.queue) {
+                        cachedQueueData = message.queue;
+                        renderTaskQueueFromCache(message.queue);
+                    }
                     break;
 
                 case 'elite_status':
@@ -2944,11 +2954,46 @@
                 }
             }
 
-            // Refresh queue display if autonomous tab is visible
-            const autonomousTab = document.getElementById('autonomous-tab');
-            if (autonomousTab && autonomousTab.style.display !== 'none') {
-                renderTaskQueue();
+            // Update progress bar
+            const progressContainer = document.getElementById('autonomousProgressContainer');
+            const progressFill = document.getElementById('autonomousProgressFill');
+            const progressText = document.getElementById('autonomousProgressText');
+
+            if (progressContainer) {
+                if (status.running || status.enabled) {
+                    progressContainer.style.display = 'block';
+                    if (progressFill) progressFill.style.width = `${status.progress || 0}%`;
+                    if (progressText) {
+                        if (status.trial_current > 0 && status.trial_total > 0) {
+                            progressText.textContent = `Trial ${status.trial_current}/${status.trial_total} (${status.progress || 0}%)`;
+                        } else {
+                            progressText.textContent = `${status.progress || 0}%`;
+                        }
+                    }
+                } else {
+                    progressContainer.style.display = 'none';
+                }
             }
+
+            // Update summary stats
+            const autoCompletedCount = document.getElementById('autoCompletedCount');
+            const autoSkippedCount = document.getElementById('autoSkippedCount');
+            const autoErrorCount = document.getElementById('autoErrorCount');
+            const autoTotalCombinations = document.getElementById('autoTotalCombinations');
+            const autoLastCompleted = document.getElementById('autoLastCompleted');
+
+            if (autoCompletedCount) autoCompletedCount.textContent = status.completed_count || 0;
+            if (autoSkippedCount) autoSkippedCount.textContent = status.skipped_count || 0;
+            if (autoErrorCount) autoErrorCount.textContent = status.error_count || 0;
+            if (autoTotalCombinations) autoTotalCombinations.textContent = status.total_combinations || 0;
+            if (autoLastCompleted) {
+                autoLastCompleted.textContent = status.last_completed_at
+                    ? new Date(status.last_completed_at).toLocaleTimeString()
+                    : '-';
+            }
+
+            // Note: Queue rendering is handled separately via renderTaskQueueFromCache
+            // when queue data is received in the autonomous_status message
         }
 
         // Helper to update elite UI from WebSocket
@@ -7274,7 +7319,113 @@
             }
         }
 
+        // Render task queue from cached/pushed data (no network request)
+        function renderTaskQueueFromCache(queue) {
+            const queueBody = document.getElementById('taskQueueBody');
+            if (!queueBody || !queue) return;
+
+            // If no queue data yet
+            if (queue.total === 0) {
+                queueBody.innerHTML = `
+                    <div style="padding: 2rem; text-align: center; color: var(--text-muted);">
+                        Enable optimizer to see queue
+                    </div>
+                `;
+                return;
+            }
+
+            let html = '';
+
+            // Completed items (most recent first, show up to 3)
+            const completedToShow = (queue.completed || []).slice(0, 3);
+            completedToShow.reverse().forEach(item => {
+                const statusIcon = item.status === 'completed' ? '✓' : item.status === 'skipped' ? '⏭' : '✗';
+                const statusClass = item.status;
+                const resultClass = item.strategies_found > 0 ? 'has-strategies' : '';
+                const resultText = item.status === 'completed'
+                    ? `${item.strategies_found} strategies`
+                    : item.status === 'skipped' ? 'Skipped' : 'Error';
+
+                html += `
+                    <div class="task-queue-item ${statusClass}">
+                        <span class="task-status-icon ${statusClass}">${statusIcon}</span>
+                        <span>${item.pair}</span>
+                        <span>${item.period}</span>
+                        <span>${item.timeframe}</span>
+                        <span>${item.granularity}</span>
+                        <span class="task-result ${resultClass}">${resultText}</span>
+                    </div>
+                `;
+            });
+
+            // PARALLEL: Show all running items
+            const runningItems = queue.running || [];
+            if (runningItems.length > 0) {
+                runningItems.forEach((item, idx) => {
+                    const progress = item.progress || 0;
+                    const message = item.message || 'Processing...';
+
+                    html += `
+                        <div class="task-queue-item in-progress">
+                            <span class="task-status-icon"><span class="spinner"></span></span>
+                            <span>${item.pair}</span>
+                            <span>${item.period}</span>
+                            <span>${item.timeframe}</span>
+                            <span>${item.granularity}</span>
+                            <div class="task-progress">
+                                <div class="task-progress-bar">
+                                    <div class="task-progress-fill" style="width: ${progress}%"></div>
+                                </div>
+                                <span class="task-progress-text">${message}</span>
+                            </div>
+                        </div>
+                    `;
+                });
+            }
+
+            // Pending items
+            (queue.pending || []).forEach(item => {
+                html += `
+                    <div class="task-queue-item pending">
+                        <span class="task-status-icon pending">○</span>
+                        <span>${item.pair}</span>
+                        <span>${item.period}</span>
+                        <span>${item.timeframe}</span>
+                        <span>${item.granularity}</span>
+                        <span class="task-result">Pending</span>
+                    </div>
+                `;
+            });
+
+            // Show remaining count and parallel info
+            let footerText = '';
+            if (queue.parallel_count > 0) {
+                footerText += `<span style="color: var(--success);">⚡ ${queue.parallel_count}/${queue.max_parallel} parallel</span>`;
+            }
+            if (queue.pending_remaining > 0) {
+                footerText += ` · +${queue.pending_remaining} more combinations`;
+            }
+
+            if (footerText) {
+                html += `
+                    <div class="task-queue-more">
+                        ${footerText}
+                    </div>
+                `;
+            }
+
+            queueBody.innerHTML = html || `
+                <div style="padding: 2rem; text-align: center; color: var(--text-muted);">
+                    Queue empty - all combinations processed
+                </div>
+            `;
+        }
+
         async function updateAutonomousStatus() {
+            // Skip HTTP polling if WebSocket is connected - we get push updates
+            if (wsConnected) {
+                return;
+            }
             try {
                 const response = await fetch('/api/autonomous/status');
                 const status = await response.json();

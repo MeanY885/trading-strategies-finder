@@ -66,13 +66,15 @@ class WebSocketManager:
     async def _send_full_state(self, websocket: WebSocket):
         """Send complete current state to a newly connected client"""
         try:
-            # Import here to avoid circular dependency at module load
+            # Include queue data for autonomous tab
+            queue_data = get_autonomous_queue_data()
             state = {
                 "type": "full_state",
                 "data": data_status,
                 "optimization": unified_status,
                 "autonomous": autonomous_optimizer_status,
                 "elite": elite_validation_status,
+                "queue": queue_data,
             }
             await websocket.send_json(state)
         except Exception as e:
@@ -143,8 +145,13 @@ def broadcast_optimization_status():
     ws_manager.broadcast_sync("optimization_status", {"optimization": unified_status})
 
 def broadcast_autonomous_status():
-    """Broadcast autonomous optimizer status update to all clients"""
-    ws_manager.broadcast_sync("autonomous_status", {"autonomous": autonomous_optimizer_status})
+    """Broadcast autonomous optimizer status update to all clients, including queue data"""
+    # Include queue data so frontend doesn't need to make separate requests
+    queue_data = get_autonomous_queue_data()
+    ws_manager.broadcast_sync("autonomous_status", {
+        "autonomous": autonomous_optimizer_status,
+        "queue": queue_data
+    })
 
 def broadcast_elite_status():
     """Broadcast elite validation status update to all clients"""
@@ -712,12 +719,16 @@ async def handle_ws_request(websocket: WebSocket, request: dict):
     """Handle data requests from WebSocket clients"""
     request_type = request.get("type")
     request_id = request.get("id")  # Optional request ID for matching responses
+    loop = asyncio.get_event_loop()
 
     try:
         if request_type == "get_strategies":
-            # Get strategy history
-            db = get_strategy_db()
-            strategies = db.get_all_strategies()
+            # Get strategy history - run in thread pool to avoid blocking
+            def fetch_strategies():
+                db = get_strategy_db()
+                return db.get_all_strategies()
+
+            strategies = await loop.run_in_executor(thread_pool, fetch_strategies)
             await websocket.send_json({
                 "type": "strategies_data",
                 "id": request_id,
@@ -725,39 +736,50 @@ async def handle_ws_request(websocket: WebSocket, request: dict):
             })
 
         elif request_type == "get_elite":
-            # Get elite strategies and status
-            db = get_strategy_db()
-            strategies = db.get_all_strategies()
+            # Get elite strategies and status - run in thread pool
+            def fetch_elite_data():
+                db = get_strategy_db()
+                strategies = db.get_all_strategies()
 
-            # Calculate counts
-            elite_count = sum(1 for s in strategies if s.get('elite_status') == 'elite')
-            partial_count = sum(1 for s in strategies if s.get('elite_status') == 'partial')
-            failed_count = sum(1 for s in strategies if s.get('elite_status') == 'failed')
-            pending_count = sum(1 for s in strategies if s.get('elite_status') in [None, 'pending'])
+                # Calculate counts
+                elite_count = sum(1 for s in strategies if s.get('elite_status') == 'elite')
+                partial_count = sum(1 for s in strategies if s.get('elite_status') == 'partial')
+                failed_count = sum(1 for s in strategies if s.get('elite_status') == 'failed')
+                pending_count = sum(1 for s in strategies if s.get('elite_status') in [None, 'pending'])
 
-            # Get validated strategies (those with elite_status set)
-            elite_strategies = [s for s in strategies if s.get('elite_status') and s.get('elite_status') != 'pending']
+                # Get validated strategies (those with elite_status set)
+                elite_strategies = [s for s in strategies if s.get('elite_status') and s.get('elite_status') != 'pending']
 
+                return {
+                    "total": len(strategies),
+                    "elite_count": elite_count,
+                    "partial_count": partial_count,
+                    "failed_count": failed_count,
+                    "pending_count": pending_count,
+                    "elite_strategies": elite_strategies
+                }
+
+            elite_result = await loop.run_in_executor(thread_pool, fetch_elite_data)
             await websocket.send_json({
                 "type": "elite_data",
                 "id": request_id,
                 "status": {
-                    "total": len(strategies),
-                    "elite": elite_count,
-                    "partial": partial_count,
-                    "failed": failed_count,
-                    "pending": pending_count,
+                    "total": elite_result["total"],
+                    "elite": elite_result["elite_count"],
+                    "partial": elite_result["partial_count"],
+                    "failed": elite_result["failed_count"],
+                    "pending": elite_result["pending_count"],
                     "validation_running": elite_validation_status["running"],
                     "validation_paused": elite_validation_status["paused"],
                     "validation_processed": elite_validation_status["processed"],
                     "validation_total": elite_validation_status["total"],
                     "validation_message": elite_validation_status["message"],
                 },
-                "strategies": elite_strategies
+                "strategies": elite_result["elite_strategies"]
             })
 
         elif request_type == "get_queue":
-            # Get autonomous optimizer queue
+            # Get autonomous optimizer queue (non-blocking, uses in-memory status)
             queue_data = get_autonomous_queue_data()
             await websocket.send_json({
                 "type": "queue_data",
@@ -766,15 +788,18 @@ async def handle_ws_request(websocket: WebSocket, request: dict):
             })
 
         elif request_type == "get_priority":
-            # Get priority lists
+            # Get priority lists - run in thread pool
             if HAS_DATABASE:
-                db = get_strategy_db()
-                priority_data = {
-                    "pairs": db.get_priority_pairs(),
-                    "periods": db.get_priority_periods(),
-                    "timeframes": db.get_priority_timeframes(),
-                    "granularities": db.get_priority_granularities()
-                }
+                def fetch_priority_data():
+                    db = get_strategy_db()
+                    return {
+                        "pairs": db.get_priority_pairs(),
+                        "periods": db.get_priority_periods(),
+                        "timeframes": db.get_priority_timeframes(),
+                        "granularities": db.get_priority_granularities()
+                    }
+
+                priority_data = await loop.run_in_executor(thread_pool, fetch_priority_data)
             else:
                 priority_data = {"pairs": [], "periods": [], "timeframes": [], "granularities": []}
 
@@ -785,16 +810,19 @@ async def handle_ws_request(websocket: WebSocket, request: dict):
             })
 
         elif request_type == "get_db_stats":
-            # Get database stats for Tools page
+            # Get database stats for Tools page - run in thread pool
             if HAS_DATABASE:
-                db = get_strategy_db()
-                strategies = db.get_all_strategies()
-                stats = {
-                    "total_strategies": len(strategies),
-                    "unique_symbols": len(set(s.get('symbol', '') for s in strategies)),
-                    "unique_timeframes": len(set(s.get('timeframe', '') for s in strategies)),
-                    "elite_count": sum(1 for s in strategies if s.get('elite_status') == 'elite'),
-                }
+                def fetch_db_stats():
+                    db = get_strategy_db()
+                    strategies = db.get_all_strategies()
+                    return {
+                        "total_strategies": len(strategies),
+                        "unique_symbols": len(set(s.get('symbol', '') for s in strategies)),
+                        "unique_timeframes": len(set(s.get('timeframe', '') for s in strategies)),
+                        "elite_count": sum(1 for s in strategies if s.get('elite_status') == 'elite'),
+                    }
+
+                stats = await loop.run_in_executor(thread_pool, fetch_db_stats)
             else:
                 stats = {"total_strategies": 0, "unique_symbols": 0, "unique_timeframes": 0, "elite_count": 0}
 
