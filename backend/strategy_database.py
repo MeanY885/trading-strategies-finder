@@ -38,13 +38,13 @@ class StrategyDatabase:
         Get a database connection with proper settings for concurrent access.
         Uses WAL mode for better read/write concurrency.
         """
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         conn.execute("PRAGMA busy_timeout=30000")  # Wait up to 30s for lock
         return conn
 
     def _init_database(self):
         """Create database tables if they don't exist."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         cursor = conn.cursor()
 
         # Enable WAL mode for better concurrent read/write performance
@@ -148,6 +148,10 @@ class StrategyDatabase:
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_composite_score ON strategies(composite_score)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_symbol ON strategies(symbol)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_timeframe ON strategies(timeframe)')
+        # Elite validation indexes for fast filtering
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_elite_status ON strategies(elite_status)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_elite_score ON strategies(elite_score DESC)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_elite_combo ON strategies(symbol, timeframe, elite_status, elite_score)')
 
         # Migration: Add missing columns to existing databases
         cursor.execute("PRAGMA table_info(strategies)")
@@ -215,7 +219,7 @@ class StrategyDatabase:
                                data_source: str = None, data_rows: int = 0,
                                capital: float = 1000.0, risk_percent: float = 2.0) -> int:
         """Start a new optimization run and return its ID."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         cursor = conn.cursor()
 
         cursor.execute('''
@@ -234,7 +238,7 @@ class StrategyDatabase:
     def complete_optimization_run(self, run_id: int, strategies_tested: int,
                                   profitable_found: int):
         """Mark an optimization run as complete."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         cursor = conn.cursor()
 
         cursor.execute('''
@@ -271,7 +275,7 @@ class StrategyDatabase:
         Returns:
             Strategy ID in database, or None if duplicate
         """
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         cursor = conn.cursor()
 
         # Extract params
@@ -421,7 +425,7 @@ class StrategyDatabase:
         Returns:
             List of strategy dictionaries
         """
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
@@ -450,7 +454,7 @@ class StrategyDatabase:
 
     def get_best_by_win_rate(self, limit: int = 10, min_trades: int = 5) -> List[Dict]:
         """Get strategies with highest win rate (min trades filter)."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
@@ -468,7 +472,7 @@ class StrategyDatabase:
 
     def get_best_by_profit_factor(self, limit: int = 10, min_trades: int = 5) -> List[Dict]:
         """Get strategies with highest profit factor."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
@@ -488,7 +492,7 @@ class StrategyDatabase:
                           min_win_rate: float = None, min_pnl: float = None,
                           symbol: str = None, timeframe: str = None) -> List[Dict]:
         """Search strategies with various filters."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
@@ -529,7 +533,7 @@ class StrategyDatabase:
 
     def get_strategy_by_id(self, strategy_id: int) -> Optional[Dict]:
         """Get a single strategy by ID."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
@@ -541,7 +545,7 @@ class StrategyDatabase:
 
     def get_optimization_run_by_id(self, run_id: int) -> Optional[Dict]:
         """Get optimization run by ID to access risk_percent and other settings."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute('SELECT * FROM optimization_runs WHERE id = ?', (run_id,))
@@ -551,7 +555,7 @@ class StrategyDatabase:
 
     def get_optimization_runs(self, limit: int = 20) -> List[Dict]:
         """Get recent optimization runs."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
@@ -568,7 +572,7 @@ class StrategyDatabase:
 
     def get_stats(self) -> Dict:
         """Get overall database statistics."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         cursor = conn.cursor()
 
         cursor.execute('SELECT COUNT(*) FROM strategies')
@@ -647,7 +651,7 @@ class StrategyDatabase:
         Returns:
             True if updated, False if strategy not found
         """
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         cursor = conn.cursor()
 
         cursor.execute('''
@@ -668,9 +672,69 @@ class StrategyDatabase:
 
         return updated
 
+    def get_elite_strategies_optimized(self, top_n_per_market: int = 10) -> List[Dict]:
+        """
+        Get top N validated strategies per pair/timeframe, efficiently at the database level.
+        Uses window functions for efficient per-group limiting.
+
+        Args:
+            top_n_per_market: Max strategies to return per (symbol, timeframe) pair
+
+        Returns:
+            List of elite strategies, sorted by elite_score descending
+        """
+        conn = self._get_connection()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        # Use ROW_NUMBER() window function to get top N per market efficiently
+        # This avoids loading all strategies into memory
+        cursor.execute('''
+            WITH ranked AS (
+                SELECT *,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY symbol, timeframe
+                        ORDER BY elite_score DESC
+                    ) as rank
+                FROM strategies
+                WHERE elite_status IS NOT NULL
+                  AND elite_status != 'pending'
+                  AND elite_score > 0
+            )
+            SELECT * FROM ranked
+            WHERE rank <= ?
+            ORDER BY elite_score DESC
+        ''', (top_n_per_market,))
+
+        rows = cursor.fetchall()
+        conn.close()
+
+        return [self._row_to_dict(row) for row in rows]
+
+    def get_strategies_pending_validation(self, limit: int = 100) -> List[Dict]:
+        """
+        Get strategies that need elite validation, ordered by composite score.
+        Efficient query that only fetches pending strategies.
+        """
+        conn = self._get_connection()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute('''
+            SELECT * FROM strategies
+            WHERE elite_status IS NULL OR elite_status = 'pending'
+            ORDER BY composite_score DESC
+            LIMIT ?
+        ''', (limit,))
+
+        rows = cursor.fetchall()
+        conn.close()
+
+        return [self._row_to_dict(row) for row in rows]
+
     def get_all_strategies(self) -> List[Dict]:
         """Get all strategies from the database."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
@@ -682,7 +746,7 @@ class StrategyDatabase:
 
     def delete_strategy(self, strategy_id: int) -> bool:
         """Delete a strategy by ID."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         cursor = conn.cursor()
 
         cursor.execute('DELETE FROM strategies WHERE id = ?', (strategy_id,))
@@ -695,7 +759,7 @@ class StrategyDatabase:
 
     def remove_duplicates(self) -> int:
         """Remove duplicate strategies, keeping the most recent (highest ID) of each group."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         cursor = conn.cursor()
 
         # Find duplicates - same strategy with same key metrics
@@ -721,7 +785,7 @@ class StrategyDatabase:
 
     def clear_all(self) -> int:
         """Clear all strategies (use with caution!)."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         cursor = conn.cursor()
 
         cursor.execute('SELECT COUNT(*) FROM strategies')
@@ -832,7 +896,7 @@ class StrategyDatabase:
 
     def _init_priority_table(self):
         """Create priority_items table if it doesn't exist (legacy)."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         cursor = conn.cursor()
 
         cursor.execute('''
@@ -933,7 +997,7 @@ class StrategyDatabase:
 
     def get_priority_list(self) -> List[Dict]:
         """Get all priority items ordered by position."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
@@ -952,7 +1016,7 @@ class StrategyDatabase:
                           granularity_label: str, granularity_trials: int,
                           source: str = 'binance') -> Optional[int]:
         """Add a new priority item at the end of the list."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         cursor = conn.cursor()
 
         # Get next position
@@ -979,7 +1043,7 @@ class StrategyDatabase:
 
     def delete_priority_item(self, item_id: int) -> bool:
         """Delete a priority item and reorder remaining items."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         cursor = conn.cursor()
 
         cursor.execute('DELETE FROM priority_items WHERE id = ?', (item_id,))
@@ -1002,7 +1066,7 @@ class StrategyDatabase:
 
     def reorder_priority_items(self, id_order: List[int]) -> bool:
         """Update positions based on new order of IDs."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         cursor = conn.cursor()
 
         for position, item_id in enumerate(id_order, start=1):
@@ -1018,7 +1082,7 @@ class StrategyDatabase:
 
     def toggle_priority_item(self, item_id: int) -> Optional[bool]:
         """Toggle enabled status. Returns new status or None if not found."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         cursor = conn.cursor()
 
         cursor.execute('SELECT enabled FROM priority_items WHERE id = ?', (item_id,))
@@ -1037,7 +1101,7 @@ class StrategyDatabase:
 
     def clear_priority_items(self) -> int:
         """Clear all priority items. Returns count deleted."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         cursor = conn.cursor()
 
         cursor.execute('SELECT COUNT(*) FROM priority_items')
@@ -1078,7 +1142,7 @@ class StrategyDatabase:
 
     def get_priority_pairs(self) -> List[Dict]:
         """Get all trading pairs ordered by position."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute('SELECT * FROM priority_pairs ORDER BY position ASC')
@@ -1088,7 +1152,7 @@ class StrategyDatabase:
 
     def get_priority_periods(self) -> List[Dict]:
         """Get all historical periods ordered by position."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute('SELECT * FROM priority_periods ORDER BY position ASC')
@@ -1098,7 +1162,7 @@ class StrategyDatabase:
 
     def get_priority_timeframes(self) -> List[Dict]:
         """Get all timeframes ordered by position."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute('SELECT * FROM priority_timeframes ORDER BY position ASC')
@@ -1108,7 +1172,7 @@ class StrategyDatabase:
 
     def get_enabled_priority_pairs(self) -> List[Dict]:
         """Get enabled trading pairs ordered by position."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute('SELECT * FROM priority_pairs WHERE enabled = 1 ORDER BY position ASC')
@@ -1118,7 +1182,7 @@ class StrategyDatabase:
 
     def get_enabled_priority_periods(self) -> List[Dict]:
         """Get enabled historical periods ordered by position."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute('SELECT * FROM priority_periods WHERE enabled = 1 ORDER BY position ASC')
@@ -1128,7 +1192,7 @@ class StrategyDatabase:
 
     def get_enabled_priority_timeframes(self) -> List[Dict]:
         """Get enabled timeframes ordered by position."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute('SELECT * FROM priority_timeframes WHERE enabled = 1 ORDER BY position ASC')
@@ -1138,7 +1202,7 @@ class StrategyDatabase:
 
     def get_priority_granularities(self) -> List[Dict]:
         """Get all granularities ordered by position."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute('SELECT * FROM priority_granularities ORDER BY position ASC')
@@ -1148,7 +1212,7 @@ class StrategyDatabase:
 
     def get_enabled_priority_granularities(self) -> List[Dict]:
         """Get enabled granularities ordered by position."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute('SELECT * FROM priority_granularities WHERE enabled = 1 ORDER BY position ASC')
@@ -1158,7 +1222,7 @@ class StrategyDatabase:
 
     def get_priority_setting(self, key: str) -> Optional[str]:
         """Get a priority setting value."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         cursor = conn.cursor()
         cursor.execute('SELECT value FROM priority_settings WHERE key = ?', (key,))
         row = cursor.fetchone()
@@ -1167,7 +1231,7 @@ class StrategyDatabase:
 
     def set_priority_setting(self, key: str, value: str):
         """Set a priority setting value."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         cursor = conn.cursor()
         cursor.execute('''
             INSERT INTO priority_settings (key, value, updated_at)
@@ -1189,7 +1253,7 @@ class StrategyDatabase:
         if not table:
             return False
 
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         cursor = conn.cursor()
 
         for position, item_id in enumerate(id_order, start=1):
@@ -1211,7 +1275,7 @@ class StrategyDatabase:
         if not table:
             return None
 
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         cursor = conn.cursor()
 
         cursor.execute(f'SELECT enabled FROM {table} WHERE id = ?', (item_id,))
@@ -1229,7 +1293,7 @@ class StrategyDatabase:
 
     def reset_priority_pairs(self, pairs: List[str]):
         """Reset trading pairs to defaults."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         cursor = conn.cursor()
         cursor.execute('DELETE FROM priority_pairs')
 
@@ -1244,7 +1308,7 @@ class StrategyDatabase:
 
     def reset_priority_periods(self, periods: List[Dict]):
         """Reset historical periods to defaults."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         cursor = conn.cursor()
         cursor.execute('DELETE FROM priority_periods')
 
@@ -1259,7 +1323,7 @@ class StrategyDatabase:
 
     def reset_priority_timeframes(self, timeframes: List[Dict]):
         """Reset timeframes to defaults."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         cursor = conn.cursor()
         cursor.execute('DELETE FROM priority_timeframes')
 
@@ -1274,7 +1338,7 @@ class StrategyDatabase:
 
     def reset_priority_granularities(self, granularities: List[Dict]):
         """Reset granularities to defaults."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         cursor = conn.cursor()
         cursor.execute('DELETE FROM priority_granularities')
 
@@ -1289,7 +1353,7 @@ class StrategyDatabase:
 
     def enable_all_priority_items(self):
         """Enable all items in all priority lists."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         cursor = conn.cursor()
         cursor.execute('UPDATE priority_pairs SET enabled = 1')
         cursor.execute('UPDATE priority_periods SET enabled = 1')
@@ -1300,7 +1364,7 @@ class StrategyDatabase:
 
     def disable_all_priority_items(self):
         """Disable all items in all priority lists."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         cursor = conn.cursor()
         cursor.execute('UPDATE priority_pairs SET enabled = 0')
         cursor.execute('UPDATE priority_periods SET enabled = 0')
@@ -1311,7 +1375,7 @@ class StrategyDatabase:
 
     def has_priority_lists_populated(self) -> bool:
         """Check if the new priority lists have any data."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         cursor = conn.cursor()
         cursor.execute('SELECT COUNT(*) FROM priority_pairs')
         count = cursor.fetchone()[0]

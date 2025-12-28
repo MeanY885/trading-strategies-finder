@@ -53,15 +53,21 @@ def calculate_max_concurrent_optimizations() -> int:
     total_mem_gb = mem.total / (1024**3)
     available_mem_gb = mem.available / (1024**3)
 
-    # Reserve memory for system (4GB) and calculate based on 500MB per optimization
-    mem_per_optimization_gb = 0.5
-    mem_based_workers = max(1, int((available_mem_gb - 2) / mem_per_optimization_gb))
+    # Reserve memory for system (4GB) and calculate based on 400MB per optimization
+    mem_per_optimization_gb = 0.4
+    mem_based_workers = max(1, int((available_mem_gb - 4) / mem_per_optimization_gb))
 
-    # CPU-based: Leave 1-2 cores for system
-    cpu_based_workers = max(1, cpu_cores - 2)
+    # CPU-based: Use most cores, leave 2-4 for system depending on core count
+    if cpu_cores >= 16:
+        cpu_based_workers = cpu_cores - 4  # High-end: leave 4 for system
+    elif cpu_cores >= 8:
+        cpu_based_workers = cpu_cores - 2  # Mid-range: leave 2
+    else:
+        cpu_based_workers = max(1, cpu_cores - 1)  # Low-end: leave 1
 
-    # Take the minimum of CPU and memory limits, cap at 8 for sanity
-    optimal = min(cpu_based_workers, mem_based_workers, 8)
+    # Take the minimum of CPU and memory limits
+    # Cap at 24 for very high-end systems to prevent resource exhaustion
+    optimal = min(cpu_based_workers, mem_based_workers, 24)
     optimal = max(2, optimal)  # At least 2 for parallelism benefit
 
     return optimal
@@ -2732,27 +2738,8 @@ async def get_elite_strategies():
 
     try:
         db = get_strategy_db()
-        strategies = db.get_all_strategies()
-        # Filter validated (not pending)
-        validated = [s for s in strategies if s.get('elite_status') not in [None, 'pending']]
-
-        # Group by (symbol, timeframe) and take top 10 from each
-        by_market = defaultdict(list)
-        for s in validated:
-            symbol = s.get('symbol', 'unknown')
-            timeframe = s.get('timeframe', 'unknown')
-            key = (symbol, timeframe)
-            by_market[key].append(s)
-
-        # Sort each group by elite_score and take top 10
-        result = []
-        for market, group in by_market.items():
-            group.sort(key=lambda x: x.get('elite_score', 0), reverse=True)
-            result.extend(group[:10])  # Top 10 per pair/timeframe
-
-        # Final sort by elite_score for display
-        result.sort(key=lambda x: x.get('elite_score', 0), reverse=True)
-        return result
+        # Use optimized database query with window function instead of fetching all
+        return db.get_elite_strategies_optimized(top_n_per_market=10)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
