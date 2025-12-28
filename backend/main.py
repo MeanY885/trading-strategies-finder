@@ -2969,11 +2969,12 @@ async def get_priority_lists():
         db.reset_priority_pairs(config["pairs"].get("binance", []))
         db.reset_priority_periods(config["periods"])
         db.reset_priority_timeframes(config["timeframes"])
-        db.set_priority_setting("granularity", "0.5%")
+        db.reset_priority_granularities(config["granularities"])
 
     pairs = db.get_priority_pairs()
     periods = db.get_priority_periods()
     timeframes = db.get_priority_timeframes()
+    granularities = db.get_priority_granularities()
 
     # Convert enabled to bool
     for p in pairs:
@@ -2982,12 +2983,14 @@ async def get_priority_lists():
         p['enabled'] = bool(p['enabled'])
     for t in timeframes:
         t['enabled'] = bool(t['enabled'])
+    for g in granularities:
+        g['enabled'] = bool(g['enabled'])
 
     return {
         "pairs": pairs,
         "periods": periods,
         "timeframes": timeframes,
-        "granularity": db.get_priority_setting("granularity") or "0.5%"
+        "granularities": granularities
     }
 
 
@@ -2998,7 +3001,7 @@ class PriorityListReorderRequest(BaseModel):
 @app.post("/api/priority/{list_type}/reorder")
 async def reorder_priority_list(list_type: str, request: PriorityListReorderRequest):
     """Reorder items in a specific list."""
-    if list_type not in ['pairs', 'periods', 'timeframes']:
+    if list_type not in ['pairs', 'periods', 'timeframes', 'granularities']:
         raise HTTPException(status_code=400, detail="Invalid list type")
 
     if not HAS_DATABASE:
@@ -3013,7 +3016,7 @@ async def reorder_priority_list(list_type: str, request: PriorityListReorderRequ
 @app.patch("/api/priority/{list_type}/{item_id}/toggle")
 async def toggle_priority_list_item(list_type: str, item_id: int):
     """Toggle enabled status in a specific list."""
-    if list_type not in ['pairs', 'periods', 'timeframes']:
+    if list_type not in ['pairs', 'periods', 'timeframes', 'granularities']:
         raise HTTPException(status_code=400, detail="Invalid list type")
 
     if not HAS_DATABASE:
@@ -3056,7 +3059,7 @@ async def reset_priority_defaults():
     db.reset_priority_pairs(config["pairs"].get("binance", []))
     db.reset_priority_periods(config["periods"])
     db.reset_priority_timeframes(config["timeframes"])
-    db.set_priority_setting("granularity", "0.5%")
+    db.reset_priority_granularities(config["granularities"])
 
     return {"success": True}
 
@@ -3649,9 +3652,10 @@ def build_optimization_combinations():
     Build priority-ordered list of all optimization combinations.
 
     Priority order:
-    1. NEW 3-list system (pairs × periods × timeframes from separate priority lists)
+    1. NEW 4-list system (granularities × timeframes × periods × pairs from separate priority lists)
+       This ensures same combo runs across all pairs before moving to next combo
     2. Legacy priority queue (single list of combinations)
-    3. Fallback: Hardcoded order (Granularity -> Timeframe -> Period -> Pairs)
+    3. Fallback: Hardcoded order (Granularity → Timeframe → Period → Pair)
     """
     config = AUTONOMOUS_CONFIG
 
@@ -3659,42 +3663,45 @@ def build_optimization_combinations():
         try:
             db = get_strategy_db()
 
-            # Try NEW 3-list priority system first
+            # Try NEW 4-list priority system first
             if db.has_priority_lists_populated():
                 pairs = db.get_enabled_priority_pairs()
                 periods = db.get_enabled_priority_periods()
                 timeframes = db.get_enabled_priority_timeframes()
-                granularity_label = db.get_priority_setting("granularity") or "0.5%"
+                granularities = db.get_enabled_priority_granularities()
 
-                # Find granularity config
-                granularity = next(
-                    (g for g in config["granularities"] if g["label"] == granularity_label),
-                    config["granularities"][0]
-                )
+                # Fallback to config granularities if list empty
+                if not granularities:
+                    granularities = [{"label": g["label"], "n_trials": g["n_trials"]} for g in config["granularities"]]
 
-                if pairs and periods and timeframes:
+                if pairs and periods and timeframes and granularities:
                     combinations = []
 
                     # Generate combinations in priority order:
-                    # Pair #1 × Period #1 × TF #1, Pair #1 × Period #1 × TF #2, etc.
-                    for pair in pairs:
-                        for period in periods:
-                            for tf in timeframes:
-                                combinations.append({
-                                    "source": "binance",
-                                    "pair": pair["value"],
-                                    "period": {
-                                        "label": period["label"],
-                                        "months": period["months"]
-                                    },
-                                    "timeframe": {
-                                        "label": tf["label"],
-                                        "minutes": tf["minutes"]
-                                    },
-                                    "granularity": granularity
-                                })
+                    # Same combo runs across all pairs before moving to next combo
+                    # Granularity → Timeframe → Period → Pair (innermost)
+                    for gran in granularities:
+                        for tf in timeframes:
+                            for period in periods:
+                                for pair in pairs:
+                                    combinations.append({
+                                        "source": "binance",
+                                        "pair": pair["value"],
+                                        "period": {
+                                            "label": period["label"],
+                                            "months": period["months"]
+                                        },
+                                        "timeframe": {
+                                            "label": tf["label"],
+                                            "minutes": tf["minutes"]
+                                        },
+                                        "granularity": {
+                                            "label": gran["label"],
+                                            "n_trials": gran["n_trials"]
+                                        }
+                                    })
 
-                    print(f"[Autonomous Optimizer] Built {len(combinations)} combinations from 3-list priority system")
+                    print(f"[Autonomous Optimizer] Built {len(combinations)} combinations from 4-list priority system (Granularity→Timeframe→Period→Pair)")
                     return combinations
 
             # Try legacy single priority list
@@ -3716,7 +3723,8 @@ def build_optimization_combinations():
         except Exception as e:
             print(f"[Autonomous Optimizer] Error loading priority list: {e}, using defaults")
 
-    # Fallback: Original hardcoded order
+    # Fallback: Hardcoded order - Granularity → Timeframe → Period → Pair (innermost)
+    # Same combo runs across all pairs before moving to next combo
     combinations = []
     for granularity in config["granularities"]:
         for timeframe in config["timeframes"]:
@@ -3732,7 +3740,7 @@ def build_optimization_combinations():
                             "granularity": granularity,
                         })
 
-    print(f"[Autonomous Optimizer] Using default order: {len(combinations)} combinations")
+    print(f"[Autonomous Optimizer] Using default order (Granularity→Timeframe→Period→Pair): {len(combinations)} combinations")
     return combinations
 
 

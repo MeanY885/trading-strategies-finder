@@ -779,6 +779,19 @@ class StrategyDatabase:
             )
         ''')
 
+        # Granularities priority
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS priority_granularities (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                position INTEGER NOT NULL,
+                value TEXT NOT NULL UNIQUE,
+                label TEXT NOT NULL,
+                n_trials INTEGER NOT NULL,
+                enabled INTEGER DEFAULT 1,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
         # Global priority settings (granularity, etc.)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS priority_settings (
@@ -792,6 +805,7 @@ class StrategyDatabase:
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_pairs_position ON priority_pairs(position)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_periods_position ON priority_periods(position)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_timeframes_position ON priority_timeframes(position)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_granularities_position ON priority_granularities(position)')
 
     def get_priority_list(self) -> List[Dict]:
         """Get all priority items ordered by position."""
@@ -998,6 +1012,26 @@ class StrategyDatabase:
         conn.close()
         return [dict(row) for row in rows]
 
+    def get_priority_granularities(self) -> List[Dict]:
+        """Get all granularities ordered by position."""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM priority_granularities ORDER BY position ASC')
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(row) for row in rows]
+
+    def get_enabled_priority_granularities(self) -> List[Dict]:
+        """Get enabled granularities ordered by position."""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM priority_granularities WHERE enabled = 1 ORDER BY position ASC')
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(row) for row in rows]
+
     def get_priority_setting(self, key: str) -> Optional[str]:
         """Get a priority setting value."""
         conn = sqlite3.connect(self.db_path)
@@ -1024,7 +1058,8 @@ class StrategyDatabase:
         table_map = {
             'pairs': 'priority_pairs',
             'periods': 'priority_periods',
-            'timeframes': 'priority_timeframes'
+            'timeframes': 'priority_timeframes',
+            'granularities': 'priority_granularities'
         }
         table = table_map.get(list_type)
         if not table:
@@ -1045,7 +1080,8 @@ class StrategyDatabase:
         table_map = {
             'pairs': 'priority_pairs',
             'periods': 'priority_periods',
-            'timeframes': 'priority_timeframes'
+            'timeframes': 'priority_timeframes',
+            'granularities': 'priority_granularities'
         }
         table = table_map.get(list_type)
         if not table:
@@ -1112,6 +1148,21 @@ class StrategyDatabase:
         conn.commit()
         conn.close()
 
+    def reset_priority_granularities(self, granularities: List[Dict]):
+        """Reset granularities to defaults."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM priority_granularities')
+
+        for pos, gran in enumerate(granularities, start=1):
+            cursor.execute('''
+                INSERT INTO priority_granularities (position, value, label, n_trials, enabled)
+                VALUES (?, ?, ?, ?, 1)
+            ''', (pos, gran['label'], gran['label'], gran['n_trials']))
+
+        conn.commit()
+        conn.close()
+
     def enable_all_priority_items(self):
         """Enable all items in all priority lists."""
         conn = sqlite3.connect(self.db_path)
@@ -1119,6 +1170,7 @@ class StrategyDatabase:
         cursor.execute('UPDATE priority_pairs SET enabled = 1')
         cursor.execute('UPDATE priority_periods SET enabled = 1')
         cursor.execute('UPDATE priority_timeframes SET enabled = 1')
+        cursor.execute('UPDATE priority_granularities SET enabled = 1')
         conn.commit()
         conn.close()
 
@@ -1129,6 +1181,7 @@ class StrategyDatabase:
         cursor.execute('UPDATE priority_pairs SET enabled = 0')
         cursor.execute('UPDATE priority_periods SET enabled = 0')
         cursor.execute('UPDATE priority_timeframes SET enabled = 0')
+        cursor.execute('UPDATE priority_granularities SET enabled = 0')
         conn.commit()
         conn.close()
 
