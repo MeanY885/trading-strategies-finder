@@ -866,20 +866,36 @@ class StrategyDatabase:
         conn.close()
         return result
 
-    def get_completed_optimizations(self) -> set:
+    def get_completed_optimizations(self, with_timestamps: bool = False) -> dict:
         """
-        Get all completed optimization combinations as a set of tuples.
-        Returns: set of (pair, period_label, timeframe_label, granularity_label)
+        Get completed optimization combinations.
+
+        Args:
+            with_timestamps: If True, returns dict mapping combo key to completed_at timestamp.
+                           If False, returns set of combo keys (legacy behavior).
+
+        Returns:
+            If with_timestamps=True: dict of {(pair, period, timeframe, granularity): completed_at}
+            If with_timestamps=False: set of (pair, period_label, timeframe_label, granularity_label)
         """
         conn = self._get_connection()
         cursor = conn.cursor()
 
         cursor.execute('''
-            SELECT pair, period_label, timeframe_label, granularity_label
+            SELECT pair, period_label, timeframe_label, granularity_label, completed_at
             FROM completed_optimizations
         ''')
 
-        completed = {(row[0], row[1], row[2], row[3]) for row in cursor.fetchall()}
+        if with_timestamps:
+            # Return dict with timestamps for period boundary checking
+            completed = {
+                (row[0], row[1], row[2], row[3]): row[4]
+                for row in cursor.fetchall()
+            }
+        else:
+            # Legacy behavior: return set of keys only
+            completed = {(row[0], row[1], row[2], row[3]) for row in cursor.fetchall()}
+
         conn.close()
         return completed
 

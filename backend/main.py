@@ -223,6 +223,10 @@ optimization_semaphore = asyncio.Semaphore(MAX_CONCURRENT_OPTIMIZATIONS)
 running_optimizations = {}  # combo_id -> status dict
 running_optimizations_lock = threading.Lock()
 
+# Lock to stagger data fetching from Binance - only one fetch at a time
+# This prevents overwhelming Binance with concurrent API requests
+data_fetch_lock = asyncio.Lock()
+
 # Concurrency configuration (can be changed at runtime via API)
 concurrency_config = {
     "max_concurrent": MAX_CONCURRENT_OPTIMIZATIONS,
@@ -777,7 +781,7 @@ async def fetch_data_task(source: str, pair: str, interval: int, months: float):
         traceback.print_exc()
 
 @app.post("/api/load-existing-data")
-async def load_existing_data():
+def load_existing_data():
     """Load existing CSV data - finds most recent file"""
     global data_status
     
@@ -1976,7 +1980,7 @@ async def get_tradingview_link(rank: int = 1, engine: str = "tradingview"):
 # =============================================================================
 
 @app.get("/api/db/stats")
-async def get_database_stats():
+def get_database_stats():
     """Get overall database statistics."""
     if not HAS_DATABASE:
         raise HTTPException(status_code=503, detail="Database not available")
@@ -1989,7 +1993,7 @@ async def get_database_stats():
 
 
 @app.get("/api/db/filter-options")
-async def get_filter_options():
+def get_filter_options():
     """Get distinct symbols, timeframes, and date range for filter dropdowns."""
     if not HAS_DATABASE:
         raise HTTPException(status_code=503, detail="Database not available")
@@ -2003,7 +2007,7 @@ async def get_filter_options():
 
 
 @app.get("/api/db/strategies")
-async def get_saved_strategies(
+def get_saved_strategies(
     symbol: str = None,
     timeframe: str = None,
     min_win_rate: float = 0.0
@@ -2045,7 +2049,7 @@ async def get_saved_strategies(
 
 
 @app.get("/api/db/strategies/best-win-rate")
-async def get_best_by_win_rate(limit: int = 10):
+def get_best_by_win_rate(limit: int = 10):
     """Get strategies with highest win rate."""
     if not HAS_DATABASE:
         raise HTTPException(status_code=503, detail="Database not available")
@@ -2058,7 +2062,7 @@ async def get_best_by_win_rate(limit: int = 10):
 
 
 @app.get("/api/db/strategies/best-profit-factor")
-async def get_best_by_profit_factor(limit: int = 10):
+def get_best_by_profit_factor(limit: int = 10):
     """Get strategies with highest profit factor."""
     if not HAS_DATABASE:
         raise HTTPException(status_code=503, detail="Database not available")
@@ -2071,7 +2075,7 @@ async def get_best_by_profit_factor(limit: int = 10):
 
 
 @app.get("/api/db/strategies/search")
-async def search_strategies(
+def search_strategies(
     strategy_name: str = None,
     category: str = None,
     min_win_rate: float = None,
@@ -2098,7 +2102,7 @@ async def search_strategies(
 
 
 @app.get("/api/db/strategies/{strategy_id}")
-async def get_strategy_by_id(strategy_id: int):
+def get_strategy_by_id(strategy_id: int):
     """Get a single strategy by its ID."""
     if not HAS_DATABASE:
         raise HTTPException(status_code=503, detail="Database not available")
@@ -2116,7 +2120,7 @@ async def get_strategy_by_id(strategy_id: int):
 
 
 @app.get("/api/db/strategies/{strategy_id}/pinescript")
-async def get_strategy_pinescript_from_db(strategy_id: int):
+def get_strategy_pinescript_from_db(strategy_id: int):
     """Generate Pine Script for a saved strategy."""
     if not HAS_DATABASE:
         raise HTTPException(status_code=503, detail="Database not available")
@@ -2431,7 +2435,7 @@ async def validate_strategy(request: ValidateStrategyRequest):
 
 
 @app.get("/api/db/runs")
-async def get_optimization_runs(limit: int = 20):
+def get_optimization_runs(limit: int = 20):
     """Get recent optimization runs."""
     if not HAS_DATABASE:
         raise HTTPException(status_code=503, detail="Database not available")
@@ -2444,7 +2448,7 @@ async def get_optimization_runs(limit: int = 20):
 
 
 @app.delete("/api/db/strategies/{strategy_id}")
-async def delete_strategy(strategy_id: int):
+def delete_strategy(strategy_id: int):
     """Delete a strategy from the database."""
     if not HAS_DATABASE:
         raise HTTPException(status_code=503, detail="Database not available")
@@ -2461,7 +2465,7 @@ async def delete_strategy(strategy_id: int):
 
 
 @app.post("/api/db/clear")
-async def clear_database():
+def clear_database():
     """Clear all strategies from the database."""
     if not HAS_DATABASE:
         raise HTTPException(status_code=503, detail="Database not available")
@@ -2479,7 +2483,7 @@ async def clear_database():
 
 
 @app.post("/api/db/remove-duplicates")
-async def remove_duplicate_strategies():
+def remove_duplicate_strategies():
     """Remove duplicate strategies from the database, keeping only the most recent."""
     if not HAS_DATABASE:
         raise HTTPException(status_code=503, detail="Database not available")
@@ -2865,7 +2869,7 @@ async def list_indicator_engines():
 # =============================================================================
 
 @app.get("/api/elite/status")
-async def get_elite_status():
+def get_elite_status():
     """
     Get elite validation status and counts.
     Returns validation progress and strategy counts by elite status.
@@ -2895,7 +2899,7 @@ async def get_elite_status():
 
 
 @app.get("/api/elite/strategies")
-async def get_elite_strategies():
+def get_elite_strategies():
     """Return top 10 validated strategies per pair/timeframe, sorted by elite_score descending"""
     if not HAS_DATABASE:
         raise HTTPException(status_code=503, detail="Database not available")
@@ -3045,7 +3049,7 @@ async def get_autonomous_history(limit: int = 50):
 
 
 @app.get("/api/autonomous/queue")
-async def get_autonomous_queue():
+def get_autonomous_queue():
     """Get queue state for UI task list display - supports parallel processing"""
     cycle_index = autonomous_optimizer_status.get("cycle_index", 0)
     combinations = autonomous_optimizer_status.get("combinations_list", [])
@@ -3099,7 +3103,7 @@ async def get_autonomous_queue():
 # =============================================================================
 
 @app.get("/api/priority/list")
-async def get_priority_list():
+def get_priority_list():
     """Get all priority items ordered by position."""
     if not HAS_DATABASE:
         raise HTTPException(status_code=503, detail="Database not available")
@@ -3116,7 +3120,7 @@ async def get_priority_list():
 
 
 @app.get("/api/priority/available")
-async def get_priority_available():
+def get_priority_available():
     """Get available options for creating priority items."""
     config = AUTONOMOUS_CONFIG
 
@@ -3129,7 +3133,7 @@ async def get_priority_available():
 
 
 @app.post("/api/priority/add")
-async def add_priority_item(request: PriorityAddRequest):
+def add_priority_item(request: PriorityAddRequest):
     """Add a new priority item."""
     if not HAS_DATABASE:
         raise HTTPException(status_code=503, detail="Database not available")
@@ -3178,7 +3182,7 @@ async def add_priority_item(request: PriorityAddRequest):
 
 
 @app.delete("/api/priority/{item_id}")
-async def delete_priority_item(item_id: int):
+def delete_priority_item(item_id: int):
     """Remove a priority item."""
     if not HAS_DATABASE:
         raise HTTPException(status_code=503, detail="Database not available")
@@ -3190,7 +3194,7 @@ async def delete_priority_item(item_id: int):
 
 
 @app.post("/api/priority/reorder")
-async def reorder_priority(request: PriorityReorderRequest):
+def reorder_priority(request: PriorityReorderRequest):
     """Reorder priority items."""
     if not HAS_DATABASE:
         raise HTTPException(status_code=503, detail="Database not available")
@@ -3202,7 +3206,7 @@ async def reorder_priority(request: PriorityReorderRequest):
 
 
 @app.patch("/api/priority/{item_id}/toggle")
-async def toggle_priority_item(item_id: int):
+def toggle_priority_item(item_id: int):
     """Toggle enabled status of a priority item."""
     if not HAS_DATABASE:
         raise HTTPException(status_code=503, detail="Database not available")
@@ -3217,7 +3221,7 @@ async def toggle_priority_item(item_id: int):
 
 
 @app.post("/api/priority/populate-defaults")
-async def populate_default_priority():
+def populate_default_priority():
     """Populate priority list with a sensible default ordering."""
     if not HAS_DATABASE:
         raise HTTPException(status_code=503, detail="Database not available")
@@ -3263,7 +3267,7 @@ async def populate_default_priority():
 
 
 @app.post("/api/priority/populate-all")
-async def populate_all_priority():
+def populate_all_priority():
     """Populate priority list with ALL possible combinations."""
     if not HAS_DATABASE:
         raise HTTPException(status_code=503, detail="Database not available")
@@ -3294,7 +3298,7 @@ async def populate_all_priority():
 
 
 @app.post("/api/priority/clear")
-async def clear_priority():
+def clear_priority():
     """Clear all priority items."""
     if not HAS_DATABASE:
         raise HTTPException(status_code=503, detail="Database not available")
@@ -3310,7 +3314,7 @@ async def clear_priority():
 # =============================================================================
 
 @app.get("/api/priority/lists")
-async def get_priority_lists():
+def get_priority_lists():
     """Get all three priority lists and settings - optimized single DB call."""
     if not HAS_DATABASE:
         raise HTTPException(status_code=503, detail="Database not available")
@@ -3353,7 +3357,7 @@ class PriorityListReorderRequest(BaseModel):
 
 
 @app.post("/api/priority/{list_type}/reorder")
-async def reorder_priority_list(list_type: str, request: PriorityListReorderRequest):
+def reorder_priority_list(list_type: str, request: PriorityListReorderRequest):
     """Reorder items in a specific list."""
     if list_type not in ['pairs', 'periods', 'timeframes', 'granularities']:
         raise HTTPException(status_code=400, detail="Invalid list type")
@@ -3368,7 +3372,7 @@ async def reorder_priority_list(list_type: str, request: PriorityListReorderRequ
 
 
 @app.patch("/api/priority/{list_type}/{item_id}/toggle")
-async def toggle_priority_list_item(list_type: str, item_id: int):
+def toggle_priority_list_item(list_type: str, item_id: int):
     """Toggle enabled status in a specific list."""
     if list_type not in ['pairs', 'periods', 'timeframes', 'granularities']:
         raise HTTPException(status_code=400, detail="Invalid list type")
@@ -3390,7 +3394,7 @@ class GranularityRequest(BaseModel):
 
 
 @app.post("/api/priority/granularity")
-async def set_priority_granularity(request: GranularityRequest):
+def set_priority_granularity(request: GranularityRequest):
     """Set the global granularity setting."""
     if not HAS_DATABASE:
         raise HTTPException(status_code=503, detail="Database not available")
@@ -3402,7 +3406,7 @@ async def set_priority_granularity(request: GranularityRequest):
 
 
 @app.post("/api/priority/reset-defaults")
-async def reset_priority_defaults():
+def reset_priority_defaults():
     """Reset all priority settings to defaults."""
     if not HAS_DATABASE:
         raise HTTPException(status_code=503, detail="Database not available")
@@ -3419,7 +3423,7 @@ async def reset_priority_defaults():
 
 
 @app.post("/api/priority/enable-all")
-async def enable_all_priority():
+def enable_all_priority():
     """Enable all items in all lists."""
     if not HAS_DATABASE:
         raise HTTPException(status_code=503, detail="Database not available")
@@ -3430,7 +3434,7 @@ async def enable_all_priority():
 
 
 @app.post("/api/priority/disable-all")
-async def disable_all_priority():
+def disable_all_priority():
     """Disable all items in all lists."""
     if not HAS_DATABASE:
         raise HTTPException(status_code=503, detail="Database not available")
@@ -4277,34 +4281,57 @@ async def run_autonomous_optimization(combo: dict, combo_id: str = None) -> str:
     # Single source: Binance USDT pairs - use BINANCE:SYMBOL on TradingView
     from data_fetcher import BinanceDataFetcher
 
-    fetch_msg = f"Fetching {pair}..."
-    autonomous_optimizer_status["message"] = fetch_msg
-    autonomous_optimizer_status["progress"] = 5
-    autonomous_optimizer_status["trial_current"] = 0
-    autonomous_optimizer_status["trial_total"] = granularity["n_trials"]
-    update_parallel_status(fetch_msg, 5)
+    # Use data_fetch_lock to stagger Binance API calls - only one fetch at a time
+    # This prevents overwhelming Binance with concurrent requests
+    update_parallel_status(f"Waiting for data fetch slot...", 0)
 
-    fetcher = BinanceDataFetcher()
+    async with data_fetch_lock:
+        fetch_msg = f"Fetching {pair}..."
+        autonomous_optimizer_status["message"] = fetch_msg
+        autonomous_optimizer_status["progress"] = 5
+        autonomous_optimizer_status["trial_current"] = 0
+        autonomous_optimizer_status["trial_total"] = granularity["n_trials"]
+        update_parallel_status(fetch_msg, 5)
 
-    try:
-        df = await fetcher.fetch_ohlcv(
-            pair=pair,
-            interval=timeframe["minutes"],
-            months=period["months"]
-        )
-    except Exception as e:
-        autonomous_optimizer_status["message"] = f"Data fetch error: {str(e)}"
-        autonomous_optimizer_status["data_validation"] = None
-        return "error"
+        fetcher = BinanceDataFetcher()
 
-    if df is None or len(df) < 100:
-        autonomous_optimizer_status["message"] = f"Insufficient data for {pair} ({len(df) if df is not None else 0} candles)"
-        autonomous_optimizer_status["data_validation"] = None
-        return "error"
+        # Timeout for data fetch - 5 minutes max to prevent hanging forever
+        FETCH_TIMEOUT_SECONDS = 300
 
-    # Step 1.5: Validate data date range
-    autonomous_optimizer_status["progress"] = 10
-    data_validation = validate_data_range(df, period, timeframe)
+        try:
+            df = await asyncio.wait_for(
+                fetcher.fetch_ohlcv(
+                    pair=pair,
+                    interval=timeframe["minutes"],
+                    months=period["months"]
+                ),
+                timeout=FETCH_TIMEOUT_SECONDS
+            )
+        except asyncio.TimeoutError:
+            log(f"[Autonomous Optimizer] Data fetch TIMEOUT for {pair} after {FETCH_TIMEOUT_SECONDS}s", level='ERROR')
+            autonomous_optimizer_status["message"] = f"Data fetch timeout: {pair}"
+            autonomous_optimizer_status["data_validation"] = None
+            update_parallel_status(f"Timeout fetching {pair}", 0)
+            return "error"
+        except Exception as e:
+            error_msg = f"Data fetch error: {str(e)}"
+            autonomous_optimizer_status["message"] = error_msg
+            autonomous_optimizer_status["data_validation"] = None
+            update_parallel_status(error_msg, 0)
+            return "error"
+
+        if df is None or len(df) < 100:
+            error_msg = f"Insufficient data for {pair} ({len(df) if df is not None else 0} candles)"
+            autonomous_optimizer_status["message"] = error_msg
+            autonomous_optimizer_status["data_validation"] = None
+            update_parallel_status(error_msg, 0)
+            return "error"
+
+        # Step 1.5: Validate data date range
+        autonomous_optimizer_status["progress"] = 10
+        data_validation = validate_data_range(df, period, timeframe)
+
+    # Lock released - other optimizations can now fetch data while this one runs
     autonomous_optimizer_status["data_validation"] = data_validation
 
     # Log data validation result
@@ -4334,7 +4361,9 @@ async def run_autonomous_optimization(combo: dict, combo_id: str = None) -> str:
             autonomous_optimizer_status["skipped_validations"] = autonomous_optimizer_status["skipped_validations"][:100]
 
         autonomous_optimizer_status["skipped_count"] += 1
-        autonomous_optimizer_status["message"] = f"⚠ SKIPPED {pair} {period['label']} - {skip_reason}"
+        skip_msg = f"⚠ SKIPPED {pair} {period['label']} - {skip_reason}"
+        autonomous_optimizer_status["message"] = skip_msg
+        update_parallel_status(skip_msg, 0)
 
         log(f"[Autonomous Optimizer] SKIPPED: {pair} {period['label']} {timeframe['label']}", level='WARNING')
         log(f"[Autonomous Optimizer]   Reason: {skip_reason}", level='WARNING')
@@ -4627,18 +4656,23 @@ def find_resume_index(combinations: list, db) -> int:
     Find the index to resume from by checking which combinations
     have already been optimized (tracked in completed_optimizations table).
 
-    Now properly tracks granularity - a combination is only "done" if
-    it was completed at the SAME granularity level.
+    Uses period boundary detection (same logic as Elite validation):
+    - 1 week: Re-run if a new week started (crossed Monday)
+    - 1 month: Re-run if a new month started
+    - 3 months: Re-run if a new quarter started
+    - etc.
 
-    Returns the index of the first un-optimized combination.
+    Returns the index of the first combination that needs optimization.
     """
-    # Get completed optimizations from tracking table
-    # Returns set of (pair, period_label, timeframe_label, granularity_label)
-    completed = db.get_completed_optimizations()
+    # Get completed optimizations with timestamps
+    # Returns dict of {(pair, period, timeframe, granularity): completed_at}
+    completed = db.get_completed_optimizations(with_timestamps=True)
 
     log(f"[Resume] Found {len(completed)} completed optimization records in database")
 
-    # Find first combination not in completed set
+    # Find first combination that needs optimization
+    # Either: never run, OR period boundary has crossed since last run
+    skipped_fresh = 0
     for i, combo in enumerate(combinations):
         key = (
             combo['pair'],
@@ -4646,11 +4680,24 @@ def find_resume_index(combinations: list, db) -> int:
             combo['timeframe']['label'],
             combo['granularity']['label']
         )
+
         if key not in completed:
+            # Never been optimized
             return i
 
-    # All combinations done, start from beginning
-    log("[Resume] All combinations completed, will restart from beginning")
+        # Check if period boundary has crossed since last optimization
+        completed_at = completed[key]
+        period_label = combo['period']['label']
+
+        if has_period_boundary_crossed(period_label, completed_at):
+            log(f"[Resume] {combo['pair']} {period_label} needs re-optimization (period boundary crossed)")
+            return i
+
+        skipped_fresh += 1
+
+    # All combinations are fresh (within their period boundaries)
+    log(f"[Resume] All {skipped_fresh} combinations are still fresh (within period boundaries)")
+    log("[Resume] Will restart from beginning to check for any stale combinations")
     return 0
 
 
