@@ -487,6 +487,7 @@ async def run_single_optimization(
 
     async def update_progress():
         import re
+        logged_sample = False
 
         while temp_status["running"]:
             if not app_state.is_autonomous_enabled():
@@ -498,13 +499,24 @@ async def run_single_optimization(
 
             # Try to parse trial progress from message
             msg = temp_status.get("message", "")
+
+            # Log the raw message once to see format
+            if msg and not logged_sample:
+                log(f"[Progress] {pair} raw message: {msg[:100]}")
+                logged_sample = True
+
             current_trial = 0
             total_trials = granularity["n_trials"]
 
             # Try multiple regex patterns for different message formats
+            # Pattern 1: "| 500 / 10,000 ("
             match = re.search(r'\|\s*([\d,]+)\s*/\s*([\d,]+)\s*\(', msg)
+            # Pattern 2: "500/10000" or "500 / 10,000"
             if not match:
-                match = re.search(r'(\d+)\s*/\s*(\d+)', msg)
+                match = re.search(r'([\d,]+)\s*/\s*([\d,]+)', msg)
+            # Pattern 3: "Trial 500 of 10000"
+            if not match:
+                match = re.search(r'[Tt]rial\s*([\d,]+)\s*(?:of|/)\s*([\d,]+)', msg)
 
             if match:
                 current_trial = int(match.group(1).replace(',', ''))
