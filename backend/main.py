@@ -88,8 +88,26 @@ async def warm_up_caches():
         strategies_cache.set(CacheKeys.ELITE_STRATEGIES, elite_strategies, ttl=300)
         log(f"[Cache] Elite strategies cached: {len(elite_strategies)} strategies")
 
-        # Warm up priority lists cache
+        # Warm up priority lists cache (auto-populate if empty)
         priority_data = db.get_all_priority_lists()
+        if not priority_data.get('populated'):
+            from config import AUTONOMOUS_CONFIG
+            config = AUTONOMOUS_CONFIG
+            db.reset_priority_pairs(config["pairs"].get("binance", []))
+            db.reset_priority_periods(config["periods"])
+            db.reset_priority_timeframes(config["timeframes"])
+            db.reset_priority_granularities(config["granularities"])
+            priority_data = db.get_all_priority_lists()
+            log(f"[Cache] Priority lists auto-populated with defaults")
+        # Convert enabled to bool for JSON serialization
+        for p in priority_data.get('pairs', []):
+            p['enabled'] = bool(p.get('enabled', 1))
+        for p in priority_data.get('periods', []):
+            p['enabled'] = bool(p.get('enabled', 1))
+        for t in priority_data.get('timeframes', []):
+            t['enabled'] = bool(t.get('enabled', 1))
+        for g in priority_data.get('granularities', []):
+            g['enabled'] = bool(g.get('enabled', 1))
         priority_cache.set(CacheKeys.PRIORITY_LISTS, priority_data, ttl=300)
         log(f"[Cache] Priority lists cached")
 
@@ -114,10 +132,9 @@ async def start_background_services():
         asyncio.create_task(start_auto_elite_validation())
         log("[Startup] Elite validation service started")
 
-        # Start Autonomous optimizer in background
-        from services.autonomous_optimizer import start_autonomous_optimizer
-        asyncio.create_task(start_autonomous_optimizer(thread_pool))
-        log("[Startup] Autonomous optimizer service started")
+        # Note: Autonomous optimizer is NOT started automatically
+        # User must explicitly enable it via the UI toggle
+        log("[Startup] Autonomous optimizer ready (requires manual start)")
 
     except Exception as e:
         log(f"[Startup] Error starting background services: {e}", level='WARNING')
