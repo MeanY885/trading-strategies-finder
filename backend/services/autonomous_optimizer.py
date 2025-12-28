@@ -842,8 +842,8 @@ async def start_autonomous_optimizer(thread_pool):
                 )
 
             # Spawn new tasks - limit concurrent to avoid overwhelming system
-            # User has 27GB RAM, so 8 concurrent should be safe
-            max_concurrent = min(8, concurrency_config.get("max_concurrent", 8))
+            # With 27GB RAM, 12 concurrent is safe (~2GB per optimization)
+            max_concurrent = min(12, concurrency_config.get("max_concurrent", 12))
             available_slots = max_concurrent - len(active_tasks)
 
             # Only spawn ONE task per loop iteration to spread load
