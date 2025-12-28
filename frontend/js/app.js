@@ -2672,33 +2672,9 @@
         }
 
         function startUnifiedPolling() {
-            if (unifiedPolling) clearInterval(unifiedPolling);
-            
-            unifiedPolling = setInterval(async () => {
-                try {
-                    const response = await fetch('/api/unified-status');
-                    const status = await response.json();
-                    
-                    document.getElementById('unifiedProgressFill').style.width = `${status.progress}%`;
-                    document.getElementById('unifiedMessage').textContent = status.message;
-                    
-                    if (!status.running) {
-                        clearInterval(unifiedPolling);
-                        unifiedPolling = null;
-                        
-                        const btn = document.getElementById('unifiedBtn');
-                        btn.disabled = false;
-                        btn.innerHTML = 'Find Best Strategies';
-                        
-                        if (status.report) {
-                            displayUnifiedReport(status.report);
-                            addLog('Unified optimization complete! Check the Top 10 results below.');
-                        }
-                    }
-                } catch (error) {
-                    console.error('Unified polling error:', error);
-                }
-            }, 1000);
+            // DISABLED - WebSocket provides all updates
+            // HTTP polling is wasteful and drains resources
+            console.log('[Unified] Polling disabled - using WebSocket');
         }
         
         // Store the current report globally for engine switching
@@ -3553,18 +3529,13 @@
         let pollingDelay = 1500;
 
         function startPolling() {
-            pollingActive = true;
-            fastPollingActive = false;
-            pollingDelay = 1500;
-            schedulePoll();
+            // DISABLED - WebSocket provides all updates
+            console.log('[Status] Polling disabled - using WebSocket');
         }
 
         function startFastPolling() {
-            // Fast polling during data fetch (500ms instead of 1500ms)
-            pollingActive = true;
-            fastPollingActive = true;
-            pollingDelay = 500;
-            schedulePoll();
+            // DISABLED - WebSocket provides all updates
+            console.log('[Status] Fast polling disabled - using WebSocket');
         }
 
         function stopFastPolling() {
@@ -3654,17 +3625,8 @@
             updatePairOptions();
 
             // Initial state will come from WebSocket full_state message
-            // But also do a fetch as backup in case WebSocket isn't ready yet
-            try {
-                const response = await fetch('/api/status');
-                const data = await response.json();
-                if (data.data && data.data.loaded && data.data.start_date && data.data.end_date) {
-                    console.log('Initial date range population:', data.data.start_date, data.data.end_date);
-                    updateBacktestDateRange(data.data.start_date, data.data.end_date);
-                }
-            } catch (e) {
-                console.error('Initial status fetch failed:', e);
-            }
+            // NO HTTP FALLBACK - WebSocket is the only source of truth
+            console.log('[Init] Waiting for WebSocket full_state message...');
         });
 
         // =====================================================
@@ -4063,16 +4025,8 @@
         }
 
         function startElitePolling() {
-            // DEPRECATED: WebSocket provides real-time updates
-            // Kept for fallback compatibility
-            if (!wsConnected) {
-                setInterval(async () => {
-                    const eliteTab = document.getElementById('elite-tab');
-                    if (eliteTab && eliteTab.style.display !== 'none') {
-                        await loadEliteData();
-                    }
-                }, 5000);
-            }
+            // DISABLED - WebSocket provides all updates
+            console.log('[Elite] Polling disabled - using WebSocket');
         }
 
         async function renderEliteTable(eliteStrategies, status) {
@@ -4458,14 +4412,8 @@
 
         async function initAutonomousTab() {
             autonomousInitialized = true;
-            // Don't start polling - WebSocket will push updates
-            // Only fall back to polling after 5 seconds if WebSocket still not connected
-            setTimeout(() => {
-                if (!wsConnected) {
-                    console.warn('[Autonomous] WebSocket not connected after 5s, starting fallback polling');
-                    startAutonomousPolling();
-                }
-            }, 5000);
+            // WebSocket provides all updates - no polling needed
+            console.log('[Autonomous] Tab initialized - WebSocket provides updates');
         }
 
         async function toggleAutonomousOptimizer() {
@@ -4494,10 +4442,9 @@
         }
 
         function startAutonomousPolling() {
-            if (autonomousPollingInterval) return;
-
-            // Poll every 1 second for responsive updates
-            autonomousPollingInterval = setInterval(updateAutonomousStatus, 1000);
+            // DISABLED - WebSocket provides all updates
+            // HTTP polling is wasteful and drains resources
+            console.log('[Autonomous] Polling disabled - using WebSocket');
         }
 
         function stopAutonomousPolling() {
