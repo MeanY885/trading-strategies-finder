@@ -403,10 +403,15 @@
         function handleWsResponse(message) {
             const id = message.id;
             if (id && wsPendingRequests.has(id)) {
-                const { resolve, timer } = wsPendingRequests.get(id);
+                const { resolve, reject, timer } = wsPendingRequests.get(id);
                 clearTimeout(timer);
                 wsPendingRequests.delete(id);
-                resolve(message);
+                // Check if this is an error response
+                if (message.type === 'error') {
+                    reject(new Error(message.error || 'Unknown server error'));
+                } else {
+                    resolve(message);
+                }
                 return true;
             }
             return false;
