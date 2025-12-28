@@ -47,8 +47,6 @@
             max-width: 100%;
             margin: 0;
             padding: 1.5rem 2rem;
-            overflow-x: hidden;
-            overflow-y: auto;
         }
         
         /* Header */
@@ -80,9 +78,6 @@
             flex: 1 1 auto;
             display: flex;
             flex-direction: column;
-            min-height: 0;
-            overflow-y: auto;
-            overflow-x: hidden;
         }
 
         /* Grid Layout - Flexbox based */
@@ -530,7 +525,6 @@
         .table-container {
             flex: 1 1 auto;
             overflow-x: auto;
-            overflow-y: auto;
             margin: 0 -0.5rem;
             padding: 0 0.5rem;
         }
@@ -1567,8 +1561,6 @@
 
         .priority-list-container {
             flex: 1;
-            max-height: 350px;
-            overflow-y: auto;
         }
 
         .priority-item-simple {
@@ -1712,10 +1704,6 @@
 
             .priority-column {
                 min-width: 100%;
-            }
-
-            .priority-list-container {
-                max-height: 200px;
             }
         }
 

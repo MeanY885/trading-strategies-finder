@@ -19,7 +19,7 @@ services:
       - ./backend:/app/backend  # Hot reload backend changes (requires restart)
     environment:
       - PYTHONUNBUFFERED=1
-      - DATABASE_URL=postgresql://btcgbp:btcgbp_dev@db:5432/btcgbp_optimizer
+      - DATABASE_URL=postgresql://trading:trading_dev@db:5432/trading_optimizer
     depends_on:
       db:
         condition: service_healthy
@@ -28,16 +28,16 @@ services:
   db:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: btcgbp
-      POSTGRES_PASSWORD: btcgbp_dev
-      POSTGRES_DB: btcgbp_optimizer
+      POSTGRES_USER: trading
+      POSTGRES_PASSWORD: trading_dev
+      POSTGRES_DB: trading_optimizer
     volumes:
       - postgres_data:/var/lib/postgresql/data
     expose:
       - "5432"
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U btcgbp"]
+      test: ["CMD-SHELL", "pg_isready -U trading -d trading_optimizer"]
       interval: 5s
       timeout: 5s
       retries: 5

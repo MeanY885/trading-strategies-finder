@@ -45,7 +45,7 @@ from services.cache import (
 from api import register_routes
 
 # Initialize logging
-log("[Startup] BTCGBP ML Optimizer v2.0.0 (Refactored)")
+log("[Startup] Trading Optimizer v2.0.0 (Refactored)")
 log(f"[Startup] CPU cores: {resource_monitor.cpu_cores}")
 log(f"[Startup] Memory: {resource_monitor.mem_total_gb:.1f} GB")
 log(f"[Startup] Max workers: {resource_monitor.current_max}")
@@ -169,7 +169,7 @@ async def lifespan(app: FastAPI):
 # =============================================================================
 
 app = FastAPI(
-    title="BTCGBP ML Optimizer",
+    title="Trading Optimizer",
     version="2.0.0",
     description="ML-powered cryptocurrency trading strategy optimizer",
     lifespan=lifespan
