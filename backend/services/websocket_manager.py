@@ -9,9 +9,8 @@ import json
 from datetime import datetime, date
 from typing import List, Dict, Any, Optional
 from fastapi import WebSocket
-import logging
 
-logger = logging.getLogger(__name__)
+from logging_config import log
 
 
 class DateTimeEncoder(json.JSONEncoder):
@@ -53,21 +52,21 @@ class WebSocketManager:
     def set_main_loop(self, loop):
         """Store reference to main event loop for cross-thread broadcasts."""
         self._main_loop = loop
-        logger.info(f"[WebSocket] Main event loop registered")
+        log("[WebSocket] Main event loop registered")
 
     async def connect(self, websocket: WebSocket) -> None:
         """Accept a new WebSocket connection."""
         await websocket.accept()
         async with self._lock:
             self.active_connections.append(websocket)
-        logger.info(f"[WebSocket] Client connected. Total: {len(self.active_connections)}")
+        log(f"[WebSocket] Client connected. Total: {len(self.active_connections)}")
 
     async def disconnect(self, websocket: WebSocket) -> None:
         """Remove a disconnected WebSocket."""
         async with self._lock:
             if websocket in self.active_connections:
                 self.active_connections.remove(websocket)
-        logger.info(f"[WebSocket] Client disconnected. Total: {len(self.active_connections)}")
+        log(f"[WebSocket] Client disconnected. Total: {len(self.active_connections)}")
 
     async def send_to_client(self, websocket: WebSocket, message: Dict) -> bool:
         """
@@ -78,7 +77,7 @@ class WebSocketManager:
             await websocket.send_json(message)
             return True
         except Exception as e:
-            logger.warning(f"[WebSocket] Error sending to client: {e}")
+            log(f"[WebSocket] Error sending to client: {e}", level='WARNING')
             return False
 
     async def broadcast(self, message_type: str, data: Dict) -> None:
@@ -100,7 +99,7 @@ class WebSocketManager:
             try:
                 await connection.send_json(message)
             except Exception as e:
-                logger.warning(f"[WebSocket] Error broadcasting {message_type} to client: {e}")
+                log(f"[WebSocket] Error broadcasting {message_type} to client: {e}", level='WARNING')
                 disconnected.append(connection)
 
         # Clean up disconnected clients
@@ -128,7 +127,7 @@ class WebSocketManager:
                 )
                 # Don't block waiting for result, just fire and forget
             else:
-                logger.warning(f"[WebSocket] No main loop available for broadcast: {message_type}")
+                log(f"[WebSocket] No main loop available for broadcast: {message_type}", level='WARNING')
                 # Fallback: try to get current loop
                 try:
                     loop = asyncio.get_running_loop()
@@ -137,9 +136,9 @@ class WebSocketManager:
                         loop
                     )
                 except RuntimeError:
-                    logger.warning("[WebSocket] No event loop available for broadcast")
+                    log("[WebSocket] No event loop available for broadcast", level='WARNING')
         except Exception as e:
-            logger.warning(f"[WebSocket] broadcast_sync error: {e}")
+            log(f"[WebSocket] broadcast_sync error: {e}", level='WARNING')
 
     @property
     def client_count(self) -> int:
@@ -182,7 +181,7 @@ def broadcast_autonomous_status(autonomous_status: Dict, queue_data: Optional[Di
     # Debug: log broadcast attempt
     client_count = ws_manager.client_count
     if client_count > 0:
-        logger.info(f"[WebSocket] Broadcasting autonomous_status to {client_count} clients")
+        log(f"[WebSocket] Broadcasting autonomous_status to {client_count} clients")
 
     ws_manager.broadcast_sync("autonomous_status", payload)
 
