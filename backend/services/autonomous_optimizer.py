@@ -717,9 +717,10 @@ async def start_autonomous_optimizer(thread_pool):
 
     await asyncio.sleep(3)
 
-    # Build combinations
+    # Build combinations in thread pool to avoid blocking event loop
     log("[Parallel Optimizer] Building combinations...")
-    combinations = build_optimization_combinations()
+    loop = asyncio.get_event_loop()
+    combinations = await loop.run_in_executor(thread_pool, build_optimization_combinations)
     log(f"[Parallel Optimizer] Built {len(combinations)} combinations")
 
     app_state.update_autonomous_status(
@@ -737,13 +738,16 @@ async def start_autonomous_optimizer(thread_pool):
     )
     broadcast_autonomous_status(app_state.get_autonomous_status())
 
-    # Find resume point
-    try:
-        from strategy_database import get_strategy_db
-        db = get_strategy_db()
-        start_index = find_resume_index(combinations, db)
-    except:
-        start_index = 0
+    # Find resume point (in thread pool to avoid blocking)
+    def find_resume():
+        try:
+            from strategy_database import get_strategy_db
+            db = get_strategy_db()
+            return find_resume_index(combinations, db)
+        except:
+            return 0
+
+    start_index = await loop.run_in_executor(thread_pool, find_resume)
 
     app_state.update_autonomous_status(cycle_index=start_index)
 

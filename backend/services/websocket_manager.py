@@ -95,12 +95,17 @@ class WebSocketManager:
             connections_copy = list(self.active_connections)
 
         disconnected = []
+        sent_count = 0
         for connection in connections_copy:
             try:
                 await connection.send_json(message)
+                sent_count += 1
             except Exception as e:
                 log(f"[WebSocket] Error broadcasting {message_type} to client: {e}", level='WARNING')
                 disconnected.append(connection)
+
+        if sent_count > 0:
+            log(f"[WebSocket] Broadcast {message_type} completed: {sent_count} clients")
 
         # Clean up disconnected clients
         if disconnected:
