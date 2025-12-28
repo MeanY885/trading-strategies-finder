@@ -20,6 +20,16 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - DATABASE_URL=postgresql://trading:trading_dev@db:5432/trading_optimizer
+      # Performance tuning - adjust based on your machine
+      # Set MAX_CONCURRENT=0 for auto-detect, or specify a number
+      - MAX_CONCURRENT=0
+      # Max parallel Binance API fetches (rate limit is ~10/sec)
+      - MAX_FETCH_CONCURRENT=5
+      # Resource thresholds
+      - CPU_TARGET_USAGE=75
+      - CPU_MAX_USAGE=90
+      - MEM_MIN_AVAILABLE_GB=2
+      - MEM_PER_WORKER_GB=0.3
     depends_on:
       db:
         condition: service_healthy

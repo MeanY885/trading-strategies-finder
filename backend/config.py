@@ -137,14 +137,26 @@ AUTONOMOUS_CONFIG = {
 # RESOURCE MONITOR THRESHOLDS
 # =============================================================================
 
+# These can be overridden via environment variables for different deployments
 RESOURCE_THRESHOLDS = {
-    "cpu_target_usage": 70,      # Target CPU usage percentage
-    "cpu_max_usage": 85,         # Max before scaling down
-    "mem_min_available_gb": 4,   # Minimum free memory to maintain
-    "mem_per_worker_gb": 0.4,    # Estimated memory per optimization
+    "cpu_target_usage": int(os.getenv("CPU_TARGET_USAGE", "70")),      # Target CPU usage percentage
+    "cpu_max_usage": int(os.getenv("CPU_MAX_USAGE", "85")),            # Max before scaling down
+    "mem_min_available_gb": float(os.getenv("MEM_MIN_AVAILABLE_GB", "2")),   # Minimum free memory to maintain
+    "mem_per_worker_gb": float(os.getenv("MEM_PER_WORKER_GB", "0.3")),    # Estimated memory per optimization
     "sample_window": 10,         # Number of CPU samples to average
-    "adjustment_cooldown": 30,   # Seconds between scaling adjustments
+    "adjustment_cooldown": 15,   # Seconds between scaling adjustments (faster response)
 }
+
+# =============================================================================
+# CONCURRENCY CONFIGURATION
+# =============================================================================
+
+# Max concurrent optimizations - 0 means auto-detect based on CPU cores
+# Can be overridden via environment variable for powerful machines
+MAX_CONCURRENT_OPTIMIZATIONS = int(os.getenv("MAX_CONCURRENT", "0"))
+
+# Max concurrent data fetches - Binance rate limit is ~10/sec, so 5 is safe
+MAX_CONCURRENT_FETCHES = int(os.getenv("MAX_FETCH_CONCURRENT", "5"))
 
 # =============================================================================
 # WEBSOCKET CONFIGURATION

@@ -47,11 +47,36 @@ current_optimization_status: Optional[dict] = None
 def init_async_primitives():
     """Initialize asyncio primitives. Must be called from async context."""
     global optimization_semaphore, data_fetch_semaphore
-    max_concurrent = concurrency_config.get("max_concurrent", 4)
+
+    from config import MAX_CONCURRENT_OPTIMIZATIONS, MAX_CONCURRENT_FETCHES
+    import psutil
+
+    # Auto-detect if not specified, or use configured value
+    if MAX_CONCURRENT_OPTIMIZATIONS > 0:
+        max_concurrent = MAX_CONCURRENT_OPTIMIZATIONS
+    else:
+        # Auto-detect based on CPU cores
+        cpu_count = psutil.cpu_count(logical=True) or 4
+        if cpu_count >= 32:
+            max_concurrent = cpu_count - 4
+        elif cpu_count >= 16:
+            max_concurrent = cpu_count - 2
+        elif cpu_count >= 8:
+            max_concurrent = cpu_count - 1
+        else:
+            max_concurrent = max(2, cpu_count)
+
+    # Override from state config if set
+    state_max = concurrency_config.get("max_concurrent", 0)
+    if state_max > 0:
+        max_concurrent = state_max
+
     optimization_semaphore = asyncio.Semaphore(max_concurrent)
-    # Allow 3 concurrent data fetches (Binance rate limit is ~10 req/sec)
-    data_fetch_semaphore = asyncio.Semaphore(3)
-    log(f"[Autonomous Optimizer] Initialized with max_concurrent={max_concurrent}, fetch_concurrent=3")
+    data_fetch_semaphore = asyncio.Semaphore(MAX_CONCURRENT_FETCHES)
+
+    mem = psutil.virtual_memory()
+    log(f"[Autonomous Optimizer] Initialized: max_concurrent={max_concurrent}, fetch_concurrent={MAX_CONCURRENT_FETCHES}")
+    log(f"[Autonomous Optimizer] System: {psutil.cpu_count()} cores, {mem.total / (1024**3):.1f} GB RAM ({mem.available / (1024**3):.1f} GB available)")
 
 
 # =============================================================================
