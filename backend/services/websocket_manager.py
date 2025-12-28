@@ -28,6 +28,12 @@ class WebSocketManager:
         self._broadcast_task: asyncio.Task = None
         self._throttle_interval = 0.5  # Minimum seconds between broadcasts
         self._last_broadcast_time = 0
+        self._main_loop = None  # Store reference to main event loop
+
+    def set_main_loop(self, loop):
+        """Store reference to main event loop for cross-thread broadcasts."""
+        self._main_loop = loop
+        logger.info(f"[WebSocket] Main event loop registered")
 
     async def connect(self, websocket: WebSocket) -> None:
         """Accept a new WebSocket connection."""
@@ -86,18 +92,25 @@ class WebSocketManager:
     def broadcast_sync(self, message_type: str, data: Dict) -> None:
         """
         Thread-safe broadcast for use from synchronous code.
-        Queues the message for async broadcast.
+        Uses stored main event loop for reliable cross-thread communication.
         """
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
+            # Use stored main loop (set during startup)
+            if self._main_loop and self._main_loop.is_running():
                 asyncio.run_coroutine_threadsafe(
                     self.broadcast(message_type, data),
-                    loop
+                    self._main_loop
                 )
             else:
-                # Fallback for edge cases
-                asyncio.run(self.broadcast(message_type, data))
+                # Fallback: try to get current loop
+                try:
+                    loop = asyncio.get_running_loop()
+                    asyncio.run_coroutine_threadsafe(
+                        self.broadcast(message_type, data),
+                        loop
+                    )
+                except RuntimeError:
+                    logger.warning("[WebSocket] No event loop available for broadcast")
         except Exception as e:
             logger.warning(f"[WebSocket] broadcast_sync error: {e}")
 

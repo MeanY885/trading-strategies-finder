@@ -151,6 +151,10 @@ async def lifespan(app: FastAPI):
     """Handle startup and shutdown events."""
     log("[Startup] Application starting...")
 
+    # Register main event loop for cross-thread WebSocket broadcasts
+    from services.websocket_manager import ws_manager
+    ws_manager.set_main_loop(asyncio.get_running_loop())
+
     # Warm up caches immediately for fast first requests
     await warm_up_caches()
 
