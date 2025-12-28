@@ -481,6 +481,7 @@ async def run_single_optimization(
         return "skipped"
 
     # Run optimization
+    log(f"[Autonomous Optimizer] Starting optimization for {pair} ({granularity['n_trials']} trials)...")
     temp_status = {"running": True, "progress": 0, "message": "", "report": None, "abort": False}
     current_optimization_status = temp_status
 
@@ -534,11 +535,17 @@ async def run_single_optimization(
 
     try:
         from strategy_engine import run_strategy_finder
+        log(f"[Autonomous Optimizer] {pair} - Submitting to thread pool...")
         await loop.run_in_executor(
             thread_pool,
             run_optimization_sync,
             df, combo, temp_status, run_strategy_finder, thread_pool
         )
+        log(f"[Autonomous Optimizer] {pair} - Thread pool execution completed")
+    except Exception as e:
+        log(f"[Autonomous Optimizer] {pair} - EXCEPTION: {e}", level='ERROR')
+        import traceback
+        traceback.print_exc()
     finally:
         temp_status["running"] = False
         current_optimization_status = None
@@ -549,6 +556,7 @@ async def run_single_optimization(
             pass
 
     if temp_status.get("abort"):
+        log(f"[Autonomous Optimizer] {pair} - Aborted")
         return "aborted"
 
     # Process results
