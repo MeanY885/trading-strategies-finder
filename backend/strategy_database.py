@@ -826,20 +826,30 @@ class StrategyDatabase:
         return deleted
 
     def clear_all(self) -> int:
-        """Clear all strategies (use with caution!)."""
+        """Clear entire database - all strategies, runs, and tracking data."""
         conn = self._get_connection()
         cursor = conn.cursor()
 
         cursor.execute('SELECT COUNT(*) FROM strategies')
         count = cursor.fetchone()[0]
 
+        # Clear all strategy and optimization data
         cursor.execute('DELETE FROM strategies')
         cursor.execute('DELETE FROM optimization_runs')
+        cursor.execute('DELETE FROM completed_optimizations')
+
+        # Clear all priority queue tables
+        cursor.execute('DELETE FROM priority_items')
+        cursor.execute('DELETE FROM priority_pairs')
+        cursor.execute('DELETE FROM priority_periods')
+        cursor.execute('DELETE FROM priority_timeframes')
+        cursor.execute('DELETE FROM priority_granularities')
+        cursor.execute('DELETE FROM priority_settings')
 
         conn.commit()
         conn.close()
 
-        print(f"Cleared {count} strategies from database")
+        print(f"Cleared entire database: {count} strategies + all tracking data")
         return count
 
     # =========================================================================
