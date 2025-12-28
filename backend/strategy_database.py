@@ -38,7 +38,7 @@ class StrategyDatabase:
         Get a database connection with proper settings for concurrent access.
         Uses WAL mode for better read/write concurrency.
         """
-        conn = self._get_connection()
+        conn = sqlite3.connect(self.db_path)
         conn.execute("PRAGMA busy_timeout=30000")  # Wait up to 30s for lock
         return conn
 
