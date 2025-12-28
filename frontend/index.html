@@ -2793,6 +2793,11 @@
         function handleWebSocketMessage(message) {
             const type = message.type;
 
+            // First check if this is a response to a pending request
+            if (message.id && handleWsResponse(message)) {
+                return; // Handled as request response
+            }
+
             switch(type) {
                 case 'full_state':
                     // Initial state on connect - update all UI components
@@ -2825,6 +2830,16 @@
 
                 case 'heartbeat':
                     // Server heartbeat - connection is alive
+                    break;
+
+                // Data responses (when not matched by request ID)
+                case 'strategies_data':
+                case 'elite_data':
+                case 'queue_data':
+                case 'priority_data':
+                case 'db_stats':
+                case 'error':
+                    // These are handled by handleWsResponse above
                     break;
 
                 default:
@@ -2998,6 +3013,117 @@
             }
         }
 
+        // =============================================================================
+        // WEBSOCKET DATA REQUESTS - Request data via WebSocket instead of HTTP
+        // =============================================================================
+
+        let wsRequestId = 0;
+        const wsPendingRequests = new Map();
+
+        function wsRequest(type, timeout = 30000) {
+            return new Promise((resolve, reject) => {
+                if (!wsConnection || wsConnection.readyState !== WebSocket.OPEN) {
+                    reject(new Error('WebSocket not connected'));
+                    return;
+                }
+
+                const id = ++wsRequestId;
+                const timer = setTimeout(() => {
+                    wsPendingRequests.delete(id);
+                    reject(new Error('Request timeout'));
+                }, timeout);
+
+                wsPendingRequests.set(id, { resolve, reject, timer });
+
+                wsConnection.send(JSON.stringify({ type, id }));
+            });
+        }
+
+        function handleWsResponse(message) {
+            const id = message.id;
+            if (id && wsPendingRequests.has(id)) {
+                const { resolve, timer } = wsPendingRequests.get(id);
+                clearTimeout(timer);
+                wsPendingRequests.delete(id);
+                resolve(message);
+                return true;
+            }
+            return false;
+        }
+
+        // Cache for data to avoid re-requests
+        let cachedStrategies = null;
+        let cachedEliteData = null;
+        let cachedPriorityData = null;
+        let cachedQueueData = null;
+
+        // WebSocket data loading functions
+        async function loadStrategiesViaWs() {
+            try {
+                const response = await wsRequest('get_strategies');
+                cachedStrategies = response.data;
+                return response.data;
+            } catch (e) {
+                console.error('[WS] Failed to load strategies:', e);
+                // Fallback to HTTP if WebSocket fails
+                const response = await fetch('/api/db/strategies');
+                return await response.json();
+            }
+        }
+
+        async function loadEliteViaWs() {
+            try {
+                const response = await wsRequest('get_elite');
+                cachedEliteData = response;
+                return response;
+            } catch (e) {
+                console.error('[WS] Failed to load elite data:', e);
+                // Fallback to HTTP
+                const [statusRes, strategiesRes] = await Promise.all([
+                    fetch('/api/elite/status'),
+                    fetch('/api/elite/strategies')
+                ]);
+                return {
+                    status: await statusRes.json(),
+                    strategies: await strategiesRes.json()
+                };
+            }
+        }
+
+        async function loadQueueViaWs() {
+            try {
+                const response = await wsRequest('get_queue');
+                cachedQueueData = response.data;
+                return response.data;
+            } catch (e) {
+                console.error('[WS] Failed to load queue:', e);
+                const response = await fetch('/api/autonomous/queue');
+                return await response.json();
+            }
+        }
+
+        async function loadPriorityViaWs() {
+            try {
+                const response = await wsRequest('get_priority');
+                cachedPriorityData = response.data;
+                return response.data;
+            } catch (e) {
+                console.error('[WS] Failed to load priority:', e);
+                const response = await fetch('/api/priority/lists');
+                return await response.json();
+            }
+        }
+
+        async function loadDbStatsViaWs() {
+            try {
+                const response = await wsRequest('get_db_stats');
+                return response.data;
+            } catch (e) {
+                console.error('[WS] Failed to load db stats:', e);
+                return { total_strategies: 0, unique_symbols: 0, unique_timeframes: 0, elite_count: 0 };
+            }
+        }
+
         // Tab Navigation
         function showTab(tabName) {
             // Hide all tab contents
@@ -3126,8 +3252,8 @@
 
         async function loadPriorityLists() {
             try {
-                const response = await fetch('/api/priority/lists');
-                const data = await response.json();
+                // Load via WebSocket (much faster than HTTP)
+                const data = await loadPriorityViaWs();
 
                 priorityPairs = data.pairs || [];
                 priorityPeriods = data.periods || [];
@@ -3311,26 +3437,24 @@
         async function initHistoryTab() {
             historyInitialized = true;
             try {
-                // Fetch filter options AND strategies in PARALLEL (faster load)
-                const [optionsResponse, strategiesResponse] = await Promise.all([
-                    fetch('/api/db/filter-options'),
-                    fetch('/api/db/strategies?limit=20')
-                ]);
+                // Load strategies via WebSocket (much faster than HTTP polling)
+                historyStrategies = await loadStrategiesViaWs();
 
-                const options = await optionsResponse.json();
-                historyStrategies = await strategiesResponse.json();
+                // Extract filter options from strategies
+                const symbols = [...new Set(historyStrategies.map(s => s.symbol).filter(Boolean))].sort();
+                const timeframes = [...new Set(historyStrategies.map(s => s.timeframe).filter(Boolean))].sort();
 
                 // Populate symbol dropdown
                 const symbolSelect = document.getElementById('filter-symbol');
                 symbolSelect.innerHTML = '<option value="">All Pairs</option>';
-                options.symbols.forEach(symbol => {
+                symbols.forEach(symbol => {
                     symbolSelect.innerHTML += `<option value="${symbol}">${symbol}</option>`;
                 });
 
                 // Populate timeframe dropdown
                 const timeframeSelect = document.getElementById('filter-timeframe');
                 timeframeSelect.innerHTML = '<option value="">All Timeframes</option>';
-                options.timeframes.forEach(tf => {
+                timeframes.forEach(tf => {
                     timeframeSelect.innerHTML += `<option value="${tf}">${tf}</option>`;
                 });
 
@@ -6524,8 +6648,7 @@
             // Initialize sort indicators
             updateEliteSortIndicators();
             await loadEliteData();
-            // Start continuous polling since validation runs automatically
-            startElitePolling();
+            // WebSocket provides real-time updates, no polling needed
         }
 
         // Track expanded elite group to preserve state on re-render
@@ -6533,13 +6656,10 @@
 
         async function loadEliteData() {
             try {
-                const [statusRes, strategiesRes] = await Promise.all([
-                    fetch('/api/elite/status'),
-                    fetch('/api/elite/strategies')
-                ]);
-
-                const status = await statusRes.json();
-                const strategies = await strategiesRes.json();
+                // Load via WebSocket (much faster than HTTP)
+                const response = await loadEliteViaWs();
+                const status = response.status;
+                const strategies = response.strategies;
 
                 // Update status counts
                 document.getElementById('eliteCount').textContent = status.elite;
@@ -6579,14 +6699,16 @@
         }
 
         function startElitePolling() {
-            // Poll every 2 seconds for responsive updates
-            setInterval(async () => {
-                // Only poll if elite tab is visible
-                const eliteTab = document.getElementById('elite-tab');
-                if (eliteTab && eliteTab.style.display !== 'none') {
-                    await loadEliteData();
-                }
-            }, 2000);
+            // DEPRECATED: WebSocket provides real-time updates
+            // Kept for fallback compatibility
+            if (!wsConnected) {
+                setInterval(async () => {
+                    const eliteTab = document.getElementById('elite-tab');
+                    if (eliteTab && eliteTab.style.display !== 'none') {
+                        await loadEliteData();
+                    }
+                }, 5000);
+            }
         }
 
         async function renderEliteTable(eliteStrategies, status) {
@@ -7023,8 +7145,8 @@
         // Render task queue
         async function renderTaskQueue() {
             try {
-                const response = await fetch('/api/autonomous/queue');
-                const queue = await response.json();
+                // Load via WebSocket (much faster than HTTP)
+                const queue = await loadQueueViaWs();
 
                 const queueBody = document.getElementById('taskQueueBody');
                 if (!queueBody) return;

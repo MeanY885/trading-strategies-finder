@@ -685,7 +685,15 @@ async def websocket_status(websocket: WebSocket):
                 # Handle ping/pong for keepalive
                 if message == "ping":
                     await websocket.send_text("pong")
-                # Could handle other client messages here (subscriptions, etc.)
+                    continue
+
+                # Try to parse as JSON request
+                try:
+                    request = json.loads(message)
+                    await handle_ws_request(websocket, request)
+                except json.JSONDecodeError:
+                    pass  # Not JSON, ignore
+
             except asyncio.TimeoutError:
                 # Send heartbeat to keep connection alive
                 try:
@@ -698,6 +706,147 @@ async def websocket_status(websocket: WebSocket):
         log(f"[WebSocket] Connection error: {e}", level='WARNING')
     finally:
         await ws_manager.disconnect(websocket)
+
+
+async def handle_ws_request(websocket: WebSocket, request: dict):
+    """Handle data requests from WebSocket clients"""
+    request_type = request.get("type")
+    request_id = request.get("id")  # Optional request ID for matching responses
+
+    try:
+        if request_type == "get_strategies":
+            # Get strategy history
+            db = get_strategy_db()
+            strategies = db.get_all_strategies()
+            await websocket.send_json({
+                "type": "strategies_data",
+                "id": request_id,
+                "data": strategies
+            })
+
+        elif request_type == "get_elite":
+            # Get elite strategies and status
+            db = get_strategy_db()
+            strategies = db.get_all_strategies()
+
+            # Calculate counts
+            elite_count = sum(1 for s in strategies if s.get('elite_status') == 'elite')
+            partial_count = sum(1 for s in strategies if s.get('elite_status') == 'partial')
+            failed_count = sum(1 for s in strategies if s.get('elite_status') == 'failed')
+            pending_count = sum(1 for s in strategies if s.get('elite_status') in [None, 'pending'])
+
+            # Get validated strategies (those with elite_status set)
+            elite_strategies = [s for s in strategies if s.get('elite_status') and s.get('elite_status') != 'pending']
+
+            await websocket.send_json({
+                "type": "elite_data",
+                "id": request_id,
+                "status": {
+                    "total": len(strategies),
+                    "elite": elite_count,
+                    "partial": partial_count,
+                    "failed": failed_count,
+                    "pending": pending_count,
+                    "validation_running": elite_validation_status["running"],
+                    "validation_paused": elite_validation_status["paused"],
+                    "validation_processed": elite_validation_status["processed"],
+                    "validation_total": elite_validation_status["total"],
+                    "validation_message": elite_validation_status["message"],
+                },
+                "strategies": elite_strategies
+            })
+
+        elif request_type == "get_queue":
+            # Get autonomous optimizer queue
+            queue_data = get_autonomous_queue_data()
+            await websocket.send_json({
+                "type": "queue_data",
+                "id": request_id,
+                "data": queue_data
+            })
+
+        elif request_type == "get_priority":
+            # Get priority lists
+            if HAS_DATABASE:
+                db = get_strategy_db()
+                priority_data = {
+                    "pairs": db.get_priority_pairs(),
+                    "periods": db.get_priority_periods(),
+                    "timeframes": db.get_priority_timeframes(),
+                    "granularities": db.get_priority_granularities()
+                }
+            else:
+                priority_data = {"pairs": [], "periods": [], "timeframes": [], "granularities": []}
+
+            await websocket.send_json({
+                "type": "priority_data",
+                "id": request_id,
+                "data": priority_data
+            })
+
+        elif request_type == "get_db_stats":
+            # Get database stats for Tools page
+            if HAS_DATABASE:
+                db = get_strategy_db()
+                strategies = db.get_all_strategies()
+                stats = {
+                    "total_strategies": len(strategies),
+                    "unique_symbols": len(set(s.get('symbol', '') for s in strategies)),
+                    "unique_timeframes": len(set(s.get('timeframe', '') for s in strategies)),
+                    "elite_count": sum(1 for s in strategies if s.get('elite_status') == 'elite'),
+                }
+            else:
+                stats = {"total_strategies": 0, "unique_symbols": 0, "unique_timeframes": 0, "elite_count": 0}
+
+            await websocket.send_json({
+                "type": "db_stats",
+                "id": request_id,
+                "data": stats
+            })
+
+        else:
+            await websocket.send_json({
+                "type": "error",
+                "id": request_id,
+                "message": f"Unknown request type: {request_type}"
+            })
+
+    except Exception as e:
+        log(f"[WebSocket] Request error: {e}", level='ERROR')
+        await websocket.send_json({
+            "type": "error",
+            "id": request_id,
+            "message": str(e)
+        })
+
+
+def get_autonomous_queue_data():
+    """Get autonomous queue data for WebSocket response"""
+    global autonomous_optimizer_status
+
+    # Get completed, running, and pending from status
+    completed = autonomous_optimizer_status.get("queue_completed", [])[-10:]  # Last 10
+    running = autonomous_optimizer_status.get("parallel_running", [])
+    pending_count = autonomous_optimizer_status.get("total_combinations", 0) - autonomous_optimizer_status.get("cycle_index", 0)
+
+    # Get pending items from combinations list
+    combinations = autonomous_optimizer_status.get("combinations_list", [])
+    cycle_index = autonomous_optimizer_status.get("cycle_index", 0)
+    pending = combinations[cycle_index:cycle_index + 5] if combinations else []
+
+    return {
+        "total": autonomous_optimizer_status.get("total_combinations", 0),
+        "completed": completed,
+        "running": running,
+        "pending": pending,
+        "pending_remaining": max(0, pending_count - len(pending)),
+        "parallel_count": len(running),
+        "max_parallel": autonomous_optimizer_status.get("max_parallel", 1),
+        "cycle_index": cycle_index,
+        "trial_current": autonomous_optimizer_status.get("trial_current", 0),
+        "trial_total": autonomous_optimizer_status.get("trial_total", 0),
+        "current_strategy": autonomous_optimizer_status.get("current_strategy", "")
+    }
 
 
 @app.get("/api/system")
