@@ -487,7 +487,6 @@ async def run_single_optimization(
 
     async def update_progress():
         import re
-        logged_sample = False
 
         while temp_status["running"]:
             if not app_state.is_autonomous_enabled():
@@ -497,41 +496,29 @@ async def run_single_optimization(
             mapped_progress = 15 + int(inner_progress * 0.8)
             app_state.update_autonomous_status(progress=mapped_progress)
 
-            # Try to parse trial progress from message
+            # Parse progress from message - format: "[Parallel] 49,400/79,200 (42.0%) | Found: 150"
             msg = temp_status.get("message", "")
-
-            # Log the raw message once to see format
-            if msg and not logged_sample:
-                log(f"[Progress] {pair} raw message: {msg[:100]}")
-                logged_sample = True
-
             current_trial = 0
-            total_trials = granularity["n_trials"]
+            total_trials = 0
 
-            # Try multiple regex patterns for different message formats
-            # Pattern 1: "| 500 / 10,000 ("
-            match = re.search(r'\|\s*([\d,]+)\s*/\s*([\d,]+)\s*\(', msg)
-            # Pattern 2: "500/10000" or "500 / 10,000"
-            if not match:
-                match = re.search(r'([\d,]+)\s*/\s*([\d,]+)', msg)
-            # Pattern 3: "Trial 500 of 10000"
-            if not match:
-                match = re.search(r'[Tt]rial\s*([\d,]+)\s*(?:of|/)\s*([\d,]+)', msg)
-
+            # Match the actual format from strategy_engine.py
+            match = re.search(r'\[Parallel\]\s*([\d,]+)\s*/\s*([\d,]+)', msg)
             if match:
                 current_trial = int(match.group(1).replace(',', ''))
                 total_trials = int(match.group(2).replace(',', ''))
 
-            # Always update status based on progress, even if can't parse message
+            # Calculate progress percentage
             progress_pct = int(inner_progress) if inner_progress else 0
-            if current_trial > 0:
-                progress_pct = int((current_trial / total_trials) * 100) if total_trials > 0 else progress_pct
+            if current_trial > 0 and total_trials > 0:
+                progress_pct = int((current_trial / total_trials) * 100)
 
-            status_msg = f"Optimizing {pair}..."
-            if current_trial > 0:
+            # Build status message
+            if current_trial > 0 and total_trials > 0:
                 status_msg = f"{pair} - {current_trial:,}/{total_trials:,}"
             elif progress_pct > 0:
                 status_msg = f"Optimizing {pair} ({progress_pct}%)"
+            else:
+                status_msg = f"Optimizing {pair}..."
 
             app_state.update_autonomous_status(
                 trial_current=current_trial,
@@ -540,7 +527,7 @@ async def run_single_optimization(
             )
             await update_parallel_status(status_msg, progress_pct)
 
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.3)
 
     loop = asyncio.get_event_loop()
     progress_task = asyncio.create_task(update_progress())
