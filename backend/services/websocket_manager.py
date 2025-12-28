@@ -116,13 +116,19 @@ class WebSocketManager:
         Uses stored main event loop for reliable cross-thread communication.
         """
         try:
+            # Check if we have clients to broadcast to
+            if not self.active_connections:
+                return  # No clients connected
+
             # Use stored main loop (set during startup)
             if self._main_loop and self._main_loop.is_running():
-                asyncio.run_coroutine_threadsafe(
+                future = asyncio.run_coroutine_threadsafe(
                     self.broadcast(message_type, data),
                     self._main_loop
                 )
+                # Don't block waiting for result, just fire and forget
             else:
+                logger.warning(f"[WebSocket] No main loop available for broadcast: {message_type}")
                 # Fallback: try to get current loop
                 try:
                     loop = asyncio.get_running_loop()
@@ -172,6 +178,12 @@ def broadcast_autonomous_status(autonomous_status: Dict, queue_data: Optional[Di
     payload = {"autonomous": autonomous_status}
     if queue_data:
         payload["queue"] = queue_data
+
+    # Debug: log broadcast attempt
+    client_count = ws_manager.client_count
+    if client_count > 0:
+        logger.info(f"[WebSocket] Broadcasting autonomous_status to {client_count} clients")
+
     ws_manager.broadcast_sync("autonomous_status", payload)
 
 
