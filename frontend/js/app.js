@@ -3586,6 +3586,12 @@
         async function pollStatus() {
             if (!pollingActive) return;
 
+            // Skip HTTP polling if WebSocket is connected - we get push updates
+            if (wsConnected) {
+                stopPolling();
+                return;
+            }
+
             try {
                 const response = await fetch('/api/status');
                 const data = await response.json();
@@ -4452,8 +4458,14 @@
 
         async function initAutonomousTab() {
             autonomousInitialized = true;
-            updateAutonomousStatus();
-            startAutonomousPolling();
+            // Don't start polling - WebSocket will push updates
+            // Only fall back to polling after 5 seconds if WebSocket still not connected
+            setTimeout(() => {
+                if (!wsConnected) {
+                    console.warn('[Autonomous] WebSocket not connected after 5s, starting fallback polling');
+                    startAutonomousPolling();
+                }
+            }, 5000);
         }
 
         async function toggleAutonomousOptimizer() {
