@@ -2738,11 +2738,16 @@
                 };
 
                 wsConnection.onmessage = function(event) {
+                    // Handle plain text responses (like "pong")
+                    if (event.data === 'pong') {
+                        return; // Keepalive response, ignore
+                    }
+
                     try {
                         const message = JSON.parse(event.data);
                         handleWebSocketMessage(message);
                     } catch (e) {
-                        console.error('[WebSocket] Error parsing message:', e);
+                        console.error('[WebSocket] Error parsing message:', e, event.data);
                     }
                 };
 
