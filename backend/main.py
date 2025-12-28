@@ -34,7 +34,7 @@ from logging_config import log, UVICORN_LOG_CONFIG
 from strategy_database import get_strategy_db
 
 # Services
-from services.websocket_manager import ws_manager, broadcast_full_state
+from services.websocket_manager import ws_manager, broadcast_full_state, serialize_for_json
 from services.resource_monitor import resource_monitor
 from services.cache import (
     strategies_cache, counts_cache, stats_cache, priority_cache,
@@ -208,7 +208,8 @@ async def websocket_status(websocket: WebSocket):
     # Send initial full state
     try:
         full_state = app_state.get_full_state()
-        await websocket.send_json({"type": "full_state", **full_state})
+        # Serialize to handle datetime objects
+        await websocket.send_json(serialize_for_json({"type": "full_state", **full_state}))
     except Exception as e:
         log(f"[WebSocket] Error sending initial state: {e}", level='WARNING')
 
@@ -231,7 +232,7 @@ async def websocket_status(websocket: WebSocket):
 
                     if msg_type == "get_state":
                         full_state = app_state.get_full_state()
-                        await websocket.send_json({"type": "full_state", **full_state})
+                        await websocket.send_json(serialize_for_json({"type": "full_state", **full_state}))
 
                     elif msg_type == "get_strategies":
                         # Get strategy history - cached with pagination
@@ -246,11 +247,11 @@ async def websocket_status(websocket: WebSocket):
                             return result['strategies']
 
                         strategies = await loop.run_in_executor(thread_pool, fetch_strategies)
-                        await websocket.send_json({
+                        await websocket.send_json(serialize_for_json({
                             "type": "strategies_data",
                             "id": request_id,
                             "data": strategies
-                        })
+                        }))
 
                     elif msg_type == "get_elite":
                         # Get elite strategies and status - cached and optimized
@@ -283,11 +284,11 @@ async def websocket_status(websocket: WebSocket):
                             }
 
                         elite_data = await loop.run_in_executor(thread_pool, fetch_elite_data)
-                        await websocket.send_json({
+                        await websocket.send_json(serialize_for_json({
                             "type": "elite_data",
                             "id": request_id,
                             **elite_data
-                        })
+                        }))
 
                     elif msg_type == "get_priority":
                         # Get priority lists - cached and properly formatted
@@ -324,11 +325,11 @@ async def websocket_status(websocket: WebSocket):
                             return data
 
                         priority_data = await loop.run_in_executor(thread_pool, fetch_priority_data)
-                        await websocket.send_json({
+                        await websocket.send_json(serialize_for_json({
                             "type": "priority_data",
                             "id": request_id,
                             "data": priority_data
-                        })
+                        }))
 
                     elif msg_type == "get_db_stats":
                         # Get database stats for Tools page - cached and optimized
@@ -343,11 +344,11 @@ async def websocket_status(websocket: WebSocket):
                             return data
 
                         db_stats = await loop.run_in_executor(thread_pool, fetch_db_stats)
-                        await websocket.send_json({
+                        await websocket.send_json(serialize_for_json({
                             "type": "db_stats_data",
                             "id": request_id,
                             "data": db_stats
-                        })
+                        }))
 
                     elif msg_type == "get_queue":
                         status = app_state.get_autonomous_status()
@@ -374,7 +375,7 @@ async def websocket_status(websocket: WebSocket):
                                     break
 
                         parallel_running = status.get("parallel_running", [])
-                        await websocket.send_json({
+                        await websocket.send_json(serialize_for_json({
                             "type": "queue_data",
                             "id": request.get("id"),
                             "data": {
@@ -387,7 +388,7 @@ async def websocket_status(websocket: WebSocket):
                                 "parallel_count": len(parallel_running),
                                 "max_parallel": status.get("max_parallel", 4),
                             }
-                        })
+                        }))
 
                 except json.JSONDecodeError:
                     pass  # Ignore non-JSON messages
@@ -397,11 +398,11 @@ async def websocket_status(websocket: WebSocket):
                     import traceback
                     traceback.print_exc()
                     try:
-                        await websocket.send_json({
+                        await websocket.send_json(serialize_for_json({
                             "type": "error",
                             "id": locals().get('request_id'),
                             "error": str(e)
-                        })
+                        }))
                     except Exception:
                         pass  # Connection may already be broken
 

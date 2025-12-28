@@ -1087,16 +1087,17 @@ class StrategyDatabase:
         pairs_count = cursor.fetchone()['count']
         populated = pairs_count > 0
 
-        cursor.execute('SELECT * FROM priority_pairs ORDER BY position ASC')
+        # Select only needed columns (exclude created_at which isn't JSON serializable)
+        cursor.execute('SELECT id, position, value, label, enabled FROM priority_pairs ORDER BY position ASC')
         pairs = [dict(row) for row in cursor.fetchall()]
 
-        cursor.execute('SELECT * FROM priority_periods ORDER BY position ASC')
+        cursor.execute('SELECT id, position, value, label, months, enabled FROM priority_periods ORDER BY position ASC')
         periods = [dict(row) for row in cursor.fetchall()]
 
-        cursor.execute('SELECT * FROM priority_timeframes ORDER BY position ASC')
+        cursor.execute('SELECT id, position, value, label, minutes, enabled FROM priority_timeframes ORDER BY position ASC')
         timeframes = [dict(row) for row in cursor.fetchall()]
 
-        cursor.execute('SELECT * FROM priority_granularities ORDER BY position ASC')
+        cursor.execute('SELECT id, position, value, label, n_trials, enabled FROM priority_granularities ORDER BY position ASC')
         granularities = [dict(row) for row in cursor.fetchall()]
 
         conn.close()

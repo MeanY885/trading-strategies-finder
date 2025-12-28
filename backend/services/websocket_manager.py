@@ -6,11 +6,31 @@ Extracted from main.py for better modularity.
 """
 import asyncio
 import json
+from datetime import datetime, date
 from typing import List, Dict, Any, Optional
 from fastapi import WebSocket
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+class DateTimeEncoder(json.JSONEncoder):
+    """Custom JSON encoder that handles datetime objects."""
+    def default(self, obj):
+        if isinstance(obj, (datetime, date)):
+            return obj.isoformat()
+        return super().default(obj)
+
+
+def serialize_for_json(data: Any) -> Any:
+    """Recursively serialize data, converting datetime objects to ISO strings."""
+    if isinstance(data, dict):
+        return {k: serialize_for_json(v) for k, v in data.items()}
+    elif isinstance(data, list):
+        return [serialize_for_json(item) for item in data]
+    elif isinstance(data, (datetime, date)):
+        return data.isoformat()
+    return data
 
 
 class WebSocketManager:
@@ -69,7 +89,8 @@ class WebSocketManager:
         if not self.active_connections:
             return
 
-        message = {"type": message_type, **data}
+        # Serialize data to handle datetime objects
+        message = serialize_for_json({"type": message_type, **data})
 
         async with self._lock:
             connections_copy = list(self.active_connections)
@@ -79,7 +100,7 @@ class WebSocketManager:
             try:
                 await connection.send_json(message)
             except Exception as e:
-                logger.warning(f"[WebSocket] Error broadcasting to client: {e}")
+                logger.warning(f"[WebSocket] Error broadcasting {message_type} to client: {e}")
                 disconnected.append(connection)
 
         # Clean up disconnected clients
