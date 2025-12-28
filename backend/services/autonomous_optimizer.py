@@ -402,6 +402,7 @@ async def run_single_optimization(
     Returns: "completed", "skipped", or "error"
     """
     global current_optimization_status, running_optimizations
+    from services.websocket_manager import ws_manager, _get_queue_data_from_status
 
     source = combo["source"]
     pair = combo["pair"]
@@ -410,6 +411,8 @@ async def run_single_optimization(
     granularity = combo["granularity"]
 
     status = app_state.get_autonomous_status()
+
+    last_broadcast_time = [0]  # Use list to allow mutation in nested function
 
     async def update_parallel_status(message: str, progress: int = None):
         if combo_id and combo_id in running_optimizations:
@@ -421,6 +424,17 @@ async def run_single_optimization(
                     app_state.update_autonomous_status(
                         parallel_running=list(running_optimizations.values())
                     )
+
+            # Broadcast to WebSocket (throttled to every 0.5s to avoid flooding)
+            import time
+            now = time.time()
+            if now - last_broadcast_time[0] >= 0.5:
+                last_broadcast_time[0] = now
+                status = app_state.get_autonomous_status()
+                await ws_manager.broadcast("autonomous_status", {
+                    "autonomous": status,
+                    "queue": _get_queue_data_from_status(status)
+                })
 
     # Fetch data (with caching)
     from data_fetcher import BinanceDataFetcher
