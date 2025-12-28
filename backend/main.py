@@ -3311,40 +3311,40 @@ async def clear_priority():
 
 @app.get("/api/priority/lists")
 async def get_priority_lists():
-    """Get all three priority lists and settings."""
+    """Get all three priority lists and settings - optimized single DB call."""
     if not HAS_DATABASE:
         raise HTTPException(status_code=503, detail="Database not available")
 
     db = get_strategy_db()
     config = AUTONOMOUS_CONFIG
 
+    # Get all lists in one optimized call
+    data = db.get_all_priority_lists()
+
     # Check if lists are populated, if not populate with defaults
-    if not db.has_priority_lists_populated():
+    if not data['populated']:
         db.reset_priority_pairs(config["pairs"].get("binance", []))
         db.reset_priority_periods(config["periods"])
         db.reset_priority_timeframes(config["timeframes"])
         db.reset_priority_granularities(config["granularities"])
-
-    pairs = db.get_priority_pairs()
-    periods = db.get_priority_periods()
-    timeframes = db.get_priority_timeframes()
-    granularities = db.get_priority_granularities()
+        # Re-fetch after populating
+        data = db.get_all_priority_lists()
 
     # Convert enabled to bool
-    for p in pairs:
+    for p in data['pairs']:
         p['enabled'] = bool(p['enabled'])
-    for p in periods:
+    for p in data['periods']:
         p['enabled'] = bool(p['enabled'])
-    for t in timeframes:
+    for t in data['timeframes']:
         t['enabled'] = bool(t['enabled'])
-    for g in granularities:
+    for g in data['granularities']:
         g['enabled'] = bool(g['enabled'])
 
     return {
-        "pairs": pairs,
-        "periods": periods,
-        "timeframes": timeframes,
-        "granularities": granularities
+        "pairs": data['pairs'],
+        "periods": data['periods'],
+        "timeframes": data['timeframes'],
+        "granularities": data['granularities']
     }
 
 

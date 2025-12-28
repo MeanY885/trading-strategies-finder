@@ -1168,6 +1168,44 @@ class StrategyDatabase:
     # NEW 3-LIST PRIORITY SYSTEM
     # =========================================================================
 
+    def get_all_priority_lists(self) -> Dict:
+        """
+        Get all priority lists in a single database connection.
+        Much faster than calling each method separately.
+        Returns dict with 'pairs', 'periods', 'timeframes', 'granularities', and 'populated'.
+        """
+        conn = self._get_connection()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        # Check if populated
+        cursor.execute('SELECT COUNT(*) FROM priority_pairs')
+        pairs_count = cursor.fetchone()[0]
+        populated = pairs_count > 0
+
+        # Fetch all lists in single connection
+        cursor.execute('SELECT * FROM priority_pairs ORDER BY position ASC')
+        pairs = [dict(row) for row in cursor.fetchall()]
+
+        cursor.execute('SELECT * FROM priority_periods ORDER BY position ASC')
+        periods = [dict(row) for row in cursor.fetchall()]
+
+        cursor.execute('SELECT * FROM priority_timeframes ORDER BY position ASC')
+        timeframes = [dict(row) for row in cursor.fetchall()]
+
+        cursor.execute('SELECT * FROM priority_granularities ORDER BY position ASC')
+        granularities = [dict(row) for row in cursor.fetchall()]
+
+        conn.close()
+
+        return {
+            'pairs': pairs,
+            'periods': periods,
+            'timeframes': timeframes,
+            'granularities': granularities,
+            'populated': populated
+        }
+
     def get_priority_pairs(self) -> List[Dict]:
         """Get all trading pairs ordered by position."""
         conn = self._get_connection()
