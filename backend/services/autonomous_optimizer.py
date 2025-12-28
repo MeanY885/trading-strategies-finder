@@ -834,13 +834,17 @@ async def start_autonomous_optimizer(thread_pool):
                 "queue": _get_queue_data_from_status(status)
             })
 
+            log("[Parallel Optimizer] Sleeping 0.5s...")
             await asyncio.sleep(0.5)
+            log("[Parallel Optimizer] Woke up, continuing loop")
 
         except Exception as e:
             import traceback
             log(f"[Parallel Optimizer] Loop error: {e}", level='ERROR')
             traceback.print_exc()
             await asyncio.sleep(5)
+
+    log(f"[Parallel Optimizer] Exited loop! auto_running={app_state.is_autonomous_running()}, enabled={app_state.is_autonomous_enabled()}")
 
     # Cleanup
     if active_tasks:
