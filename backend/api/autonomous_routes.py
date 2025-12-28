@@ -37,28 +37,20 @@ async def toggle_autonomous():
     from logging_config import log
 
     status = app_state.get_autonomous_status()
-    currently_enabled = status.get("enabled", False)
+    currently_running = status.get("auto_running", False) or status.get("enabled", False)
 
-    if currently_enabled:
-        # Disable
-        app_state.update_autonomous_status(
-            enabled=False,
-            auto_running=False,
-            running=False,
-            paused=False,
-            message="Stopped"
-        )
+    if currently_running:
+        # Disable - use the proper stop function
+        from services.autonomous_optimizer import stop_autonomous_optimizer
+        await stop_autonomous_optimizer()
+
+        # Also clear any running optimization tracking
+        app_state.clear_running_optimizations()
 
         # Clear unified status so Elite validation can run immediately
         app_state.update_unified_status(running=False)
 
-        # Signal any running optimization to abort
-        current = app_state.get_current_optimization()
-        if current:
-            current["abort"] = True
-            log("[Autonomous Optimizer] Abort signal sent to running optimization", level='WARNING')
-
-        broadcast_autonomous_status(app_state.get_autonomous_status())
+        log("[Autonomous Optimizer] Stopped via toggle")
         return {"status": "disabled", "message": "Autonomous optimizer stopped"}
     else:
         # Enable

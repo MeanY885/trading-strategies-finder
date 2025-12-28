@@ -790,6 +790,8 @@ async def start_autonomous_optimizer(thread_pool):
 
 async def stop_autonomous_optimizer():
     """Stop the autonomous optimizer."""
+    global running_optimizations
+
     app_state.update_autonomous_status(
         enabled=False,
         auto_running=False,
@@ -801,6 +803,19 @@ async def stop_autonomous_optimizer():
     # Signal current optimization to abort
     if current_optimization_status:
         current_optimization_status["abort"] = True
+
+    # Signal all running optimizations to abort
+    with running_optimizations_lock:
+        for combo_id, status in running_optimizations.items():
+            status["abort"] = True
+        running_optimizations.clear()
+
+    # Clear app state tracking
+    app_state.clear_running_optimizations()
+    app_state.update_autonomous_status(
+        parallel_running=[],
+        parallel_count=0
+    )
 
     from services.websocket_manager import broadcast_autonomous_status
     broadcast_autonomous_status(app_state.get_autonomous_status())
