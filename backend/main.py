@@ -387,6 +387,19 @@ async def websocket_status(websocket: WebSocket):
 
                 except json.JSONDecodeError:
                     pass  # Ignore non-JSON messages
+                except Exception as e:
+                    # Send error response instead of crashing the connection
+                    log(f"[WebSocket] Request handler error: {e}", level='WARNING')
+                    import traceback
+                    traceback.print_exc()
+                    try:
+                        await websocket.send_json({
+                            "type": "error",
+                            "id": locals().get('request_id'),
+                            "error": str(e)
+                        })
+                    except Exception:
+                        pass  # Connection may already be broken
 
             except asyncio.TimeoutError:
                 # Send keepalive ping
