@@ -133,6 +133,11 @@ autonomous_optimizer_status = {
 
     # Skipped validations log (for UI investigation)
     "skipped_validations": [],   # List of skipped combos with reasons
+
+    # Queue tracking for UI
+    "queue_completed": [],       # List of completed combos with results (last 10)
+    "queue_current": None,       # Current in-progress combo details
+    "combinations_list": [],     # Full list of combinations for queue display
 }
 
 # History of autonomous optimizer runs (kept in memory, most recent first)
@@ -2740,6 +2745,43 @@ async def get_autonomous_history(limit: int = 50):
     }
 
 
+@app.get("/api/autonomous/queue")
+async def get_autonomous_queue():
+    """Get queue state for UI task list display"""
+    cycle_index = autonomous_optimizer_status.get("cycle_index", 0)
+    combinations = autonomous_optimizer_status.get("combinations_list", [])
+    total = len(combinations)
+
+    # Get pending items (next 5 after current)
+    pending_start = cycle_index + 1
+    pending_items = []
+    for i in range(pending_start, min(pending_start + 5, total)):
+        if i < total:
+            combo = combinations[i]
+            pending_items.append({
+                "index": i,
+                "pair": combo["pair"],
+                "period": combo["period"],
+                "timeframe": combo["timeframe"],
+                "granularity": combo["granularity"],
+                "status": "pending"
+            })
+
+    return {
+        "completed": autonomous_optimizer_status.get("queue_completed", []),
+        "current": autonomous_optimizer_status.get("queue_current"),
+        "pending": pending_items,
+        "pending_remaining": max(0, total - pending_start - len(pending_items)),
+        "total": total,
+        "cycle_index": cycle_index,
+        # Current progress info
+        "trial_current": autonomous_optimizer_status.get("trial_current", 0),
+        "trial_total": autonomous_optimizer_status.get("trial_total", 0),
+        "current_strategy": autonomous_optimizer_status.get("current_strategy"),
+        "message": autonomous_optimizer_status.get("message", ""),
+    }
+
+
 # =============================================================================
 # PRIORITY QUEUE ENDPOINTS
 # =============================================================================
@@ -4264,6 +4306,21 @@ async def start_autonomous_optimizer():
     combinations = build_optimization_combinations()
     autonomous_optimizer_status["total_combinations"] = len(combinations)
 
+    # Store combinations for queue display (simplified format)
+    autonomous_optimizer_status["combinations_list"] = [
+        {
+            "pair": c["pair"],
+            "period": c["period"]["label"],
+            "timeframe": c["timeframe"]["label"],
+            "granularity": c["granularity"]["label"],
+        }
+        for c in combinations
+    ]
+
+    # Reset queue tracking
+    autonomous_optimizer_status["queue_completed"] = []
+    autonomous_optimizer_status["queue_current"] = None
+
     # Smart resume: Find first un-optimized combination
     db = get_strategy_db()
     start_index = find_resume_index(combinations, db)
@@ -4334,6 +4391,17 @@ async def start_autonomous_optimizer():
             autonomous_optimizer_status["current_granularity"] = combo["granularity"]["label"]
             autonomous_optimizer_status["running"] = True
 
+            # Track current combo in queue
+            autonomous_optimizer_status["queue_current"] = {
+                "index": autonomous_optimizer_status["cycle_index"],
+                "pair": combo["pair"],
+                "period": combo["period"]["label"],
+                "timeframe": combo["timeframe"]["label"],
+                "granularity": combo["granularity"]["label"],
+                "status": "in_progress",
+                "started_at": datetime.now().isoformat(),
+            }
+
             # Set unified_status to signal we're running (for Elite validation interleaving)
             unified_status["running"] = True
             autonomous_optimizer_status["message"] = f"Optimizing {combo['pair']} {combo['timeframe']['label']} ({combo['period']['label']})..."
@@ -4344,25 +4412,55 @@ async def start_autonomous_optimizer():
             # Run the optimization
             try:
                 result = await run_autonomous_optimization(combo)
+
+                # Build completed item for queue
+                completed_item = {
+                    "index": autonomous_optimizer_status["cycle_index"],
+                    "pair": combo["pair"],
+                    "period": combo["period"]["label"],
+                    "timeframe": combo["timeframe"]["label"],
+                    "granularity": combo["granularity"]["label"],
+                    "completed_at": datetime.now().isoformat(),
+                }
+
                 if result == "completed":
                     autonomous_optimizer_status["completed_count"] += 1
                     autonomous_optimizer_status["last_completed_at"] = datetime.now().isoformat()
+                    # Get strategies found from last_result
+                    strategies_found = 0
+                    if autonomous_optimizer_status.get("last_result"):
+                        strategies_found = autonomous_optimizer_status["last_result"].get("strategies_found", 0)
+                    completed_item["status"] = "completed"
+                    completed_item["strategies_found"] = strategies_found
                     print(f"[Autonomous Optimizer] Completed {combo['pair']} - waiting for Elite validation...")
                 elif result == "skipped":
-                    # Already logged and counted in run_autonomous_optimization
+                    completed_item["status"] = "skipped"
+                    completed_item["strategies_found"] = 0
                     print(f"[Autonomous Optimizer] Skipped {combo['pair']} - moving to next combination...")
                 elif result == "aborted":
-                    # User disabled the optimizer
+                    # User disabled the optimizer - don't add to queue
                     print(f"[Autonomous Optimizer] Aborted {combo['pair']} - stopping...")
                     autonomous_optimizer_status["running"] = False
+                    autonomous_optimizer_status["queue_current"] = None
                     unified_status["running"] = False
                     break
                 elif result == "error":
                     autonomous_optimizer_status["error_count"] += 1
+                    completed_item["status"] = "error"
+                    completed_item["strategies_found"] = 0
+
+                # Add to queue_completed (keep last 10)
+                if result != "aborted":
+                    autonomous_optimizer_status["queue_completed"].insert(0, completed_item)
+                    autonomous_optimizer_status["queue_completed"] = autonomous_optimizer_status["queue_completed"][:10]
+
             except Exception as e:
                 print(f"[Autonomous Optimizer] Error: {e}")
                 autonomous_optimizer_status["error_count"] += 1
                 autonomous_optimizer_status["message"] = f"Error: {str(e)}"
+
+            # Clear current queue item
+            autonomous_optimizer_status["queue_current"] = None
 
             # Move to next combination
             autonomous_optimizer_status["cycle_index"] += 1

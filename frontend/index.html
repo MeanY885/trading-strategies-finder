@@ -1047,6 +1047,166 @@
             align-items: center;
         }
 
+        /* Task Queue Styles */
+        .task-queue {
+            background: var(--bg-secondary);
+            border-radius: 8px;
+            overflow: hidden;
+            margin-top: 1rem;
+        }
+
+        .task-queue-header {
+            padding: 0.75rem 1rem;
+            background: var(--bg-hover);
+            font-weight: 600;
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+            border-bottom: 1px solid var(--border-subtle);
+        }
+
+        .task-queue-item {
+            display: grid;
+            grid-template-columns: 30px 100px 80px 50px 50px 1fr;
+            gap: 0.5rem;
+            padding: 0.6rem 1rem;
+            align-items: center;
+            border-bottom: 1px solid var(--border-subtle);
+            font-size: 0.85rem;
+        }
+
+        .task-queue-item:last-child {
+            border-bottom: none;
+        }
+
+        .task-queue-item.completed {
+            background: rgba(34, 197, 94, 0.05);
+        }
+
+        .task-queue-item.in-progress {
+            background: rgba(245, 158, 11, 0.1);
+            border-left: 3px solid #f59e0b;
+        }
+
+        .task-queue-item.pending {
+            color: var(--text-muted);
+        }
+
+        .task-queue-item.skipped {
+            background: rgba(245, 158, 11, 0.05);
+            color: var(--text-muted);
+        }
+
+        .task-queue-item.error {
+            background: rgba(239, 68, 68, 0.05);
+        }
+
+        .task-status-icon {
+            font-size: 1rem;
+            text-align: center;
+        }
+
+        .task-status-icon.completed { color: var(--success); }
+        .task-status-icon.skipped { color: #f59e0b; }
+        .task-status-icon.error { color: var(--danger); }
+        .task-status-icon.pending { color: var(--text-muted); }
+
+        .task-result {
+            font-size: 0.8rem;
+            color: var(--text-muted);
+        }
+
+        .task-result.has-strategies {
+            color: var(--success);
+        }
+
+        /* Spinner animation */
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid rgba(245, 158, 11, 0.3);
+            border-top-color: #f59e0b;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        .task-progress {
+            display: flex;
+            flex-direction: column;
+            gap: 0.25rem;
+        }
+
+        .task-progress-bar {
+            height: 4px;
+            background: var(--bg-hover);
+            border-radius: 2px;
+            overflow: hidden;
+        }
+
+        .task-progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #f59e0b, #ef4444);
+            transition: width 0.3s;
+        }
+
+        .task-progress-text {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+
+        .task-queue-more {
+            padding: 0.5rem 1rem;
+            text-align: center;
+            color: var(--text-muted);
+            font-size: 0.8rem;
+            background: var(--bg-hover);
+        }
+
+        /* Collapsible Section */
+        .collapsible-section {
+            margin-top: 1rem;
+            border: 1px solid var(--border-subtle);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        .collapsible-header {
+            padding: 0.75rem 1rem;
+            background: var(--bg-secondary);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+        }
+
+        .collapsible-header:hover {
+            background: var(--bg-hover);
+        }
+
+        .collapsible-icon {
+            transition: transform 0.2s;
+        }
+
+        .collapsible-section.expanded .collapsible-icon {
+            transform: rotate(180deg);
+        }
+
+        .collapsible-content {
+            display: none;
+            padding: 1rem;
+        }
+
+        .collapsible-section.expanded .collapsible-content {
+            display: block;
+        }
+
         /* Data Validation Styles */
         .data-validation {
             display: flex;
@@ -2189,34 +2349,17 @@
                     </div>
                 </div>
 
-                <!-- Current Optimization Display -->
-                <div id="autonomousCurrentOptimization" style="display: none; margin-top: 1.5rem;">
-                    <h3 style="font-size: 1rem; margin-bottom: 1rem; color: var(--text-secondary);">Currently Optimizing</h3>
-                    <div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 1rem;">
-                        <div class="stat-item">
-                            <div class="stat-label">Source</div>
-                            <div class="stat-value" id="autoCurrentSource" style="font-size: 1rem;">-</div>
-                        </div>
-                        <div class="stat-item">
-                            <div class="stat-label">Pair</div>
-                            <div class="stat-value" id="autoCurrentPair" style="font-size: 1rem;">-</div>
-                        </div>
-                        <div class="stat-item">
-                            <div class="stat-label">Period</div>
-                            <div class="stat-value" id="autoCurrentPeriod" style="font-size: 1rem;">-</div>
-                        </div>
-                        <div class="stat-item">
-                            <div class="stat-label">Timeframe</div>
-                            <div class="stat-value" id="autoCurrentTimeframe" style="font-size: 1rem;">-</div>
-                        </div>
-                        <div class="stat-item">
-                            <div class="stat-label">Granularity</div>
-                            <div class="stat-value" id="autoCurrentGranularity" style="font-size: 1rem;">-</div>
+                <!-- Task Queue -->
+                <div class="task-queue" id="taskQueue">
+                    <div class="task-queue-header">
+                        <span>OPTIMIZATION QUEUE</span>
+                    </div>
+                    <div id="taskQueueBody">
+                        <!-- Populated by JavaScript -->
+                        <div style="padding: 2rem; text-align: center; color: var(--text-muted);">
+                            Enable optimizer to see queue
                         </div>
                     </div>
-
-                    <!-- Data Validation -->
-                    <div id="autoDataValidation" style="margin-top: 1rem; display: none;"></div>
                 </div>
 
                 <!-- Results Summary -->
@@ -2262,57 +2405,57 @@
                     </div>
                 </div>
 
-                <!-- Skipped Validations Log -->
-                <div id="autoSkippedSection" style="display: none; margin-top: 1.5rem;">
-                    <h3 style="font-size: 1rem; margin-bottom: 1rem; color: #f59e0b;">⚠ Skipped - Insufficient Data</h3>
-                    <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 1rem;">
-                        These combinations were skipped because the data source didn't provide enough historical data.
-                        This keeps the database clean by only storing strategies with valid backtests.
-                    </p>
-                    <div style="overflow-x: auto; max-height: 300px; overflow-y: auto;">
-                        <table class="history-table" id="autoSkippedTable">
-                            <thead>
-                                <tr>
-                                    <th>Time</th>
-                                    <th>Source</th>
-                                    <th>Pair</th>
-                                    <th>Period</th>
-                                    <th>Timeframe</th>
-                                    <th>Expected</th>
-                                    <th>Actual</th>
-                                    <th>Coverage</th>
-                                </tr>
-                            </thead>
-                            <tbody id="autoSkippedTableBody">
-                                <!-- Populated by JavaScript -->
-                            </tbody>
-                        </table>
+                <!-- Skipped Validations Log (Collapsible) -->
+                <div id="autoSkippedSection" class="collapsible-section" style="display: none; margin-top: 1rem;">
+                    <div class="collapsible-header" onclick="toggleCollapsible(this.parentElement)">
+                        <span>⚠ Skipped - Insufficient Data (<span id="skippedCountLabel">0</span>)</span>
+                        <span class="collapsible-icon">▼</span>
+                    </div>
+                    <div class="collapsible-content">
+                        <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 1rem;">
+                            Combinations skipped due to insufficient historical data.
+                        </p>
+                        <div style="overflow-x: auto; max-height: 200px; overflow-y: auto;">
+                            <table class="history-table" id="autoSkippedTable">
+                                <thead>
+                                    <tr>
+                                        <th>Time</th>
+                                        <th>Pair</th>
+                                        <th>Period</th>
+                                        <th>Timeframe</th>
+                                        <th>Coverage</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="autoSkippedTableBody"></tbody>
+                            </table>
+                        </div>
                     </div>
                 </div>
 
-                <!-- Optimization History -->
-                <div id="autoHistorySection" style="margin-top: 1.5rem;">
-                    <h3 style="font-size: 1rem; margin-bottom: 1rem; color: var(--text-secondary);">Optimization History</h3>
-                    <div style="overflow-x: auto;">
-                        <table class="history-table" id="autoHistoryTable">
-                            <thead>
-                                <tr>
-                                    <th>Last Updated</th>
-                                    <th>Source</th>
-                                    <th>Pair</th>
-                                    <th>Period</th>
-                                    <th>Timeframe</th>
-                                    <th>Granularity</th>
-                                    <th>Strategies</th>
-                                    <th>Best PnL</th>
-                                </tr>
-                            </thead>
-                            <tbody id="autoHistoryTableBody">
-                                <!-- Populated dynamically -->
-                            </tbody>
-                        </table>
-                        <div id="autoHistoryEmpty" style="text-align: center; padding: 2rem; color: var(--text-secondary);">
-                            No optimization runs yet. Enable the autonomous optimizer to start.
+                <!-- Optimization History (Collapsible) -->
+                <div id="autoHistorySection" class="collapsible-section" style="margin-top: 1rem;">
+                    <div class="collapsible-header" onclick="toggleCollapsible(this.parentElement)">
+                        <span>📜 Optimization History</span>
+                        <span class="collapsible-icon">▼</span>
+                    </div>
+                    <div class="collapsible-content">
+                        <div style="overflow-x: auto; max-height: 250px; overflow-y: auto;">
+                            <table class="history-table" id="autoHistoryTable">
+                                <thead>
+                                    <tr>
+                                        <th>Time</th>
+                                        <th>Pair</th>
+                                        <th>Period</th>
+                                        <th>Timeframe</th>
+                                        <th>Strategies</th>
+                                        <th>Best PnL</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="autoHistoryTableBody"></tbody>
+                            </table>
+                            <div id="autoHistoryEmpty" style="text-align: center; padding: 1rem; color: var(--text-secondary);">
+                                No history yet
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -6530,6 +6673,112 @@
             }
         }
 
+        // Toggle collapsible sections
+        function toggleCollapsible(element) {
+            element.classList.toggle('expanded');
+        }
+
+        // Render task queue
+        async function renderTaskQueue() {
+            try {
+                const response = await fetch('/api/autonomous/queue');
+                const queue = await response.json();
+
+                const queueBody = document.getElementById('taskQueueBody');
+                if (!queueBody) return;
+
+                // If no queue data yet
+                if (queue.total === 0) {
+                    queueBody.innerHTML = `
+                        <div style="padding: 2rem; text-align: center; color: var(--text-muted);">
+                            Enable optimizer to see queue
+                        </div>
+                    `;
+                    return;
+                }
+
+                let html = '';
+
+                // Completed items (most recent first, show up to 3)
+                const completedToShow = queue.completed.slice(0, 3);
+                completedToShow.reverse().forEach(item => {
+                    const statusIcon = item.status === 'completed' ? '✓' : item.status === 'skipped' ? '⏭' : '✗';
+                    const statusClass = item.status;
+                    const resultClass = item.strategies_found > 0 ? 'has-strategies' : '';
+                    const resultText = item.status === 'completed'
+                        ? `${item.strategies_found} strategies`
+                        : item.status === 'skipped' ? 'Skipped' : 'Error';
+
+                    html += `
+                        <div class="task-queue-item ${statusClass}">
+                            <span class="task-status-icon ${statusClass}">${statusIcon}</span>
+                            <span>${item.pair}</span>
+                            <span>${item.period}</span>
+                            <span>${item.timeframe}</span>
+                            <span>${item.granularity}</span>
+                            <span class="task-result ${resultClass}">${resultText}</span>
+                        </div>
+                    `;
+                });
+
+                // Current item (in progress)
+                if (queue.current) {
+                    const progress = queue.trial_total > 0
+                        ? Math.round((queue.trial_current / queue.trial_total) * 100)
+                        : 0;
+                    const strategyName = queue.current_strategy || 'Starting...';
+
+                    html += `
+                        <div class="task-queue-item in-progress">
+                            <span class="task-status-icon"><span class="spinner"></span></span>
+                            <span>${queue.current.pair}</span>
+                            <span>${queue.current.period}</span>
+                            <span>${queue.current.timeframe}</span>
+                            <span>${queue.current.granularity}</span>
+                            <div class="task-progress">
+                                <div class="task-progress-bar">
+                                    <div class="task-progress-fill" style="width: ${progress}%"></div>
+                                </div>
+                                <span class="task-progress-text">${strategyName} - ${queue.trial_current.toLocaleString()}/${queue.trial_total.toLocaleString()}</span>
+                            </div>
+                        </div>
+                    `;
+                }
+
+                // Pending items
+                queue.pending.forEach(item => {
+                    html += `
+                        <div class="task-queue-item pending">
+                            <span class="task-status-icon pending">○</span>
+                            <span>${item.pair}</span>
+                            <span>${item.period}</span>
+                            <span>${item.timeframe}</span>
+                            <span>${item.granularity}</span>
+                            <span class="task-result">Pending</span>
+                        </div>
+                    `;
+                });
+
+                // Show remaining count
+                if (queue.pending_remaining > 0) {
+                    html += `
+                        <div class="task-queue-more">
+                            ... +${queue.pending_remaining} more combinations
+                        </div>
+                    `;
+                }
+
+                queueBody.innerHTML = html || `
+                    <div style="padding: 2rem; text-align: center; color: var(--text-muted);">
+                        Queue empty - all combinations processed
+                    </div>
+                `;
+
+            } catch (error) {
+                console.error('Failed to load queue:', error);
+            }
+        }
+
         async function updateAutonomousStatus() {
             try {
                 const response = await fetch('/api/autonomous/status');
@@ -6577,36 +6826,8 @@
                     progressContainer.style.display = 'none';
                 }
 
-                // Update current optimization with data validation
-                const currentSection = document.getElementById('autonomousCurrentOptimization');
-                if (status.running && status.current_pair) {
-                    currentSection.style.display = 'block';
-                    document.getElementById('autoCurrentSource').textContent = (status.current_source || '-').toUpperCase();
-                    document.getElementById('autoCurrentPair').textContent = status.current_pair || '-';
-                    document.getElementById('autoCurrentPeriod').textContent = status.current_period || '-';
-                    document.getElementById('autoCurrentTimeframe').textContent = status.current_timeframe || '-';
-                    document.getElementById('autoCurrentGranularity').textContent = status.current_granularity || '-';
-
-                    // Show data validation info
-                    const dataValidationEl = document.getElementById('autoDataValidation');
-                    if (dataValidationEl && status.data_validation) {
-                        const dv = status.data_validation;
-                        dataValidationEl.style.display = 'block';
-                        dataValidationEl.innerHTML = `
-                            <div class="data-validation ${dv.valid ? 'valid' : 'warning'}">
-                                <span class="validation-icon">${dv.valid ? '✓' : '⚠'}</span>
-                                <span class="validation-text">
-                                    Data: ${dv.actual_days} days (${dv.coverage_pct}% of expected ${dv.expected_days} days)
-                                    <br><small>${dv.start_date} → ${dv.end_date}</small>
-                                </span>
-                            </div>
-                        `;
-                    } else if (dataValidationEl) {
-                        dataValidationEl.style.display = 'none';
-                    }
-                } else {
-                    currentSection.style.display = 'none';
-                }
+                // Update task queue
+                await renderTaskQueue();
 
                 // Update summary stats
                 document.getElementById('autoCompletedCount').textContent = status.completed_count || 0;
@@ -6620,17 +6841,16 @@
                 // Update skipped validations table
                 const skippedSection = document.getElementById('autoSkippedSection');
                 const skippedTableBody = document.getElementById('autoSkippedTableBody');
+                const skippedCountLabel = document.getElementById('skippedCountLabel');
                 if (status.skipped_validations && status.skipped_validations.length > 0) {
                     skippedSection.style.display = 'block';
+                    skippedCountLabel.textContent = status.skipped_validations.length;
                     skippedTableBody.innerHTML = status.skipped_validations.map(skip => `
                         <tr>
                             <td>${new Date(skip.timestamp).toLocaleTimeString()}</td>
-                            <td>${(skip.source || '-').toUpperCase()}</td>
                             <td>${skip.pair || '-'}</td>
                             <td>${skip.period || '-'}</td>
                             <td>${skip.timeframe || '-'}</td>
-                            <td>${skip.expected_days || 0} days</td>
-                            <td>${skip.actual_days || 0} days</td>
                             <td style="color: #f59e0b;">${skip.coverage_pct || 0}%</td>
                         </tr>
                     `).join('');
