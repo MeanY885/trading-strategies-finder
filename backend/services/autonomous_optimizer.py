@@ -803,25 +803,20 @@ async def start_autonomous_optimizer(thread_pool):
                     active_tasks, timeout=0.1, return_when=asyncio.FIRST_COMPLETED
                 )
 
-            # Spawn new tasks
-            from services.resource_monitor import resource_monitor
-            max_concurrent = resource_monitor.current_max
+            # Spawn new tasks - limit to 4 concurrent to avoid overwhelming system
+            # Each optimization uses significant RAM, so we need to be conservative
+            max_concurrent = min(4, concurrency_config.get("max_concurrent", 4))
             available_slots = max_concurrent - len(active_tasks)
 
+            # Only spawn ONE task per loop iteration to spread load
             if available_slots > 0 and current_index < len(combinations):
-                tasks_to_spawn = min(available_slots, len(combinations) - current_index)
-
-                for _ in range(tasks_to_spawn):
-                    if current_index >= len(combinations):
-                        break
-
-                    combo = combinations[current_index]
-                    task = asyncio.create_task(
-                        process_single_combination(combo, current_index, combinations, thread_pool)
-                    )
-                    active_tasks.add(task)
-                    current_index += 1
-                    app_state.update_autonomous_status(cycle_index=current_index)
+                combo = combinations[current_index]
+                task = asyncio.create_task(
+                    process_single_combination(combo, current_index, combinations, thread_pool)
+                )
+                active_tasks.add(task)
+                current_index += 1
+                app_state.update_autonomous_status(cycle_index=current_index)
 
                 app_state.update_autonomous_status(
                     running=len(active_tasks) > 0,
