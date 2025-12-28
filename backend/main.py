@@ -3976,6 +3976,11 @@ async def run_autonomous_optimization(combo: dict) -> str:
             # Format: "[1/5] RSI_14 LONG | 50,000/400,000 (45.2%) | Found: 3"
             msg = temp_status.get("message", "")
             import re
+
+            # Extract strategy name: "[1/5] RSI_14 LONG |"
+            strategy_match = re.search(r'\[\d+/\d+\]\s*([^|]+)\s*\|', msg)
+            strategy_name = strategy_match.group(1).strip() if strategy_match else None
+
             # Match pattern like "50/400" or "50,000/400,000" (with optional commas)
             match = re.search(r'\|\s*([\d,]+)\s*/\s*([\d,]+)\s*\(', msg)
             if match:
@@ -3983,10 +3988,12 @@ async def run_autonomous_optimization(combo: dict) -> str:
                 total_trials = int(match.group(2).replace(',', ''))
                 autonomous_optimizer_status["trial_current"] = current_trial
                 autonomous_optimizer_status["trial_total"] = total_trials
+                autonomous_optimizer_status["current_strategy"] = strategy_name
                 if temp_status.get("abort"):
                     autonomous_optimizer_status["message"] = f"Stopping... {current_trial:,}/{total_trials:,}"
                 else:
-                    autonomous_optimizer_status["message"] = f"Optimizing {pair} {timeframe['label']} - {current_trial:,}/{total_trials:,}..."
+                    strat_info = f" - {strategy_name}" if strategy_name else ""
+                    autonomous_optimizer_status["message"] = f"Optimizing {pair} {timeframe['label']}{strat_info} - {current_trial:,}/{total_trials:,}..."
             elif msg:
                 autonomous_optimizer_status["message"] = f"Optimizing {pair} {timeframe['label']} ({granularity['label']})..."
 
