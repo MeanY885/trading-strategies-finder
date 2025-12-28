@@ -35,6 +35,13 @@ try:
 except ImportError:
     HAS_MULTI_ENGINE = False
 
+# Import cache invalidation
+try:
+    from services.cache import invalidate_strategy_caches
+    HAS_CACHE = True
+except ImportError:
+    HAS_CACHE = False
+
 
 @dataclass
 class ExitConfig:
@@ -4683,6 +4690,10 @@ class StrategyEngine:
                 strategies_tested=tested,
                 profitable_found=len(profitable)
             )
+
+            # Invalidate caches after saving strategies
+            if HAS_CACHE:
+                invalidate_strategy_caches()
 
             print(f"Saved {min(50, len(profitable))} strategies to database")
 

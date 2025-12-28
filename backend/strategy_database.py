@@ -152,6 +152,11 @@ class StrategyDatabase:
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_elite_status ON strategies(elite_status)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_elite_score ON strategies(elite_score DESC)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_elite_combo ON strategies(symbol, timeframe, elite_status, elite_score)')
+        # Performance indexes for common query patterns
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_elite_status_score ON strategies(elite_status, elite_score DESC)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_symbol_timeframe ON strategies(symbol, timeframe)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_created_at ON strategies(created_at DESC)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_pending_validation ON strategies(elite_status, composite_score DESC)')
 
         # Migration: Add missing columns to existing databases
         cursor.execute("PRAGMA table_info(strategies)")
@@ -636,8 +641,14 @@ class StrategyDatabase:
             "date_range": date_range
         }
 
-    def _row_to_dict(self, row: sqlite3.Row) -> Dict:
-        """Convert a database row to a dictionary with parsed JSON fields."""
+    def _row_to_dict(self, row: sqlite3.Row, parse_equity_curve: bool = True) -> Dict:
+        """
+        Convert a database row to a dictionary with parsed JSON fields.
+
+        Args:
+            row: SQLite Row object
+            parse_equity_curve: If False, skip parsing the large equity_curve field for performance
+        """
         d = dict(row)
 
         # Parse JSON fields
@@ -653,11 +664,14 @@ class StrategyDatabase:
             except:
                 d['found_by'] = []
 
-        if d.get('equity_curve'):
+        if parse_equity_curve and d.get('equity_curve'):
             try:
                 d['equity_curve'] = json.loads(d['equity_curve'])
             except:
                 d['equity_curve'] = []
+        elif not parse_equity_curve:
+            # Don't include the raw JSON string - set to empty for performance
+            d['equity_curve'] = []
 
         return d
 
@@ -1463,6 +1477,339 @@ class StrategyDatabase:
         count = cursor.fetchone()[0]
         conn.close()
         return count > 0
+
+    # =========================================================================
+    # OPTIMIZED QUERIES FOR PERFORMANCE
+    # =========================================================================
+
+    def get_elite_counts(self) -> Dict[str, int]:
+        """
+        Get elite status counts using SQL aggregation instead of loading all rows.
+        Much faster than: sum(1 for s in get_all_strategies() if s.get('elite_status') == 'elite')
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute('''
+            SELECT
+                COALESCE(elite_status, 'pending') as status,
+                COUNT(*) as count
+            FROM strategies
+            GROUP BY COALESCE(elite_status, 'pending')
+        ''')
+
+        counts = {
+            'elite': 0,
+            'partial': 0,
+            'failed': 0,
+            'pending': 0
+        }
+
+        for row in cursor.fetchall():
+            status, count = row
+            if status in counts:
+                counts[status] = count
+            elif status is None or status == 'pending':
+                counts['pending'] += count
+
+        conn.close()
+        return counts
+
+    def get_db_stats_optimized(self) -> Dict[str, Any]:
+        """
+        Get database statistics using SQL aggregation.
+        Much faster than loading all strategies and counting in Python.
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        # Single query for all counts
+        cursor.execute('''
+            SELECT
+                COUNT(*) as total_strategies,
+                COUNT(DISTINCT symbol) as unique_symbols,
+                COUNT(DISTINCT timeframe) as unique_timeframes,
+                SUM(CASE WHEN elite_status = 'elite' THEN 1 ELSE 0 END) as elite_count
+            FROM strategies
+        ''')
+
+        row = cursor.fetchone()
+        conn.close()
+
+        return {
+            'total_strategies': row[0] or 0,
+            'unique_symbols': row[1] or 0,
+            'unique_timeframes': row[2] or 0,
+            'elite_count': row[3] or 0
+        }
+
+    def get_strategies_paginated(self, limit: int = 500, offset: int = 0,
+                                  symbol: str = None, timeframe: str = None,
+                                  sort_by: str = 'id', sort_order: str = 'DESC') -> Dict:
+        """
+        Get strategies with pagination support.
+        Returns {strategies: [...], total: N, has_more: bool, limit: N, offset: N}
+        """
+        conn = self._get_connection()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        # Build WHERE clause
+        where_clauses = []
+        params = []
+
+        if symbol:
+            where_clauses.append('symbol = ?')
+            params.append(symbol)
+
+        if timeframe:
+            where_clauses.append('timeframe = ?')
+            params.append(timeframe)
+
+        where_sql = ' WHERE ' + ' AND '.join(where_clauses) if where_clauses else ''
+
+        # Validate sort column to prevent SQL injection
+        valid_sort_columns = {'id', 'composite_score', 'win_rate', 'profit_factor',
+                              'total_pnl', 'created_at', 'elite_score'}
+        if sort_by not in valid_sort_columns:
+            sort_by = 'id'
+
+        sort_direction = 'DESC' if sort_order.upper() == 'DESC' else 'ASC'
+
+        # Get total count
+        cursor.execute(f'SELECT COUNT(*) FROM strategies{where_sql}', params)
+        total = cursor.fetchone()[0]
+
+        # Get paginated results
+        query = f'''
+            SELECT * FROM strategies{where_sql}
+            ORDER BY {sort_by} {sort_direction}
+            LIMIT ? OFFSET ?
+        '''
+        cursor.execute(query, params + [limit, offset])
+        rows = cursor.fetchall()
+        conn.close()
+
+        strategies = [self._row_to_dict(row) for row in rows]
+
+        return {
+            'strategies': strategies,
+            'total': total,
+            'has_more': offset + len(strategies) < total,
+            'limit': limit,
+            'offset': offset
+        }
+
+    def get_total_strategy_count(self) -> int:
+        """Get total count of strategies (very fast)."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT COUNT(*) FROM strategies')
+        count = cursor.fetchone()[0]
+        conn.close()
+        return count
+
+    # =========================================================================
+    # OPTIMIZED QUERY METHODS FOR API ROUTES
+    # =========================================================================
+
+    def get_elite_strategies_filtered(
+        self,
+        status_filter: str = None,
+        limit: int = 50,
+        offset: int = 0
+    ) -> List[Dict]:
+        """
+        Get elite strategies with SQL-level filtering.
+        Much faster than loading all strategies and filtering in Python.
+
+        Args:
+            status_filter: Filter by elite_status ('elite', 'partial', 'failed', 'pending')
+            limit: Maximum number of results
+            offset: Offset for pagination
+        """
+        conn = self._get_connection()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        if status_filter:
+            cursor.execute('''
+                SELECT * FROM strategies
+                WHERE elite_status = ?
+                ORDER BY elite_score DESC
+                LIMIT ? OFFSET ?
+            ''', (status_filter, limit, offset))
+        else:
+            cursor.execute('''
+                SELECT * FROM strategies
+                WHERE elite_status IS NOT NULL
+                ORDER BY elite_score DESC
+                LIMIT ? OFFSET ?
+            ''', (limit, offset))
+
+        rows = cursor.fetchall()
+        conn.close()
+
+        # Skip equity_curve parsing for list views
+        return [self._row_to_dict(row, parse_equity_curve=False) for row in rows]
+
+    def get_elite_leaderboard(self, limit: int = 20) -> Dict:
+        """
+        Get top elite strategies efficiently using SQL.
+
+        Returns:
+            Dict with 'leaderboard' list and 'total_elite' count
+        """
+        conn = self._get_connection()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        # Get leaderboard with LIMIT
+        cursor.execute('''
+            SELECT * FROM strategies
+            WHERE elite_status = 'elite'
+            ORDER BY elite_score DESC
+            LIMIT ?
+        ''', (limit,))
+        rows = cursor.fetchall()
+
+        # Get total count efficiently
+        cursor.execute("SELECT COUNT(*) FROM strategies WHERE elite_status = 'elite'")
+        total_elite = cursor.fetchone()[0]
+
+        conn.close()
+
+        return {
+            "leaderboard": [self._row_to_dict(row, parse_equity_curve=False) for row in rows],
+            "total_elite": total_elite
+        }
+
+    def get_elite_stats_optimized(self) -> Dict:
+        """
+        Get elite validation statistics using SQL aggregation.
+        Much faster than loading all strategies and counting in Python.
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        # Get counts by status in a single query
+        cursor.execute('''
+            SELECT
+                COALESCE(elite_status, 'not_validated') as status,
+                COUNT(*) as count
+            FROM strategies
+            GROUP BY COALESCE(elite_status, 'not_validated')
+        ''')
+
+        status_counts = {
+            'elite': 0,
+            'partial': 0,
+            'failed': 0,
+            'pending': 0,
+            'untestable': 0,
+            'skipped': 0,
+            'not_validated': 0
+        }
+
+        for row in cursor.fetchall():
+            status, count = row
+            if status in status_counts:
+                status_counts[status] = count
+            else:
+                status_counts['not_validated'] += count
+
+        # Get total count
+        cursor.execute('SELECT COUNT(*) FROM strategies')
+        total = cursor.fetchone()[0]
+
+        # Get average elite score for elite strategies
+        cursor.execute('''
+            SELECT AVG(COALESCE(elite_score, 0))
+            FROM strategies
+            WHERE elite_status = 'elite'
+        ''')
+        avg_score = cursor.fetchone()[0] or 0
+
+        conn.close()
+
+        return {
+            "total_strategies": total,
+            "status_counts": status_counts,
+            "avg_elite_score": round(avg_score, 2)
+        }
+
+    def get_top_strategies_per_market(
+        self,
+        top_n: int = 10,
+        symbol: str = None,
+        timeframe: str = None,
+        min_win_rate: float = 0.0,
+        total_limit: int = 500
+    ) -> List[Dict]:
+        """
+        Get top N strategies per (symbol, timeframe) pair using SQL window functions.
+        Much faster than loading all and grouping in Python.
+
+        Args:
+            top_n: Max strategies per market
+            symbol: Filter by symbol (optional)
+            timeframe: Filter by timeframe (optional)
+            min_win_rate: Minimum win rate filter
+            total_limit: Maximum total results
+        """
+        conn = self._get_connection()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        # Build WHERE clause
+        where_parts = ['win_rate >= ?']
+        params = [min_win_rate]
+
+        if symbol:
+            where_parts.append('symbol = ?')
+            params.append(symbol)
+
+        if timeframe:
+            where_parts.append('timeframe = ?')
+            params.append(timeframe)
+
+        where_clause = ' AND '.join(where_parts)
+
+        # Use window function to get top N per market
+        query = f'''
+            WITH ranked AS (
+                SELECT *,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY symbol, timeframe
+                        ORDER BY composite_score DESC
+                    ) as rank
+                FROM strategies
+                WHERE {where_clause}
+            )
+            SELECT * FROM ranked
+            WHERE rank <= ?
+            ORDER BY composite_score DESC
+            LIMIT ?
+        '''
+
+        params.extend([top_n, total_limit])
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+        conn.close()
+
+        return [self._row_to_dict(row, parse_equity_curve=False) for row in rows]
+
+    def get_pending_validation_count(self) -> int:
+        """Get count of strategies pending validation (very fast)."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT COUNT(*) FROM strategies
+            WHERE elite_status IS NULL OR elite_status = 'pending'
+        ''')
+        count = cursor.fetchone()[0]
+        conn.close()
+        return count
 
 
 # Singleton instance for easy access
