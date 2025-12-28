@@ -421,58 +421,47 @@
         // WebSocket data loading functions
         async function loadStrategiesViaWs() {
             try {
-                const response = await wsRequest('get_strategies');
+                const response = await wsRequest('get_strategies', 30000);
                 cachedStrategies = response.data;
                 return response.data;
             } catch (e) {
                 console.error('[WS] Failed to load strategies:', e);
-                // Fallback to HTTP if WebSocket fails
-                const response = await fetch('/api/db/strategies');
-                return await response.json();
+                throw e;
             }
         }
 
         async function loadEliteViaWs() {
             try {
-                const response = await wsRequest('get_elite');
+                const response = await wsRequest('get_elite', 30000);
                 cachedEliteData = response;
                 return response;
             } catch (e) {
                 console.error('[WS] Failed to load elite data:', e);
-                // Fallback to HTTP
-                const [statusRes, strategiesRes] = await Promise.all([
-                    fetch('/api/elite/status'),
-                    fetch('/api/elite/strategies')
-                ]);
-                return {
-                    status: await statusRes.json(),
-                    strategies: await strategiesRes.json()
-                };
+                throw e;
             }
         }
 
         async function loadQueueViaWs() {
             try {
-                const response = await wsRequest('get_queue');
+                const response = await wsRequest('get_queue', 15000);
                 cachedQueueData = response.data;
                 return response.data;
             } catch (e) {
                 console.error('[WS] Failed to load queue:', e);
-                const response = await fetch('/api/autonomous/queue');
-                return await response.json();
+                throw e;
             }
         }
 
         async function loadPriorityViaWs() {
             try {
-                // Use shorter timeout (3s) for faster fallback to HTTP
-                const response = await wsRequest('get_priority', 3000);
+                // Use longer timeout - database may be busy during optimization
+                const response = await wsRequest('get_priority', 15000);
                 cachedPriorityData = response.data;
                 return response.data;
             } catch (e) {
                 console.error('[WS] Failed to load priority:', e);
-                const response = await fetch('/api/priority/lists');
-                return await response.json();
+                // WebSocket-only - retry rather than HTTP fallback
+                throw e;
             }
         }
 
