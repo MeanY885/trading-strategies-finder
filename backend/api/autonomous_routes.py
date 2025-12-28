@@ -65,7 +65,26 @@ async def toggle_autonomous():
             from services.autonomous_optimizer import start_autonomous_optimizer
             if _thread_pool is None:
                 raise HTTPException(status_code=500, detail="Thread pool not initialized")
-            asyncio.create_task(start_autonomous_optimizer(_thread_pool))
+
+            async def start_with_error_handling():
+                try:
+                    log("[Autonomous Optimizer] Task starting...")
+                    await start_autonomous_optimizer(_thread_pool)
+                except Exception as e:
+                    import traceback
+                    log(f"[Autonomous Optimizer] Task CRASHED: {e}", level='ERROR')
+                    traceback.print_exc()
+                    # Reset state on crash
+                    app_state.update_autonomous_status(
+                        auto_running=False,
+                        running=False,
+                        enabled=False,
+                        message=f"Error: {str(e)}"
+                    )
+                    broadcast_autonomous_status(app_state.get_autonomous_status())
+
+            asyncio.create_task(start_with_error_handling())
+            log("[Autonomous Optimizer] Task created via toggle")
 
         return {"status": "enabled", "message": "Autonomous optimizer enabled"}
 
@@ -175,16 +194,35 @@ async def enable_autonomous():
 @router.post("/start")
 async def start_autonomous():
     """Explicitly start autonomous optimizer."""
-    app_state.update_autonomous_status(enabled=True)
-
     from services.websocket_manager import broadcast_autonomous_status
+    from logging_config import log
+
+    app_state.update_autonomous_status(enabled=True, message="Starting...")
     broadcast_autonomous_status(app_state.get_autonomous_status())
 
     if not app_state.is_autonomous_running():
         from services.autonomous_optimizer import start_autonomous_optimizer
         if _thread_pool is None:
             raise HTTPException(status_code=500, detail="Thread pool not initialized")
-        asyncio.create_task(start_autonomous_optimizer(_thread_pool))
+
+        async def start_with_error_handling():
+            try:
+                log("[Autonomous Optimizer] Task starting via /start...")
+                await start_autonomous_optimizer(_thread_pool)
+            except Exception as e:
+                import traceback
+                log(f"[Autonomous Optimizer] Task CRASHED: {e}", level='ERROR')
+                traceback.print_exc()
+                app_state.update_autonomous_status(
+                    auto_running=False,
+                    running=False,
+                    enabled=False,
+                    message=f"Error: {str(e)}"
+                )
+                broadcast_autonomous_status(app_state.get_autonomous_status())
+
+        asyncio.create_task(start_with_error_handling())
+        log("[Autonomous Optimizer] Task created via /start endpoint")
         return {"status": "started", "message": "Autonomous optimizer started"}
     else:
         return {"status": "already_running", "message": "Already running"}

@@ -687,24 +687,41 @@ async def start_autonomous_optimizer(thread_pool):
     """
     global running_optimizations
 
+    log("[Parallel Optimizer] start_autonomous_optimizer() called")
+
     if app_state.is_autonomous_running():
+        log("[Parallel Optimizer] Already running, exiting early")
         return
+
+    log("[Parallel Optimizer] Initializing...")
 
     # Initialize async primitives if needed
     if optimization_semaphore is None:
+        log("[Parallel Optimizer] Initializing async primitives...")
         init_async_primitives()
+
+    log(f"[Parallel Optimizer] Setting auto_running=True, max_parallel={concurrency_config['max_concurrent']}")
 
     app_state.update_autonomous_status(
         auto_running=True,
-        max_parallel=concurrency_config["max_concurrent"]
+        running=True,
+        max_parallel=concurrency_config["max_concurrent"],
+        message="Initializing optimizer..."
     )
 
-    log("[Parallel Optimizer] Starting...")
+    # Broadcast immediately so UI updates
+    from services.websocket_manager import broadcast_autonomous_status
+    broadcast_autonomous_status(app_state.get_autonomous_status())
+
+    log("[Parallel Optimizer] Starting (waiting 3s for stability)...")
 
     await asyncio.sleep(3)
 
     # Build combinations
+    log("[Parallel Optimizer] Building combinations...")
     combinations = build_optimization_combinations()
+    log(f"[Parallel Optimizer] Built {len(combinations)} combinations")
+
     app_state.update_autonomous_status(
         total_combinations=len(combinations),
         combinations_list=[{
@@ -715,8 +732,10 @@ async def start_autonomous_optimizer(thread_pool):
         } for c in combinations],
         queue_completed=[],
         parallel_running=[],
-        parallel_count=0
+        parallel_count=0,
+        message=f"Ready - {len(combinations)} combinations to process"
     )
+    broadcast_autonomous_status(app_state.get_autonomous_status())
 
     # Find resume point
     try:
