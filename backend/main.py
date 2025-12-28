@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File
+from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
 from pydantic import BaseModel
@@ -29,6 +29,136 @@ from logging_config import log, autonomous_logger, elite_logger, startup_logger,
 max_workers = os.cpu_count() or 4
 thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
 log(f"[Startup] Thread pool initialized with {max_workers} workers")
+
+# =============================================================================
+# WEBSOCKET CONNECTION MANAGER - Real-time UI updates
+# =============================================================================
+
+class WebSocketManager:
+    """
+    Manages WebSocket connections for real-time UI updates.
+    Replaces polling with push-based status updates.
+    """
+
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+        self._lock = asyncio.Lock()
+        self._broadcast_queue: asyncio.Queue = None
+        self._broadcast_task: asyncio.Task = None
+
+    async def connect(self, websocket: WebSocket):
+        """Accept a new WebSocket connection"""
+        await websocket.accept()
+        async with self._lock:
+            self.active_connections.append(websocket)
+        log(f"[WebSocket] Client connected. Total: {len(self.active_connections)}")
+
+        # Send initial state on connect
+        await self._send_full_state(websocket)
+
+    async def disconnect(self, websocket: WebSocket):
+        """Remove a disconnected WebSocket"""
+        async with self._lock:
+            if websocket in self.active_connections:
+                self.active_connections.remove(websocket)
+        log(f"[WebSocket] Client disconnected. Total: {len(self.active_connections)}")
+
+    async def _send_full_state(self, websocket: WebSocket):
+        """Send complete current state to a newly connected client"""
+        try:
+            # Import here to avoid circular dependency at module load
+            state = {
+                "type": "full_state",
+                "data": data_status,
+                "optimization": unified_status,
+                "autonomous": autonomous_optimizer_status,
+                "elite": elite_validation_status,
+            }
+            await websocket.send_json(state)
+        except Exception as e:
+            log(f"[WebSocket] Error sending initial state: {e}", level='WARNING')
+
+    async def broadcast(self, message_type: str, data: dict):
+        """
+        Broadcast a message to all connected clients.
+        Thread-safe - can be called from sync code via broadcast_sync.
+        """
+        if not self.active_connections:
+            return
+
+        message = {"type": message_type, **data}
+
+        async with self._lock:
+            connections_copy = list(self.active_connections)
+
+        disconnected = []
+        for connection in connections_copy:
+            try:
+                await connection.send_json(message)
+            except Exception as e:
+                log(f"[WebSocket] Error broadcasting to client: {e}", level='WARNING')
+                disconnected.append(connection)
+
+        # Clean up disconnected clients
+        if disconnected:
+            async with self._lock:
+                for conn in disconnected:
+                    if conn in self.active_connections:
+                        self.active_connections.remove(conn)
+
+    def broadcast_sync(self, message_type: str, data: dict):
+        """
+        Thread-safe broadcast for use from synchronous code.
+        Queues the message for async broadcast.
+        """
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.run_coroutine_threadsafe(
+                    self.broadcast(message_type, data),
+                    loop
+                )
+            else:
+                # Fallback for edge cases
+                asyncio.run(self.broadcast(message_type, data))
+        except Exception as e:
+            log(f"[WebSocket] broadcast_sync error: {e}", level='WARNING')
+
+    @property
+    def client_count(self) -> int:
+        return len(self.active_connections)
+
+
+# Initialize WebSocket manager (singleton)
+ws_manager = WebSocketManager()
+
+
+# Helper functions for broadcasting status updates
+def broadcast_data_status():
+    """Broadcast data status update to all clients"""
+    ws_manager.broadcast_sync("data_status", {"data": data_status})
+
+def broadcast_optimization_status():
+    """Broadcast optimization status update to all clients"""
+    ws_manager.broadcast_sync("optimization_status", {"optimization": unified_status})
+
+def broadcast_autonomous_status():
+    """Broadcast autonomous optimizer status update to all clients"""
+    ws_manager.broadcast_sync("autonomous_status", {"autonomous": autonomous_optimizer_status})
+
+def broadcast_elite_status():
+    """Broadcast elite validation status update to all clients"""
+    ws_manager.broadcast_sync("elite_status", {"elite": elite_validation_status})
+
+def broadcast_all_status():
+    """Broadcast all status updates (useful after state changes)"""
+    ws_manager.broadcast_sync("full_state", {
+        "data": data_status,
+        "optimization": unified_status,
+        "autonomous": autonomous_optimizer_status,
+        "elite": elite_validation_status,
+    })
+
 
 # =============================================================================
 # DYNAMIC RESOURCE MONITORING & ADAPTIVE CONCURRENCY
@@ -511,6 +641,65 @@ async def get_status():
     }
 
 
+# =============================================================================
+# WEBSOCKET ENDPOINT - Real-time status updates
+# =============================================================================
+
+@app.websocket("/ws/status")
+async def websocket_status(websocket: WebSocket):
+    """
+    WebSocket endpoint for real-time status updates.
+
+    Replaces polling with push-based updates for:
+    - Data loading status
+    - Optimization progress
+    - Autonomous optimizer status
+    - Elite validation status
+
+    Message types:
+    - full_state: Complete state (sent on connect)
+    - data_status: Data loading updates
+    - optimization_status: Manual optimization updates
+    - autonomous_status: Autonomous optimizer updates
+    - elite_status: Elite validation updates
+    - strategy_result: Individual strategy completion (SSE replacement)
+
+    Example client:
+    ```javascript
+    const ws = new WebSocket('ws://localhost:8000/ws/status');
+    ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        switch(data.type) {
+            case 'data_status': updateDataUI(data.data); break;
+            case 'optimization_status': updateOptUI(data.optimization); break;
+        }
+    };
+    ```
+    """
+    await ws_manager.connect(websocket)
+    try:
+        while True:
+            # Keep connection alive, handle any incoming messages
+            try:
+                message = await asyncio.wait_for(websocket.receive_text(), timeout=30.0)
+                # Handle ping/pong for keepalive
+                if message == "ping":
+                    await websocket.send_text("pong")
+                # Could handle other client messages here (subscriptions, etc.)
+            except asyncio.TimeoutError:
+                # Send heartbeat to keep connection alive
+                try:
+                    await websocket.send_json({"type": "heartbeat", "timestamp": datetime.now().isoformat()})
+                except Exception:
+                    break  # Connection lost
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        log(f"[WebSocket] Connection error: {e}", level='WARNING')
+    finally:
+        await ws_manager.disconnect(websocket)
+
+
 @app.get("/api/system")
 async def get_system_resources():
     """Get detected system resources (CPU, memory, workers)"""
@@ -701,6 +890,7 @@ async def fetch_data(request: DataFetchRequest, background_tasks: BackgroundTask
     data_status["progress"] = 0
     data_status["fetching"] = True
     data_status["loaded"] = False
+    broadcast_data_status()  # WebSocket broadcast
 
     background_tasks.add_task(
         fetch_data_task,
@@ -724,7 +914,7 @@ async def fetch_data_task(source: str, pair: str, interval: int, months: float):
     source_name = source_names.get(source, source)
 
     def status_callback(message: str, progress: int = None):
-        """Update status for frontend polling"""
+        """Update status for frontend via WebSocket"""
         # Clean up source prefixes from messages
         clean_msg = message
         for prefix in ["[YFinance] ", "[Binance] ", "[Kraken] "]:
@@ -732,6 +922,7 @@ async def fetch_data_task(source: str, pair: str, interval: int, months: float):
         data_status["message"] = clean_msg
         if progress is not None:
             data_status["progress"] = progress
+        broadcast_data_status()  # WebSocket broadcast
 
     try:
         # Create fetcher with status callback (all sources support it)
@@ -751,6 +942,7 @@ async def fetch_data_task(source: str, pair: str, interval: int, months: float):
             data_status["loaded"] = False
             data_status["fetching"] = False
             data_status["progress"] = 0
+            broadcast_data_status()  # WebSocket broadcast
             return
 
         # Save to CSV
@@ -771,12 +963,14 @@ async def fetch_data_task(source: str, pair: str, interval: int, months: float):
         data_status["end_date"] = df['time'].max().isoformat()
         data_status["stats"] = calculate_data_stats(df)
         data_status["message"] = f"✓ {len(df)} candles ({days} days) from {source_name}"
+        broadcast_data_status()  # WebSocket broadcast - success
 
     except Exception as e:
         data_status["message"] = f"Error: {str(e)}"
         data_status["loaded"] = False
         data_status["fetching"] = False
         data_status["progress"] = 0
+        broadcast_data_status()  # WebSocket broadcast - error
         import traceback
         traceback.print_exc()
 
@@ -814,6 +1008,7 @@ def load_existing_data():
     data_status["end_date"] = df['time'].max().isoformat()
     data_status["stats"] = calculate_data_stats(df)
     data_status["message"] = f"✓ Loaded {len(df)} {pair} candles ({days} days)"
+    broadcast_data_status()  # WebSocket broadcast
 
     return data_status
 
@@ -923,6 +1118,7 @@ async def upload_csv(file: UploadFile = File(...)):
         pair_display = f"{pair}/" if pair else ""
         source_display = f" from {exchange}" if exchange else ""
         data_status["message"] = f"✓ Uploaded {len(df)} {pair_display}{interval}min candles ({days_of_data} days){source_display}"
+        broadcast_data_status()  # WebSocket broadcast
 
         return {
             "status": "success",
@@ -1012,6 +1208,7 @@ async def start_unified_optimization(request: UnifiedRequest, background_tasks: 
     unified_status["progress"] = 0
     unified_status["message"] = f"Starting unified optimization [{request.engine.upper()} engine]..."
     unified_status["report"] = None
+    broadcast_optimization_status()  # WebSocket broadcast
 
     # Convert date_range to dict for storage
     date_range_dict = None
@@ -1154,6 +1351,7 @@ def run_unified_sync(capital: float, risk_percent: float, n_trials: int, engine:
 
             unified_status["message"] = f"[{engine_tag}] Finding strategies on {len(df)} candles..."
             unified_status["progress"] = progress_min
+            broadcast_optimization_status()  # WebSocket broadcast
 
             # Create engine-aware streaming callback
             def make_callback(tag, engine_name):
@@ -1232,6 +1430,7 @@ def run_unified_sync(capital: float, risk_percent: float, n_trials: int, engine:
         # =====================================================================
         unified_status["message"] = "Phase 2: Tuning indicator parameters for top 20 strategies..."
         unified_status["progress"] = 95
+        broadcast_optimization_status()  # WebSocket broadcast
 
         # Collect all Phase 1 results for tuning
         all_phase1_results = []
@@ -1337,6 +1536,7 @@ def run_unified_sync(capital: float, risk_percent: float, n_trials: int, engine:
         unified_status["message"] = f"Error: {str(e)}"
     finally:
         unified_status["running"] = False
+        broadcast_optimization_status()  # WebSocket broadcast - completion
 
 
 async def run_unified_task(capital: float, risk_percent: float, n_trials: int, engine: str = "all", date_range: dict = None):
@@ -1366,11 +1566,18 @@ async def get_unified_status():
 # =============================================================================
 
 def publish_strategy_result(result: dict):
-    """Publish a strategy result to all connected SSE clients"""
+    """Publish a strategy result to all connected SSE and WebSocket clients"""
+    # Broadcast via WebSocket (primary method now)
+    ws_manager.broadcast_sync("strategy_result", {"result": result})
+
+    # Also broadcast optimization status for progress updates
+    broadcast_optimization_status()
+
+    # Legacy SSE support
     with streaming_lock:
         client_count = len(streaming_clients)
         if not streaming_clients:
-            return  # No clients, skip silently
+            return  # No SSE clients, skip
         # Iterate over a copy to avoid issues if list changes
         clients_copy = list(streaming_clients)
 
@@ -2961,11 +3168,13 @@ async def toggle_autonomous_optimizer():
             current_optimization_status["abort"] = True
             log("[Autonomous Optimizer] Abort signal sent to running optimization", level='WARNING')
 
+        broadcast_autonomous_status()  # WebSocket broadcast
         return {"status": "disabled", "message": "Autonomous optimizer stopped"}
     else:
         # Enable
         autonomous_optimizer_status["enabled"] = True
         autonomous_optimizer_status["message"] = "Starting..."
+        broadcast_autonomous_status()  # WebSocket broadcast
 
         # Start the loop if not already running
         if not autonomous_optimizer_status["auto_running"]:
@@ -2980,6 +3189,7 @@ async def start_autonomous():
     global autonomous_optimizer_status
 
     autonomous_optimizer_status["enabled"] = True
+    broadcast_autonomous_status()  # WebSocket broadcast
 
     if not autonomous_optimizer_status["auto_running"]:
         asyncio.create_task(start_autonomous_optimizer())
@@ -3007,6 +3217,7 @@ async def stop_autonomous():
         current_optimization_status["abort"] = True
         log("[Autonomous Optimizer] Abort signal sent to running optimization", level='WARNING')
 
+    broadcast_autonomous_status()  # WebSocket broadcast
     return {"status": "stopped", "message": "Autonomous optimizer stopped"}
 
 
@@ -3022,6 +3233,7 @@ async def reset_autonomous_cycle():
     autonomous_optimizer_status["skipped_validations"] = []
     autonomous_optimizer_status["message"] = "Cycle reset - starting from beginning"
 
+    broadcast_autonomous_status()  # WebSocket broadcast
     return {"status": "reset", "message": "Cycle reset to beginning"}
 
 
@@ -3734,6 +3946,7 @@ async def validate_all_strategies_for_elite():
         elite_validation_status["total"] = len(pending)
         elite_validation_status["processed"] = 0
         elite_validation_status["message"] = f"Validating {len(pending)} strategies..."
+        broadcast_elite_status()  # WebSocket broadcast
 
         for strategy in pending:
             # === PRIORITY CHECK: Only pause if not in parallel mode ===
@@ -3997,6 +4210,7 @@ async def validate_all_strategies_for_elite():
             )
 
             elite_validation_status["processed"] += 1
+            broadcast_elite_status()  # WebSocket broadcast - progress
 
             # Log result with status-specific formatting
             status_label = {
@@ -4022,6 +4236,7 @@ async def validate_all_strategies_for_elite():
         elite_validation_status["running"] = False
         elite_validation_status["paused"] = False
         elite_validation_status["current_strategy_id"] = None
+        broadcast_elite_status()  # WebSocket broadcast - completion
 
 
 # =============================================================================
@@ -4969,6 +5184,9 @@ async def start_autonomous_optimizer():
                 autonomous_optimizer_status["cpu_usage"] = round(cpu_usage, 1)
                 autonomous_optimizer_status["memory_available_gb"] = round(mem_avail, 1)
 
+            # Broadcast status update via WebSocket
+            broadcast_autonomous_status()
+
             # Small delay to prevent tight loop
             await asyncio.sleep(0.5)
 
@@ -4996,6 +5214,7 @@ async def start_autonomous_optimizer():
     autonomous_optimizer_status["parallel_count"] = 0
     autonomous_optimizer_status["message"] = "Stopped"
     unified_status["running"] = False
+    broadcast_autonomous_status()  # WebSocket broadcast - stopped
     log("[Parallel Optimizer] Stopped")
 
 

@@ -1726,13 +1726,75 @@
                 max-height: 200px;
             }
         }
+
+        /* WebSocket Connection Status */
+        .header-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 1rem;
+        }
+
+        .header-title {
+            flex: 1;
+        }
+
+        .ws-status {
+            font-size: 0.75rem;
+            padding: 0.35rem 0.75rem;
+            border-radius: 12px;
+            font-weight: 500;
+            white-space: nowrap;
+            transition: all 0.3s ease;
+        }
+
+        .ws-connecting {
+            background: rgba(255, 193, 7, 0.15);
+            color: #ffc107;
+            border: 1px solid rgba(255, 193, 7, 0.3);
+        }
+
+        .ws-connected {
+            background: rgba(40, 167, 69, 0.15);
+            color: #28a745;
+            border: 1px solid rgba(40, 167, 69, 0.3);
+        }
+
+        .ws-disconnected {
+            background: rgba(220, 53, 69, 0.15);
+            color: #dc3545;
+            border: 1px solid rgba(220, 53, 69, 0.3);
+            animation: pulse-warning 2s infinite;
+        }
+
+        .ws-error {
+            background: rgba(220, 53, 69, 0.15);
+            color: #dc3545;
+            border: 1px solid rgba(220, 53, 69, 0.3);
+        }
+
+        .ws-fallback {
+            background: rgba(108, 117, 125, 0.15);
+            color: #6c757d;
+            border: 1px solid rgba(108, 117, 125, 0.3);
+        }
+
+        @keyframes pulse-warning {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <header>
-            <h1>Trading Strategy Optimizer</h1>
-            <p>Find profitable strategies automatically. Get TradingView-ready code.</p>
+            <div class="header-row">
+                <div class="header-title">
+                    <h1>Trading Strategy Optimizer</h1>
+                    <p>Find profitable strategies automatically. Get TradingView-ready code.</p>
+                </div>
+                <div id="wsConnectionStatus" class="ws-status ws-connecting">🔄 Connecting...</div>
+            </div>
 
             <!-- Tab Navigation -->
             <div class="tab-nav">
@@ -2641,6 +2703,295 @@
 
         // Priority Queue State (3-list system - actual state in priority section)
         let priorityInitialized = false;
+
+        // =============================================================================
+        // WEBSOCKET CLIENT - Real-time updates (replaces polling)
+        // =============================================================================
+
+        let wsConnection = null;
+        let wsReconnectAttempts = 0;
+        let wsMaxReconnectAttempts = 10;
+        let wsReconnectDelay = 1000; // Start with 1 second
+        let wsConnected = false;
+
+        function initWebSocket() {
+            // Determine WebSocket URL based on current location
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/ws/status`;
+
+            console.log('[WebSocket] Connecting to:', wsUrl);
+            updateConnectionStatus('connecting');
+
+            try {
+                wsConnection = new WebSocket(wsUrl);
+
+                wsConnection.onopen = function(event) {
+                    console.log('[WebSocket] Connected');
+                    wsConnected = true;
+                    wsReconnectAttempts = 0;
+                    wsReconnectDelay = 1000;
+                    updateConnectionStatus('connected');
+
+                    // Stop any legacy polling
+                    stopPolling();
+                    stopAutonomousPolling();
+                };
+
+                wsConnection.onmessage = function(event) {
+                    try {
+                        const message = JSON.parse(event.data);
+                        handleWebSocketMessage(message);
+                    } catch (e) {
+                        console.error('[WebSocket] Error parsing message:', e);
+                    }
+                };
+
+                wsConnection.onerror = function(error) {
+                    console.error('[WebSocket] Error:', error);
+                    updateConnectionStatus('error');
+                };
+
+                wsConnection.onclose = function(event) {
+                    console.log('[WebSocket] Disconnected, code:', event.code);
+                    wsConnected = false;
+                    updateConnectionStatus('disconnected');
+
+                    // Attempt reconnection with exponential backoff
+                    if (wsReconnectAttempts < wsMaxReconnectAttempts) {
+                        wsReconnectAttempts++;
+                        const delay = Math.min(wsReconnectDelay * Math.pow(1.5, wsReconnectAttempts - 1), 30000);
+                        console.log(`[WebSocket] Reconnecting in ${delay}ms (attempt ${wsReconnectAttempts}/${wsMaxReconnectAttempts})`);
+                        setTimeout(initWebSocket, delay);
+                    } else {
+                        console.error('[WebSocket] Max reconnection attempts reached, falling back to polling');
+                        updateConnectionStatus('fallback');
+                        // Fall back to legacy polling
+                        startPolling();
+                    }
+                };
+
+                // Send periodic pings to keep connection alive
+                setInterval(() => {
+                    if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
+                        wsConnection.send('ping');
+                    }
+                }, 25000);
+
+            } catch (e) {
+                console.error('[WebSocket] Failed to create connection:', e);
+                updateConnectionStatus('error');
+                // Fall back to polling
+                startPolling();
+            }
+        }
+
+        function handleWebSocketMessage(message) {
+            const type = message.type;
+
+            switch(type) {
+                case 'full_state':
+                    // Initial state on connect - update all UI components
+                    if (message.data) updateDataStatus(message.data);
+                    if (message.optimization) updateOptimizationStatus(message.optimization);
+                    if (message.autonomous) updateAutonomousUI(message.autonomous);
+                    if (message.elite) updateEliteUI(message.elite);
+                    break;
+
+                case 'data_status':
+                    if (message.data) updateDataStatus(message.data);
+                    break;
+
+                case 'optimization_status':
+                    if (message.optimization) updateOptimizationStatus(message.optimization);
+                    break;
+
+                case 'autonomous_status':
+                    if (message.autonomous) updateAutonomousUI(message.autonomous);
+                    break;
+
+                case 'elite_status':
+                    if (message.elite) updateEliteUI(message.elite);
+                    break;
+
+                case 'strategy_result':
+                    // Individual strategy result from optimization
+                    if (message.result) handleStrategyResult(message.result);
+                    break;
+
+                case 'heartbeat':
+                    // Server heartbeat - connection is alive
+                    break;
+
+                default:
+                    console.log('[WebSocket] Unknown message type:', type, message);
+            }
+        }
+
+        function updateConnectionStatus(status) {
+            const indicator = document.getElementById('wsConnectionStatus');
+            if (!indicator) return;
+
+            const statusMap = {
+                'connecting': { text: '🔄 Connecting...', class: 'ws-connecting' },
+                'connected': { text: '🟢 Live', class: 'ws-connected' },
+                'disconnected': { text: '🔴 Disconnected', class: 'ws-disconnected' },
+                'error': { text: '⚠️ Error', class: 'ws-error' },
+                'fallback': { text: '📡 Polling', class: 'ws-fallback' }
+            };
+
+            const info = statusMap[status] || { text: status, class: '' };
+            indicator.textContent = info.text;
+            indicator.className = 'ws-status ' + info.class;
+        }
+
+        // Helper to update optimization status from WebSocket
+        function updateOptimizationStatus(status) {
+            if (!status) return;
+
+            // Update progress bar if running
+            const progressBar = document.getElementById('unifiedProgress');
+            const progressFill = document.getElementById('unifiedProgressFill');
+            const statusText = document.getElementById('unifiedStatusText');
+
+            if (progressFill && status.progress !== undefined) {
+                progressFill.style.width = `${status.progress}%`;
+            }
+            if (statusText && status.message) {
+                statusText.textContent = status.message;
+            }
+
+            // Update button state
+            const runBtn = document.getElementById('runUnifiedBtn');
+            if (runBtn) {
+                runBtn.disabled = status.running;
+                runBtn.innerHTML = status.running ?
+                    '<span class="spinner"></span> Running...' :
+                    '🔬 Find Strategies';
+            }
+        }
+
+        // Helper to update autonomous UI from WebSocket
+        function updateAutonomousUI(status) {
+            if (!status) return;
+
+            // Update badge
+            const badge = document.getElementById('autonomousStatusBadge');
+            const message = document.getElementById('autonomousStatusMessage');
+            const parallelCount = status.parallel_count || 0;
+            const maxParallel = status.max_parallel || 1;
+
+            if (badge) {
+                if (parallelCount > 0) {
+                    badge.className = 'status-badge success';
+                    badge.textContent = `Running ${parallelCount}`;
+                } else if (status.running) {
+                    badge.className = 'status-badge success';
+                    badge.textContent = 'Running';
+                } else if (status.paused) {
+                    badge.className = 'status-badge warning';
+                    badge.textContent = 'Paused';
+                } else if (status.enabled && status.auto_running) {
+                    badge.className = 'status-badge success';
+                    badge.textContent = 'Active';
+                } else if (status.enabled) {
+                    badge.className = 'status-badge neutral';
+                    badge.textContent = 'Waiting';
+                } else {
+                    badge.className = 'status-badge neutral';
+                    badge.textContent = 'Off';
+                }
+            }
+
+            if (message) {
+                message.textContent = status.message || 'Not running';
+            }
+
+            // Update cycle progress
+            const cycleProgress = document.getElementById('autonomousCycleProgress');
+            if (cycleProgress && status.total_combinations > 0) {
+                const progressPct = (status.cycle_index / status.total_combinations * 100).toFixed(1);
+                cycleProgress.textContent = `${status.cycle_index} / ${status.total_combinations} (${progressPct}%)`;
+            }
+
+            // Update toggle switch state
+            const toggle = document.getElementById('autonomousToggle');
+            if (toggle && toggle.checked !== status.enabled) {
+                toggle.checked = status.enabled;
+                const label = document.getElementById('autonomousToggleLabel');
+                if (label) {
+                    label.textContent = status.enabled ? 'ON' : 'OFF';
+                    label.style.color = status.enabled ? 'var(--success)' : 'var(--text-secondary)';
+                }
+            }
+
+            // Refresh queue display if autonomous tab is visible
+            const autonomousTab = document.getElementById('autonomous-tab');
+            if (autonomousTab && autonomousTab.style.display !== 'none') {
+                renderTaskQueue();
+            }
+        }
+
+        // Helper to update elite UI from WebSocket
+        function updateEliteUI(status) {
+            if (!status) return;
+
+            // Only update if elite tab is visible
+            const eliteTab = document.getElementById('elite-tab');
+            if (!eliteTab || eliteTab.style.display === 'none') return;
+
+            // Update progress indicator
+            const progressEl = document.getElementById('eliteProgress');
+            if (progressEl) {
+                if (status.running) {
+                    if (status.paused) {
+                        progressEl.textContent = `⏸ Paused - ${status.processed}/${status.total}`;
+                        progressEl.className = 'elite-progress paused';
+                    } else {
+                        progressEl.textContent = `⚡ ${status.message || 'Validating...'} (${status.processed}/${status.total})`;
+                        progressEl.className = 'elite-progress running';
+                    }
+                } else if (status.message) {
+                    progressEl.textContent = `✓ ${status.message}`;
+                    progressEl.className = 'elite-progress';
+                } else {
+                    progressEl.textContent = '✓ Auto-validation active';
+                    progressEl.className = 'elite-progress';
+                }
+            }
+
+            // Refresh elite data periodically (not on every message to avoid overload)
+            if (status.running === false) {
+                loadEliteData();
+            }
+        }
+
+        // Handle individual strategy results (replaces SSE)
+        function handleStrategyResult(result) {
+            // Add to results table if it exists
+            const resultsBody = document.getElementById('streamingResultsBody');
+            if (resultsBody && result.strategy_name) {
+                const row = document.createElement('tr');
+                const metrics = result.metrics || {};
+                const pnl = metrics.total_pnl || 0;
+                const pnlClass = pnl >= 0 ? 'text-success' : 'text-danger';
+
+                row.innerHTML = `
+                    <td>${result.strategy_name || '-'}</td>
+                    <td>${result.direction || '-'}</td>
+                    <td>${metrics.win_rate?.toFixed(1) || '-'}%</td>
+                    <td>${metrics.profit_factor?.toFixed(2) || '-'}</td>
+                    <td class="${pnlClass}">£${pnl.toFixed(2)}</td>
+                `;
+
+                // Insert at top
+                resultsBody.insertBefore(row, resultsBody.firstChild);
+
+                // Limit rows
+                while (resultsBody.children.length > 50) {
+                    resultsBody.removeChild(resultsBody.lastChild);
+                }
+            }
+        }
 
         // Tab Navigation
         function showTab(tabName) {
@@ -5801,13 +6152,16 @@
         // Initial load
         document.addEventListener('DOMContentLoaded', async () => {
             addLog('System initialized');
-            startPolling();
+
+            // Initialize WebSocket for real-time updates (replaces polling)
+            initWebSocket();
 
             // Initialize source-specific options (pairs, intervals, periods)
             // Yahoo Finance is the default source
             updatePairOptions();
 
-            // Also do an immediate fetch to populate date range on first load
+            // Initial state will come from WebSocket full_state message
+            // But also do a fetch as backup in case WebSocket isn't ready yet
             try {
                 const response = await fetch('/api/status');
                 const data = await response.json();
