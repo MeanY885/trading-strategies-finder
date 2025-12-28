@@ -35,7 +35,8 @@ data_fetch_semaphore: Optional[asyncio.Semaphore] = None
 
 # Running optimizations tracking (for parallel mode)
 running_optimizations: Dict[str, dict] = {}
-running_optimizations_lock = threading.Lock()
+running_optimizations_lock = threading.Lock()  # For sync contexts
+running_optimizations_async_lock: Optional[asyncio.Lock] = None  # For async contexts
 
 # History of completed optimizations
 autonomous_runs_history: List[dict] = []
@@ -46,10 +47,13 @@ current_optimization_status: Optional[dict] = None
 
 def init_async_primitives():
     """Initialize asyncio primitives. Must be called from async context."""
-    global optimization_semaphore, data_fetch_semaphore
+    global optimization_semaphore, data_fetch_semaphore, running_optimizations_async_lock
 
     from config import MAX_CONCURRENT_OPTIMIZATIONS, MAX_CONCURRENT_FETCHES
     import psutil
+
+    # Initialize async lock for running_optimizations in async contexts
+    running_optimizations_async_lock = asyncio.Lock()
 
     # Auto-detect if not specified, or use configured value
     if MAX_CONCURRENT_OPTIMIZATIONS > 0:
@@ -407,9 +411,9 @@ async def run_single_optimization(
 
     status = app_state.get_autonomous_status()
 
-    def update_parallel_status(message: str, progress: int = None):
+    async def update_parallel_status(message: str, progress: int = None):
         if combo_id and combo_id in running_optimizations:
-            with running_optimizations_lock:
+            async with running_optimizations_async_lock:
                 if combo_id in running_optimizations:
                     running_optimizations[combo_id]["message"] = message
                     if progress is not None:
@@ -422,7 +426,7 @@ async def run_single_optimization(
     from data_fetcher import BinanceDataFetcher
     from services.ohlcv_cache import ohlcv_cache
 
-    update_parallel_status(f"Loading {pair}...", 5)
+    await update_parallel_status(f"Loading {pair}...", 5)
     app_state.update_autonomous_status(
         message=f"Loading {pair}...",
         progress=5,
@@ -435,10 +439,10 @@ async def run_single_optimization(
 
     if df is not None:
         log(f"[Autonomous Optimizer] Cache HIT: {pair} {timeframe['label']} {period['label']}")
-        update_parallel_status(f"Cached {pair}", 10)
+        await update_parallel_status(f"Cached {pair}", 10)
     else:
         # Cache miss - fetch from Binance (with semaphore for rate limiting)
-        update_parallel_status(f"Fetching {pair}...", 5)
+        await update_parallel_status(f"Fetching {pair}...", 5)
         async with data_fetch_semaphore:
             fetcher = BinanceDataFetcher()
             try:
@@ -504,7 +508,7 @@ async def run_single_optimization(
                     trial_total=total_trials,
                     message=f"Optimizing {pair} - {current_trial:,}/{total_trials:,}"
                 )
-                update_parallel_status(f"{pair} - {current_trial:,}/{total_trials:,}", progress_pct)
+                await update_parallel_status(f"{pair} - {current_trial:,}/{total_trials:,}", progress_pct)
 
             await asyncio.sleep(0.3)
 
@@ -606,7 +610,7 @@ async def process_single_combination(
             "message": f"Starting {combo['pair']}...",
         }
 
-        with running_optimizations_lock:
+        async with running_optimizations_async_lock:
             running_optimizations[combo_id] = combo_status
             app_state.update_autonomous_status(
                 parallel_running=list(running_optimizations.values()),
@@ -671,7 +675,7 @@ async def process_single_combination(
             return "error"
 
         finally:
-            with running_optimizations_lock:
+            async with running_optimizations_async_lock:
                 if combo_id in running_optimizations:
                     del running_optimizations[combo_id]
                 app_state.update_autonomous_status(
