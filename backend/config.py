@@ -19,11 +19,9 @@ PROJECT_DIR = BACKEND_DIR.parent
 if Path("/app").exists():
     DATA_DIR = Path("/app/data")
     OUTPUT_DIR = Path("/app/output")
-    FRONTEND_DIR = Path("/app/frontend")
 else:
     DATA_DIR = PROJECT_DIR / "data"
     OUTPUT_DIR = PROJECT_DIR / "output"
-    FRONTEND_DIR = PROJECT_DIR / "frontend"
 
 # Ensure directories exist
 DATA_DIR.mkdir(exist_ok=True)

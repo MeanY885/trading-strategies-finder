@@ -1,10 +1,11 @@
 """
 STRATEGY DATABASE
 ==================
-SQLite persistence layer for storing winning strategies across sessions.
+PostgreSQL persistence layer for storing winning strategies across sessions.
 Allows loading historical results and comparing performance over time.
 """
-import sqlite3
+import psycopg2
+from psycopg2.extras import RealDictCursor
 import json
 from datetime import datetime
 from typing import Dict, List, Any, Optional
@@ -13,7 +14,7 @@ import os
 
 class StrategyDatabase:
     """
-    SQLite database for persisting strategy results.
+    PostgreSQL database for persisting strategy results.
 
     Schema:
     - strategies: Core strategy results with metrics
@@ -21,11 +22,10 @@ class StrategyDatabase:
     - optimization_runs: Track optimization sessions
     """
 
-    def __init__(self, db_path: str = "data/strategies.db"):
-        self.db_path = db_path
-
-        # Ensure data directory exists
-        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+    def __init__(self, database_url: str = None):
+        self.database_url = database_url or os.environ.get('DATABASE_URL')
+        if not self.database_url:
+            raise ValueError("DATABASE_URL environment variable is required")
 
         self._init_database()
         self._init_priority_table()
@@ -35,11 +35,9 @@ class StrategyDatabase:
 
     def _get_connection(self):
         """
-        Get a database connection with proper settings for concurrent access.
-        Uses WAL mode for better read/write concurrency.
+        Get a database connection.
         """
-        conn = sqlite3.connect(self.db_path)
-        conn.execute("PRAGMA busy_timeout=30000")  # Wait up to 30s for lock
+        conn = psycopg2.connect(self.database_url)
         return conn
 
     def _init_database(self):
@@ -47,18 +45,10 @@ class StrategyDatabase:
         conn = self._get_connection()
         cursor = conn.cursor()
 
-        # Enable WAL mode for better concurrent read/write performance
-        # WAL allows multiple readers while one writer is active
-        cursor.execute("PRAGMA journal_mode=WAL")
-        # Set busy timeout to 30 seconds - wait for lock instead of failing immediately
-        cursor.execute("PRAGMA busy_timeout=30000")
-        # Synchronous=NORMAL is safe with WAL and faster than FULL
-        cursor.execute("PRAGMA synchronous=NORMAL")
-
         # Main strategies table
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS strategies (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 strategy_name TEXT NOT NULL,
                 strategy_category TEXT,
                 params TEXT,
@@ -99,19 +89,52 @@ class StrategyDatabase:
                 timeframe TEXT,
                 data_start TEXT,
                 data_end TEXT,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 optimization_run_id INTEGER,
 
                 -- Equity curve (JSON)
-                equity_curve TEXT
+                equity_curve TEXT,
+
+                -- Bidirectional trading fields
+                trade_mode TEXT DEFAULT 'single',
+                long_trades INTEGER DEFAULT 0,
+                long_wins INTEGER DEFAULT 0,
+                long_pnl REAL DEFAULT 0,
+                short_trades INTEGER DEFAULT 0,
+                short_wins INTEGER DEFAULT 0,
+                short_pnl REAL DEFAULT 0,
+                flip_count INTEGER DEFAULT 0,
+
+                -- Elite strategy validation fields
+                elite_status TEXT DEFAULT 'pending',
+                elite_validated_at TEXT,
+                elite_periods_passed INTEGER DEFAULT 0,
+                elite_periods_total INTEGER DEFAULT 0,
+                elite_validation_data TEXT,
+                elite_score REAL DEFAULT 0,
+
+                -- Dual Pool Architecture fields
+                pool TEXT DEFAULT 'tp_sl',
+                exit_type TEXT DEFAULT 'fixed_tp_sl',
+                exit_indicator TEXT,
+                trailing_atr_mult REAL,
+                strategy_style TEXT DEFAULT 'unknown',
+
+                -- Trend-following metrics
+                avg_trade_duration_hours REAL DEFAULT 0,
+                mfe_capture_ratio REAL DEFAULT 0,
+                avg_winner_pct REAL DEFAULT 0,
+                avg_loser_pct REAL DEFAULT 0,
+                risk_reward_ratio REAL DEFAULT 0,
+                trend_following_score REAL DEFAULT 0
             )
         ''')
 
         # Optimization runs table
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS optimization_runs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                started_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                id SERIAL PRIMARY KEY,
+                started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 completed_at TEXT,
                 symbol TEXT,
                 timeframe TEXT,
@@ -125,94 +148,40 @@ class StrategyDatabase:
             )
         ''')
 
-        # Completed optimizations tracking table - for accurate resume functionality
-        # Tracks exactly which (pair, period, timeframe, granularity) combinations have been completed
+        # Completed optimizations tracking table
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS completed_optimizations (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 pair TEXT NOT NULL,
                 period_label TEXT NOT NULL,
                 timeframe_label TEXT NOT NULL,
                 granularity_label TEXT NOT NULL,
                 strategies_found INTEGER DEFAULT 0,
-                completed_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                completed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 source TEXT DEFAULT 'binance',
                 UNIQUE(pair, period_label, timeframe_label, granularity_label)
             )
         ''')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_completed_combo ON completed_optimizations(pair, period_label, timeframe_label, granularity_label)')
 
         # Create indexes for fast querying
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_completed_combo ON completed_optimizations(pair, period_label, timeframe_label, granularity_label)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_win_rate ON strategies(win_rate)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_profit_factor ON strategies(profit_factor)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_composite_score ON strategies(composite_score)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_symbol ON strategies(symbol)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_timeframe ON strategies(timeframe)')
-        # Elite validation indexes for fast filtering
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_elite_status ON strategies(elite_status)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_elite_score ON strategies(elite_score DESC)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_elite_combo ON strategies(symbol, timeframe, elite_status, elite_score)')
-        # Performance indexes for common query patterns
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_elite_status_score ON strategies(elite_status, elite_score DESC)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_symbol_timeframe ON strategies(symbol, timeframe)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_created_at ON strategies(created_at DESC)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_pending_validation ON strategies(elite_status, composite_score DESC)')
 
-        # Migration: Add missing columns to existing databases
-        cursor.execute("PRAGMA table_info(strategies)")
-        existing_columns = {row[1] for row in cursor.fetchall()}
-
-        migration_columns = [
-            ('indicator_params', 'TEXT'),
-            ('tuning_improved', 'INTEGER DEFAULT 0'),
-            ('tuning_score_before', 'REAL'),
-            ('tuning_score_after', 'REAL'),
-            ('tuning_improvement_pct', 'REAL'),
-            # Bidirectional trading fields
-            ('trade_mode', "TEXT DEFAULT 'single'"),  # 'long', 'short', 'bidirectional'
-            ('long_trades', 'INTEGER DEFAULT 0'),
-            ('long_wins', 'INTEGER DEFAULT 0'),
-            ('long_pnl', 'REAL DEFAULT 0'),
-            ('short_trades', 'INTEGER DEFAULT 0'),
-            ('short_wins', 'INTEGER DEFAULT 0'),
-            ('short_pnl', 'REAL DEFAULT 0'),
-            ('flip_count', 'INTEGER DEFAULT 0'),
-            # Elite strategy validation fields
-            ('elite_status', "TEXT DEFAULT 'pending'"),  # 'pending', 'elite', 'failed', 'partial'
-            ('elite_validated_at', 'TEXT'),              # Last validation timestamp
-            ('elite_periods_passed', 'INTEGER DEFAULT 0'),  # Count of periods that passed
-            ('elite_periods_total', 'INTEGER DEFAULT 0'),   # Total periods tested
-            ('elite_validation_data', 'TEXT'),           # JSON with per-period results
-            ('elite_score', 'REAL DEFAULT 0'),           # Consistency score 0-100
-
-            # Dual Pool Architecture fields (TP/SL vs Indicator Exit)
-            ('pool', "TEXT DEFAULT 'tp_sl'"),            # 'tp_sl' or 'indicator_exit'
-            ('exit_type', "TEXT DEFAULT 'fixed_tp_sl'"), # 'fixed_tp_sl', 'trailing_stop', 'indicator_exit'
-            ('exit_indicator', 'TEXT'),                  # 'supertrend', 'ema_cross', 'psar', 'mcginley', etc.
-            ('trailing_atr_mult', 'REAL'),               # ATR multiplier for trailing stops
-            ('strategy_style', "TEXT DEFAULT 'unknown'"), # 'trend_following', 'mean_reversion', 'breakout'
-
-            # Trend-following metrics
-            ('avg_trade_duration_hours', 'REAL DEFAULT 0'),  # Average holding period
-            ('mfe_capture_ratio', 'REAL DEFAULT 0'),         # How much of max favorable excursion was captured
-            ('avg_winner_pct', 'REAL DEFAULT 0'),            # Average winning trade %
-            ('avg_loser_pct', 'REAL DEFAULT 0'),             # Average losing trade %
-            ('risk_reward_ratio', 'REAL DEFAULT 0'),         # avg_winner / avg_loser
-            ('trend_following_score', 'REAL DEFAULT 0'),     # Score using trend-following weights
-        ]
-
-        for col_name, col_type in migration_columns:
-            if col_name not in existing_columns:
-                try:
-                    cursor.execute(f'ALTER TABLE strategies ADD COLUMN {col_name} {col_type}')
-                    print(f"Added missing column: {col_name}")
-                except Exception as e:
-                    print(f"Column {col_name} migration skipped: {e}")
-
         conn.commit()
         conn.close()
 
-        print(f"Strategy database initialized: {self.db_path}")
+        print(f"Strategy database initialized (PostgreSQL)")
 
     def _auto_deduplicate(self):
         """Automatically remove duplicates on startup."""
@@ -230,10 +199,11 @@ class StrategyDatabase:
         cursor.execute('''
             INSERT INTO optimization_runs
             (symbol, timeframe, data_source, data_rows, capital, risk_percent, status)
-            VALUES (?, ?, ?, ?, ?, ?, 'running')
+            VALUES (%s, %s, %s, %s, %s, %s, 'running')
+            RETURNING id
         ''', (symbol, timeframe, data_source, data_rows, capital, risk_percent))
 
-        run_id = cursor.lastrowid
+        run_id = cursor.fetchone()[0]
         conn.commit()
         conn.close()
 
@@ -248,8 +218,8 @@ class StrategyDatabase:
 
         cursor.execute('''
             UPDATE optimization_runs
-            SET completed_at = ?, strategies_tested = ?, profitable_found = ?, status = 'completed'
-            WHERE id = ?
+            SET completed_at = %s, strategies_tested = %s, profitable_found = %s, status = 'completed'
+            WHERE id = %s
         ''', (datetime.now().isoformat(), strategies_tested, profitable_found, run_id))
 
         conn.commit()
@@ -265,20 +235,6 @@ class StrategyDatabase:
                       tuning_info: Dict = None) -> Optional[int]:
         """
         Save a strategy result to the database.
-
-        Args:
-            result: StrategyResult dataclass
-            run_id: Optimization run ID
-            symbol: Trading pair (e.g., BTCGBP)
-            timeframe: Candle timeframe (e.g., 15m)
-            data_source: Data source (e.g., Kraken)
-            data_start: Start date of data
-            data_end: End date of data
-            indicator_params: Dict of tuned indicator parameters (Phase 2)
-            tuning_info: Dict with tuning results (improved, before_score, after_score, improvement_pct)
-
-        Returns:
-            Strategy ID in database, or None if duplicate
         """
         conn = self._get_connection()
         cursor = conn.cursor()
@@ -288,7 +244,7 @@ class StrategyDatabase:
         tp_percent = params.get('tp_percent', 1.0)
         sl_percent = params.get('sl_percent', 3.0)
 
-        # Check for duplicate - same strategy with same key metrics
+        # Check for duplicate
         strategy_name = getattr(result, 'strategy_name', 'unknown')
         total_trades = getattr(result, 'total_trades', 0)
         win_rate = getattr(result, 'win_rate', 0)
@@ -297,15 +253,15 @@ class StrategyDatabase:
 
         cursor.execute('''
             SELECT id FROM strategies
-            WHERE strategy_name = ?
-              AND symbol = ?
-              AND timeframe = ?
-              AND ABS(tp_percent - ?) < 0.01
-              AND ABS(sl_percent - ?) < 0.01
-              AND total_trades = ?
-              AND ABS(win_rate - ?) < 0.01
-              AND ABS(total_pnl - ?) < 0.01
-              AND ABS(profit_factor - ?) < 0.01
+            WHERE strategy_name = %s
+              AND symbol = %s
+              AND timeframe = %s
+              AND ABS(tp_percent - %s) < 0.01
+              AND ABS(sl_percent - %s) < 0.01
+              AND total_trades = %s
+              AND ABS(win_rate - %s) < 0.01
+              AND ABS(total_pnl - %s) < 0.01
+              AND ABS(profit_factor - %s) < 0.01
             LIMIT 1
         ''', (strategy_name, symbol, timeframe, tp_percent, sl_percent,
               total_trades, win_rate, total_pnl, profit_factor))
@@ -314,7 +270,7 @@ class StrategyDatabase:
         if existing:
             conn.close()
             print(f"Skipping duplicate strategy: {strategy_name} (TP={tp_percent}%, SL={sl_percent}%)")
-            return None  # Return None to indicate duplicate was skipped
+            return None
 
         # Convert found_by list to JSON
         found_by = json.dumps(result.found_by) if hasattr(result, 'found_by') else '[]'
@@ -340,7 +296,6 @@ class StrategyDatabase:
         direction = getattr(result, 'direction', 'long')
         trade_mode = 'bidirectional' if direction == 'both' else direction
 
-        # Use getattr with defaults for compatibility with both old and new result formats
         cursor.execute('''
             INSERT INTO strategies
             (strategy_name, strategy_category, params, total_trades, win_rate,
@@ -350,7 +305,8 @@ class StrategyDatabase:
              val_pnl, val_profit_factor, val_win_rate, found_by, data_source, symbol,
              timeframe, data_start, data_end, optimization_run_id, equity_curve,
              trade_mode, long_trades, long_wins, long_pnl, short_trades, short_wins, short_pnl, flip_count)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
         ''', (
             getattr(result, 'strategy_name', 'unknown'),
             getattr(result, 'strategy_category', 'unknown'),
@@ -382,7 +338,6 @@ class StrategyDatabase:
             data_end,
             run_id,
             equity_curve,
-            # Bidirectional fields
             trade_mode,
             getattr(result, 'long_trades', 0),
             getattr(result, 'long_wins', 0),
@@ -393,7 +348,7 @@ class StrategyDatabase:
             getattr(result, 'flip_count', 0)
         ))
 
-        strategy_id = cursor.lastrowid
+        strategy_id = cursor.fetchone()[0]
         conn.commit()
         conn.close()
 
@@ -417,38 +372,25 @@ class StrategyDatabase:
     def get_top_strategies(self, limit: int = 10, symbol: str = None,
                            timeframe: str = None, min_trades: int = 3,
                            min_win_rate: float = 0.0) -> List[Dict]:
-        """
-        Get top strategies by composite score.
-
-        Args:
-            limit: Maximum number of results
-            symbol: Filter by trading pair
-            timeframe: Filter by timeframe
-            min_trades: Minimum number of trades required
-            min_win_rate: Minimum win rate required
-
-        Returns:
-            List of strategy dictionaries
-        """
+        """Get top strategies by composite score."""
         conn = self._get_connection()
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
 
         query = '''
             SELECT * FROM strategies
-            WHERE total_trades >= ? AND win_rate >= ?
+            WHERE total_trades >= %s AND win_rate >= %s
         '''
         params = [min_trades, min_win_rate]
 
         if symbol:
-            query += ' AND symbol = ?'
+            query += ' AND symbol = %s'
             params.append(symbol)
 
         if timeframe:
-            query += ' AND timeframe = ?'
+            query += ' AND timeframe = %s'
             params.append(timeframe)
 
-        query += ' ORDER BY composite_score DESC LIMIT ?'
+        query += ' ORDER BY composite_score DESC LIMIT %s'
         params.append(limit)
 
         cursor.execute(query, params)
@@ -458,16 +400,15 @@ class StrategyDatabase:
         return [self._row_to_dict(row) for row in rows]
 
     def get_best_by_win_rate(self, limit: int = 10, min_trades: int = 5) -> List[Dict]:
-        """Get strategies with highest win rate (min trades filter)."""
+        """Get strategies with highest win rate."""
         conn = self._get_connection()
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
 
         cursor.execute('''
             SELECT * FROM strategies
-            WHERE total_trades >= ?
+            WHERE total_trades >= %s
             ORDER BY win_rate DESC
-            LIMIT ?
+            LIMIT %s
         ''', (min_trades, limit))
 
         rows = cursor.fetchall()
@@ -478,14 +419,13 @@ class StrategyDatabase:
     def get_best_by_profit_factor(self, limit: int = 10, min_trades: int = 5) -> List[Dict]:
         """Get strategies with highest profit factor."""
         conn = self._get_connection()
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
 
         cursor.execute('''
             SELECT * FROM strategies
-            WHERE total_trades >= ? AND profit_factor > 0
+            WHERE total_trades >= %s AND profit_factor > 0
             ORDER BY profit_factor DESC
-            LIMIT ?
+            LIMIT %s
         ''', (min_trades, limit))
 
         rows = cursor.fetchall()
@@ -498,34 +438,33 @@ class StrategyDatabase:
                           symbol: str = None, timeframe: str = None) -> List[Dict]:
         """Search strategies with various filters."""
         conn = self._get_connection()
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
 
         query = 'SELECT * FROM strategies WHERE 1=1'
         params = []
 
         if strategy_name:
-            query += ' AND strategy_name LIKE ?'
+            query += ' AND strategy_name LIKE %s'
             params.append(f'%{strategy_name}%')
 
         if category:
-            query += ' AND strategy_category LIKE ?'
+            query += ' AND strategy_category LIKE %s'
             params.append(f'%{category}%')
 
         if min_win_rate is not None:
-            query += ' AND win_rate >= ?'
+            query += ' AND win_rate >= %s'
             params.append(min_win_rate)
 
         if min_pnl is not None:
-            query += ' AND total_pnl >= ?'
+            query += ' AND total_pnl >= %s'
             params.append(min_pnl)
 
         if symbol:
-            query += ' AND symbol = ?'
+            query += ' AND symbol = %s'
             params.append(symbol)
 
         if timeframe:
-            query += ' AND timeframe = ?'
+            query += ' AND timeframe = %s'
             params.append(timeframe)
 
         query += ' ORDER BY composite_score DESC LIMIT 100'
@@ -539,21 +478,19 @@ class StrategyDatabase:
     def get_strategy_by_id(self, strategy_id: int) -> Optional[Dict]:
         """Get a single strategy by ID."""
         conn = self._get_connection()
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        cursor.execute('SELECT * FROM strategies WHERE id = ?', (strategy_id,))
+        cursor.execute('SELECT * FROM strategies WHERE id = %s', (strategy_id,))
         row = cursor.fetchone()
         conn.close()
 
         return self._row_to_dict(row) if row else None
 
     def get_optimization_run_by_id(self, run_id: int) -> Optional[Dict]:
-        """Get optimization run by ID to access risk_percent and other settings."""
+        """Get optimization run by ID."""
         conn = self._get_connection()
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        cursor.execute('SELECT * FROM optimization_runs WHERE id = ?', (run_id,))
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor.execute('SELECT * FROM optimization_runs WHERE id = %s', (run_id,))
         row = cursor.fetchone()
         conn.close()
         return dict(row) if row else None
@@ -561,13 +498,12 @@ class StrategyDatabase:
     def get_optimization_runs(self, limit: int = 20) -> List[Dict]:
         """Get recent optimization runs."""
         conn = self._get_connection()
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
 
         cursor.execute('''
             SELECT * FROM optimization_runs
             ORDER BY started_at DESC
-            LIMIT ?
+            LIMIT %s
         ''', (limit,))
 
         rows = cursor.fetchall()
@@ -618,20 +554,17 @@ class StrategyDatabase:
         conn = self._get_connection()
         cursor = conn.cursor()
 
-        # Get distinct symbols
         cursor.execute("SELECT DISTINCT symbol FROM strategies WHERE symbol IS NOT NULL ORDER BY symbol")
         symbols = [row[0] for row in cursor.fetchall()]
 
-        # Get distinct timeframes
         cursor.execute("SELECT DISTINCT timeframe FROM strategies WHERE timeframe IS NOT NULL ORDER BY timeframe")
         timeframes = [row[0] for row in cursor.fetchall()]
 
-        # Get date range
         cursor.execute("SELECT MIN(created_at), MAX(created_at) FROM strategies")
         date_row = cursor.fetchone()
         date_range = {
-            "min": date_row[0] if date_row[0] else None,
-            "max": date_row[1] if date_row[1] else None
+            "min": str(date_row[0]) if date_row[0] else None,
+            "max": str(date_row[1]) if date_row[1] else None
         }
 
         conn.close()
@@ -641,14 +574,8 @@ class StrategyDatabase:
             "date_range": date_range
         }
 
-    def _row_to_dict(self, row: sqlite3.Row, parse_equity_curve: bool = True) -> Dict:
-        """
-        Convert a database row to a dictionary with parsed JSON fields.
-
-        Args:
-            row: SQLite Row object
-            parse_equity_curve: If False, skip parsing the large equity_curve field for performance
-        """
+    def _row_to_dict(self, row: Dict, parse_equity_curve: bool = True) -> Dict:
+        """Convert a database row to a dictionary with parsed JSON fields."""
         d = dict(row)
 
         # Parse JSON fields
@@ -670,8 +597,11 @@ class StrategyDatabase:
             except:
                 d['equity_curve'] = []
         elif not parse_equity_curve:
-            # Don't include the raw JSON string - set to empty for performance
             d['equity_curve'] = []
+
+        # Convert datetime to string if needed
+        if d.get('created_at') and hasattr(d['created_at'], 'isoformat'):
+            d['created_at'] = d['created_at'].isoformat()
 
         return d
 
@@ -679,32 +609,19 @@ class StrategyDatabase:
                              periods_passed: int, periods_total: int,
                              validation_data: str = None,
                              elite_score: float = 0) -> bool:
-        """
-        Update elite validation status for a strategy.
-
-        Args:
-            strategy_id: Strategy ID
-            elite_status: 'pending', 'elite', 'partial', 'failed'
-            periods_passed: Number of validation periods that passed
-            periods_total: Total number of testable periods
-            validation_data: JSON string with per-period results
-            elite_score: Consistency score 0-100
-
-        Returns:
-            True if updated, False if strategy not found
-        """
+        """Update elite validation status for a strategy."""
         conn = self._get_connection()
         cursor = conn.cursor()
 
         cursor.execute('''
             UPDATE strategies
-            SET elite_status = ?,
-                elite_validated_at = ?,
-                elite_periods_passed = ?,
-                elite_periods_total = ?,
-                elite_validation_data = ?,
-                elite_score = ?
-            WHERE id = ?
+            SET elite_status = %s,
+                elite_validated_at = %s,
+                elite_periods_passed = %s,
+                elite_periods_total = %s,
+                elite_validation_data = %s,
+                elite_score = %s
+            WHERE id = %s
         ''', (elite_status, datetime.now().isoformat(), periods_passed,
               periods_total, validation_data, elite_score, strategy_id))
 
@@ -715,22 +632,10 @@ class StrategyDatabase:
         return updated
 
     def get_elite_strategies_optimized(self, top_n_per_market: int = 10) -> List[Dict]:
-        """
-        Get top N validated strategies per pair/timeframe, efficiently at the database level.
-        Uses window functions for efficient per-group limiting.
-
-        Args:
-            top_n_per_market: Max strategies to return per (symbol, timeframe) pair
-
-        Returns:
-            List of elite strategies, sorted by elite_score descending
-        """
+        """Get top N validated strategies per pair/timeframe."""
         conn = self._get_connection()
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Use ROW_NUMBER() window function to get top N per market efficiently
-        # This avoids loading all strategies into memory
         cursor.execute('''
             WITH ranked AS (
                 SELECT *,
@@ -744,7 +649,7 @@ class StrategyDatabase:
                   AND elite_score > 0
             )
             SELECT * FROM ranked
-            WHERE rank <= ?
+            WHERE rank <= %s
             ORDER BY elite_score DESC
         ''', (top_n_per_market,))
 
@@ -754,19 +659,15 @@ class StrategyDatabase:
         return [self._row_to_dict(row) for row in rows]
 
     def get_strategies_pending_validation(self, limit: int = 100) -> List[Dict]:
-        """
-        Get strategies that need elite validation, ordered by composite score.
-        Efficient query that only fetches pending strategies.
-        """
+        """Get strategies that need elite validation."""
         conn = self._get_connection()
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
 
         cursor.execute('''
             SELECT * FROM strategies
             WHERE elite_status IS NULL OR elite_status = 'pending'
             ORDER BY composite_score DESC
-            LIMIT ?
+            LIMIT %s
         ''', (limit,))
 
         rows = cursor.fetchall()
@@ -777,8 +678,7 @@ class StrategyDatabase:
     def get_all_strategies(self) -> List[Dict]:
         """Get all strategies from the database."""
         conn = self._get_connection()
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
 
         cursor.execute('SELECT * FROM strategies ORDER BY id DESC')
         rows = cursor.fetchall()
@@ -791,7 +691,7 @@ class StrategyDatabase:
         conn = self._get_connection()
         cursor = conn.cursor()
 
-        cursor.execute('DELETE FROM strategies WHERE id = ?', (strategy_id,))
+        cursor.execute('DELETE FROM strategies WHERE id = %s', (strategy_id,))
         deleted = cursor.rowcount > 0
 
         conn.commit()
@@ -800,21 +700,19 @@ class StrategyDatabase:
         return deleted
 
     def remove_duplicates(self) -> int:
-        """Remove duplicate strategies, keeping the most recent (highest ID) of each group."""
+        """Remove duplicate strategies, keeping the most recent."""
         conn = self._get_connection()
         cursor = conn.cursor()
 
-        # Find duplicates - same strategy with same key metrics
-        # Keep the one with highest ID (most recent)
         cursor.execute('''
             DELETE FROM strategies
             WHERE id NOT IN (
                 SELECT MAX(id)
                 FROM strategies
                 GROUP BY strategy_name, symbol, timeframe,
-                         ROUND(tp_percent, 1), ROUND(sl_percent, 1),
-                         total_trades, ROUND(win_rate, 1),
-                         ROUND(total_pnl, 1), ROUND(profit_factor, 2)
+                         ROUND(tp_percent::numeric, 1), ROUND(sl_percent::numeric, 1),
+                         total_trades, ROUND(win_rate::numeric, 1),
+                         ROUND(total_pnl::numeric, 1), ROUND(profit_factor::numeric, 2)
             )
         ''')
 
@@ -826,19 +724,16 @@ class StrategyDatabase:
         return deleted
 
     def clear_all(self) -> int:
-        """Clear entire database - all strategies, runs, and tracking data."""
+        """Clear entire database."""
         conn = self._get_connection()
         cursor = conn.cursor()
 
         cursor.execute('SELECT COUNT(*) FROM strategies')
         count = cursor.fetchone()[0]
 
-        # Clear all strategy and optimization data
         cursor.execute('DELETE FROM strategies')
         cursor.execute('DELETE FROM optimization_runs')
         cursor.execute('DELETE FROM completed_optimizations')
-
-        # Clear all priority queue tables
         cursor.execute('DELETE FROM priority_items')
         cursor.execute('DELETE FROM priority_pairs')
         cursor.execute('DELETE FROM priority_periods')
@@ -853,23 +748,22 @@ class StrategyDatabase:
         return count
 
     # =========================================================================
-    # COMPLETED OPTIMIZATIONS TRACKING - For accurate resume functionality
+    # COMPLETED OPTIMIZATIONS TRACKING
     # =========================================================================
 
     def record_completed_optimization(self, pair: str, period_label: str,
                                        timeframe_label: str, granularity_label: str,
                                        strategies_found: int = 0, source: str = 'binance'):
-        """
-        Record that an optimization combination has been completed.
-        Uses INSERT OR REPLACE to update if already exists.
-        """
+        """Record that an optimization combination has been completed."""
         conn = self._get_connection()
         cursor = conn.cursor()
 
         cursor.execute('''
-            INSERT OR REPLACE INTO completed_optimizations
+            INSERT INTO completed_optimizations
             (pair, period_label, timeframe_label, granularity_label, strategies_found, completed_at, source)
-            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
+            VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP, %s)
+            ON CONFLICT (pair, period_label, timeframe_label, granularity_label)
+            DO UPDATE SET strategies_found = EXCLUDED.strategies_found, completed_at = CURRENT_TIMESTAMP
         ''', (pair, period_label, timeframe_label, granularity_label, strategies_found, source))
 
         conn.commit()
@@ -883,7 +777,7 @@ class StrategyDatabase:
 
         cursor.execute('''
             SELECT 1 FROM completed_optimizations
-            WHERE pair = ? AND period_label = ? AND timeframe_label = ? AND granularity_label = ?
+            WHERE pair = %s AND period_label = %s AND timeframe_label = %s AND granularity_label = %s
         ''', (pair, period_label, timeframe_label, granularity_label))
 
         result = cursor.fetchone() is not None
@@ -891,17 +785,7 @@ class StrategyDatabase:
         return result
 
     def get_completed_optimizations(self, with_timestamps: bool = False) -> dict:
-        """
-        Get completed optimization combinations.
-
-        Args:
-            with_timestamps: If True, returns dict mapping combo key to completed_at timestamp.
-                           If False, returns set of combo keys (legacy behavior).
-
-        Returns:
-            If with_timestamps=True: dict of {(pair, period, timeframe, granularity): completed_at}
-            If with_timestamps=False: set of (pair, period_label, timeframe_label, granularity_label)
-        """
+        """Get completed optimization combinations."""
         conn = self._get_connection()
         cursor = conn.cursor()
 
@@ -911,13 +795,11 @@ class StrategyDatabase:
         ''')
 
         if with_timestamps:
-            # Return dict with timestamps for period boundary checking
             completed = {
-                (row[0], row[1], row[2], row[3]): row[4]
+                (row[0], row[1], row[2], row[3]): str(row[4]) if row[4] else None
                 for row in cursor.fetchall()
             }
         else:
-            # Legacy behavior: return set of keys only
             completed = {(row[0], row[1], row[2], row[3]) for row in cursor.fetchall()}
 
         conn.close()
@@ -933,23 +815,17 @@ class StrategyDatabase:
         return count
 
     def clear_completed_optimizations(self, pair: str = None, granularity_label: str = None):
-        """
-        Clear completed optimization records.
-        - No args: clear all
-        - pair only: clear all for that pair
-        - granularity only: clear all for that granularity
-        - both: clear specific pair+granularity combos
-        """
+        """Clear completed optimization records."""
         conn = self._get_connection()
         cursor = conn.cursor()
 
         if pair and granularity_label:
-            cursor.execute('DELETE FROM completed_optimizations WHERE pair = ? AND granularity_label = ?',
+            cursor.execute('DELETE FROM completed_optimizations WHERE pair = %s AND granularity_label = %s',
                           (pair, granularity_label))
         elif pair:
-            cursor.execute('DELETE FROM completed_optimizations WHERE pair = ?', (pair,))
+            cursor.execute('DELETE FROM completed_optimizations WHERE pair = %s', (pair,))
         elif granularity_label:
-            cursor.execute('DELETE FROM completed_optimizations WHERE granularity_label = ?', (granularity_label,))
+            cursor.execute('DELETE FROM completed_optimizations WHERE granularity_label = %s', (granularity_label,))
         else:
             cursor.execute('DELETE FROM completed_optimizations')
 
@@ -963,13 +839,13 @@ class StrategyDatabase:
     # =========================================================================
 
     def _init_priority_table(self):
-        """Create priority_items table if it doesn't exist (legacy)."""
+        """Create priority tables if they don't exist."""
         conn = self._get_connection()
         cursor = conn.cursor()
 
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS priority_items (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 position INTEGER NOT NULL,
                 pair TEXT NOT NULL,
                 period_label TEXT NOT NULL,
@@ -980,8 +856,8 @@ class StrategyDatabase:
                 granularity_trials INTEGER NOT NULL,
                 source TEXT DEFAULT 'binance',
                 enabled INTEGER DEFAULT 1,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(pair, period_label, timeframe_label, granularity_label)
             )
         ''')
@@ -989,7 +865,6 @@ class StrategyDatabase:
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_priority_position ON priority_items(position)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_priority_enabled ON priority_items(enabled)')
 
-        # Initialize new 3-list priority tables
         self._init_priority_lists_tables(cursor)
 
         conn.commit()
@@ -997,67 +872,61 @@ class StrategyDatabase:
 
     def _init_priority_lists_tables(self, cursor):
         """Create separate priority tables for pairs, periods, and timeframes."""
-        # Trading Pairs priority
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS priority_pairs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 position INTEGER NOT NULL,
                 value TEXT NOT NULL UNIQUE,
                 label TEXT NOT NULL,
                 enabled INTEGER DEFAULT 1,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
 
-        # Historical Periods priority
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS priority_periods (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 position INTEGER NOT NULL,
                 value TEXT NOT NULL UNIQUE,
                 label TEXT NOT NULL,
                 months REAL NOT NULL,
                 enabled INTEGER DEFAULT 1,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
 
-        # Timeframes priority
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS priority_timeframes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 position INTEGER NOT NULL,
                 value TEXT NOT NULL UNIQUE,
                 label TEXT NOT NULL,
                 minutes INTEGER NOT NULL,
                 enabled INTEGER DEFAULT 1,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
 
-        # Granularities priority
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS priority_granularities (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 position INTEGER NOT NULL,
                 value TEXT NOT NULL UNIQUE,
                 label TEXT NOT NULL,
                 n_trials INTEGER NOT NULL,
                 enabled INTEGER DEFAULT 1,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
 
-        # Global priority settings (granularity, etc.)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS priority_settings (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL,
-                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
 
-        # Create indexes
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_pairs_position ON priority_pairs(position)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_periods_position ON priority_periods(position)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_timeframes_position ON priority_timeframes(position)')
@@ -1066,8 +935,7 @@ class StrategyDatabase:
     def get_priority_list(self) -> List[Dict]:
         """Get all priority items ordered by position."""
         conn = self._get_connection()
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
 
         cursor.execute('''
             SELECT * FROM priority_items
@@ -1087,7 +955,6 @@ class StrategyDatabase:
         conn = self._get_connection()
         cursor = conn.cursor()
 
-        # Get next position
         cursor.execute('SELECT COALESCE(MAX(position), 0) + 1 FROM priority_items')
         next_position = cursor.fetchone()[0]
 
@@ -1096,16 +963,18 @@ class StrategyDatabase:
                 INSERT INTO priority_items
                 (position, pair, period_label, period_months, timeframe_label,
                  timeframe_minutes, granularity_label, granularity_trials, source)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
             ''', (next_position, pair, period_label, period_months,
                   timeframe_label, timeframe_minutes, granularity_label,
                   granularity_trials, source))
 
-            item_id = cursor.lastrowid
+            item_id = cursor.fetchone()[0]
             conn.commit()
             return item_id
-        except sqlite3.IntegrityError:
-            return None  # Duplicate
+        except psycopg2.IntegrityError:
+            conn.rollback()
+            return None
         finally:
             conn.close()
 
@@ -1114,18 +983,19 @@ class StrategyDatabase:
         conn = self._get_connection()
         cursor = conn.cursor()
 
-        cursor.execute('DELETE FROM priority_items WHERE id = ?', (item_id,))
+        cursor.execute('DELETE FROM priority_items WHERE id = %s', (item_id,))
         deleted = cursor.rowcount > 0
 
         if deleted:
-            # Reorder positions to eliminate gaps
             cursor.execute('''
                 WITH numbered AS (
                     SELECT id, ROW_NUMBER() OVER (ORDER BY position) as new_pos
                     FROM priority_items
                 )
                 UPDATE priority_items
-                SET position = (SELECT new_pos FROM numbered WHERE numbered.id = priority_items.id)
+                SET position = numbered.new_pos
+                FROM numbered
+                WHERE priority_items.id = numbered.id
             ''')
 
         conn.commit()
@@ -1140,8 +1010,8 @@ class StrategyDatabase:
         for position, item_id in enumerate(id_order, start=1):
             cursor.execute('''
                 UPDATE priority_items
-                SET position = ?, updated_at = ?
-                WHERE id = ?
+                SET position = %s, updated_at = %s
+                WHERE id = %s
             ''', (position, datetime.now().isoformat(), item_id))
 
         conn.commit()
@@ -1153,14 +1023,14 @@ class StrategyDatabase:
         conn = self._get_connection()
         cursor = conn.cursor()
 
-        cursor.execute('SELECT enabled FROM priority_items WHERE id = ?', (item_id,))
+        cursor.execute('SELECT enabled FROM priority_items WHERE id = %s', (item_id,))
         row = cursor.fetchone()
         if not row:
             conn.close()
             return None
 
         new_status = 0 if row[0] else 1
-        cursor.execute('UPDATE priority_items SET enabled = ?, updated_at = ? WHERE id = ?',
+        cursor.execute('UPDATE priority_items SET enabled = %s, updated_at = %s WHERE id = %s',
                        (new_status, datetime.now().isoformat(), item_id))
 
         conn.commit()
@@ -1168,7 +1038,7 @@ class StrategyDatabase:
         return bool(new_status)
 
     def clear_priority_items(self) -> int:
-        """Clear all priority items. Returns count deleted."""
+        """Clear all priority items."""
         conn = self._get_connection()
         cursor = conn.cursor()
 
@@ -1209,21 +1079,14 @@ class StrategyDatabase:
     # =========================================================================
 
     def get_all_priority_lists(self) -> Dict:
-        """
-        Get all priority lists in a single database connection.
-        Much faster than calling each method separately.
-        Returns dict with 'pairs', 'periods', 'timeframes', 'granularities', and 'populated'.
-        """
+        """Get all priority lists in a single database connection."""
         conn = self._get_connection()
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Check if populated
         cursor.execute('SELECT COUNT(*) FROM priority_pairs')
-        pairs_count = cursor.fetchone()[0]
+        pairs_count = cursor.fetchone()['count']
         populated = pairs_count > 0
 
-        # Fetch all lists in single connection
         cursor.execute('SELECT * FROM priority_pairs ORDER BY position ASC')
         pairs = [dict(row) for row in cursor.fetchall()]
 
@@ -1249,8 +1112,7 @@ class StrategyDatabase:
     def get_priority_pairs(self) -> List[Dict]:
         """Get all trading pairs ordered by position."""
         conn = self._get_connection()
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
         cursor.execute('SELECT * FROM priority_pairs ORDER BY position ASC')
         rows = cursor.fetchall()
         conn.close()
@@ -1259,8 +1121,7 @@ class StrategyDatabase:
     def get_priority_periods(self) -> List[Dict]:
         """Get all historical periods ordered by position."""
         conn = self._get_connection()
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
         cursor.execute('SELECT * FROM priority_periods ORDER BY position ASC')
         rows = cursor.fetchall()
         conn.close()
@@ -1269,8 +1130,7 @@ class StrategyDatabase:
     def get_priority_timeframes(self) -> List[Dict]:
         """Get all timeframes ordered by position."""
         conn = self._get_connection()
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
         cursor.execute('SELECT * FROM priority_timeframes ORDER BY position ASC')
         rows = cursor.fetchall()
         conn.close()
@@ -1279,8 +1139,7 @@ class StrategyDatabase:
     def get_enabled_priority_pairs(self) -> List[Dict]:
         """Get enabled trading pairs ordered by position."""
         conn = self._get_connection()
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
         cursor.execute('SELECT * FROM priority_pairs WHERE enabled = 1 ORDER BY position ASC')
         rows = cursor.fetchall()
         conn.close()
@@ -1289,8 +1148,7 @@ class StrategyDatabase:
     def get_enabled_priority_periods(self) -> List[Dict]:
         """Get enabled historical periods ordered by position."""
         conn = self._get_connection()
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
         cursor.execute('SELECT * FROM priority_periods WHERE enabled = 1 ORDER BY position ASC')
         rows = cursor.fetchall()
         conn.close()
@@ -1299,8 +1157,7 @@ class StrategyDatabase:
     def get_enabled_priority_timeframes(self) -> List[Dict]:
         """Get enabled timeframes ordered by position."""
         conn = self._get_connection()
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
         cursor.execute('SELECT * FROM priority_timeframes WHERE enabled = 1 ORDER BY position ASC')
         rows = cursor.fetchall()
         conn.close()
@@ -1309,8 +1166,7 @@ class StrategyDatabase:
     def get_priority_granularities(self) -> List[Dict]:
         """Get all granularities ordered by position."""
         conn = self._get_connection()
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
         cursor.execute('SELECT * FROM priority_granularities ORDER BY position ASC')
         rows = cursor.fetchall()
         conn.close()
@@ -1319,8 +1175,7 @@ class StrategyDatabase:
     def get_enabled_priority_granularities(self) -> List[Dict]:
         """Get enabled granularities ordered by position."""
         conn = self._get_connection()
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
         cursor.execute('SELECT * FROM priority_granularities WHERE enabled = 1 ORDER BY position ASC')
         rows = cursor.fetchall()
         conn.close()
@@ -1330,7 +1185,7 @@ class StrategyDatabase:
         """Get a priority setting value."""
         conn = self._get_connection()
         cursor = conn.cursor()
-        cursor.execute('SELECT value FROM priority_settings WHERE key = ?', (key,))
+        cursor.execute('SELECT value FROM priority_settings WHERE key = %s', (key,))
         row = cursor.fetchone()
         conn.close()
         return row[0] if row else None
@@ -1341,9 +1196,9 @@ class StrategyDatabase:
         cursor = conn.cursor()
         cursor.execute('''
             INSERT INTO priority_settings (key, value, updated_at)
-            VALUES (?, ?, ?)
-            ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = ?
-        ''', (key, value, datetime.now().isoformat(), value, datetime.now().isoformat()))
+            VALUES (%s, %s, %s)
+            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at
+        ''', (key, value, datetime.now().isoformat()))
         conn.commit()
         conn.close()
 
@@ -1363,14 +1218,14 @@ class StrategyDatabase:
         cursor = conn.cursor()
 
         for position, item_id in enumerate(id_order, start=1):
-            cursor.execute(f'UPDATE {table} SET position = ? WHERE id = ?', (position, item_id))
+            cursor.execute(f'UPDATE {table} SET position = %s WHERE id = %s', (position, item_id))
 
         conn.commit()
         conn.close()
         return True
 
     def toggle_priority_list_item(self, list_type: str, item_id: int) -> Optional[bool]:
-        """Toggle enabled status in a specific list. Returns new status."""
+        """Toggle enabled status in a specific list."""
         table_map = {
             'pairs': 'priority_pairs',
             'periods': 'priority_periods',
@@ -1384,14 +1239,14 @@ class StrategyDatabase:
         conn = self._get_connection()
         cursor = conn.cursor()
 
-        cursor.execute(f'SELECT enabled FROM {table} WHERE id = ?', (item_id,))
+        cursor.execute(f'SELECT enabled FROM {table} WHERE id = %s', (item_id,))
         row = cursor.fetchone()
         if not row:
             conn.close()
             return None
 
         new_status = 0 if row[0] else 1
-        cursor.execute(f'UPDATE {table} SET enabled = ? WHERE id = ?', (new_status, item_id))
+        cursor.execute(f'UPDATE {table} SET enabled = %s WHERE id = %s', (new_status, item_id))
 
         conn.commit()
         conn.close()
@@ -1406,7 +1261,7 @@ class StrategyDatabase:
         for pos, pair in enumerate(pairs, start=1):
             cursor.execute('''
                 INSERT INTO priority_pairs (position, value, label, enabled)
-                VALUES (?, ?, ?, 1)
+                VALUES (%s, %s, %s, 1)
             ''', (pos, pair, pair))
 
         conn.commit()
@@ -1421,7 +1276,7 @@ class StrategyDatabase:
         for pos, period in enumerate(periods, start=1):
             cursor.execute('''
                 INSERT INTO priority_periods (position, value, label, months, enabled)
-                VALUES (?, ?, ?, ?, 1)
+                VALUES (%s, %s, %s, %s, 1)
             ''', (pos, period['label'], period['label'], period['months']))
 
         conn.commit()
@@ -1436,7 +1291,7 @@ class StrategyDatabase:
         for pos, tf in enumerate(timeframes, start=1):
             cursor.execute('''
                 INSERT INTO priority_timeframes (position, value, label, minutes, enabled)
-                VALUES (?, ?, ?, ?, 1)
+                VALUES (%s, %s, %s, %s, 1)
             ''', (pos, tf['label'], tf['label'], tf['minutes']))
 
         conn.commit()
@@ -1451,7 +1306,7 @@ class StrategyDatabase:
         for pos, gran in enumerate(granularities, start=1):
             cursor.execute('''
                 INSERT INTO priority_granularities (position, value, label, n_trials, enabled)
-                VALUES (?, ?, ?, ?, 1)
+                VALUES (%s, %s, %s, %s, 1)
             ''', (pos, gran['label'], gran['label'], gran['n_trials']))
 
         conn.commit()
@@ -1493,10 +1348,7 @@ class StrategyDatabase:
     # =========================================================================
 
     def get_elite_counts(self) -> Dict[str, int]:
-        """
-        Get elite status counts using SQL aggregation instead of loading all rows.
-        Much faster than: sum(1 for s in get_all_strategies() if s.get('elite_status') == 'elite')
-        """
+        """Get elite status counts using SQL aggregation."""
         conn = self._get_connection()
         cursor = conn.cursor()
 
@@ -1526,14 +1378,10 @@ class StrategyDatabase:
         return counts
 
     def get_db_stats_optimized(self) -> Dict[str, Any]:
-        """
-        Get database statistics using SQL aggregation.
-        Much faster than loading all strategies and counting in Python.
-        """
+        """Get database statistics using SQL aggregation."""
         conn = self._get_connection()
         cursor = conn.cursor()
 
-        # Single query for all counts
         cursor.execute('''
             SELECT
                 COUNT(*) as total_strategies,
@@ -1556,29 +1404,23 @@ class StrategyDatabase:
     def get_strategies_paginated(self, limit: int = 500, offset: int = 0,
                                   symbol: str = None, timeframe: str = None,
                                   sort_by: str = 'id', sort_order: str = 'DESC') -> Dict:
-        """
-        Get strategies with pagination support.
-        Returns {strategies: [...], total: N, has_more: bool, limit: N, offset: N}
-        """
+        """Get strategies with pagination support."""
         conn = self._get_connection()
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Build WHERE clause
         where_clauses = []
         params = []
 
         if symbol:
-            where_clauses.append('symbol = ?')
+            where_clauses.append('symbol = %s')
             params.append(symbol)
 
         if timeframe:
-            where_clauses.append('timeframe = ?')
+            where_clauses.append('timeframe = %s')
             params.append(timeframe)
 
         where_sql = ' WHERE ' + ' AND '.join(where_clauses) if where_clauses else ''
 
-        # Validate sort column to prevent SQL injection
         valid_sort_columns = {'id', 'composite_score', 'win_rate', 'profit_factor',
                               'total_pnl', 'created_at', 'elite_score'}
         if sort_by not in valid_sort_columns:
@@ -1588,13 +1430,13 @@ class StrategyDatabase:
 
         # Get total count
         cursor.execute(f'SELECT COUNT(*) FROM strategies{where_sql}', params)
-        total = cursor.fetchone()[0]
+        total = cursor.fetchone()['count']
 
         # Get paginated results
         query = f'''
             SELECT * FROM strategies{where_sql}
             ORDER BY {sort_by} {sort_direction}
-            LIMIT ? OFFSET ?
+            LIMIT %s OFFSET %s
         '''
         cursor.execute(query, params + [limit, offset])
         rows = cursor.fetchall()
@@ -1611,7 +1453,7 @@ class StrategyDatabase:
         }
 
     def get_total_strategy_count(self) -> int:
-        """Get total count of strategies (very fast)."""
+        """Get total count of strategies."""
         conn = self._get_connection()
         cursor = conn.cursor()
         cursor.execute('SELECT COUNT(*) FROM strategies')
@@ -1619,73 +1461,47 @@ class StrategyDatabase:
         conn.close()
         return count
 
-    # =========================================================================
-    # OPTIMIZED QUERY METHODS FOR API ROUTES
-    # =========================================================================
-
-    def get_elite_strategies_filtered(
-        self,
-        status_filter: str = None,
-        limit: int = 50,
-        offset: int = 0
-    ) -> List[Dict]:
-        """
-        Get elite strategies with SQL-level filtering.
-        Much faster than loading all strategies and filtering in Python.
-
-        Args:
-            status_filter: Filter by elite_status ('elite', 'partial', 'failed', 'pending')
-            limit: Maximum number of results
-            offset: Offset for pagination
-        """
+    def get_elite_strategies_filtered(self, status_filter: str = None,
+                                       limit: int = 50, offset: int = 0) -> List[Dict]:
+        """Get elite strategies with SQL-level filtering."""
         conn = self._get_connection()
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
 
         if status_filter:
             cursor.execute('''
                 SELECT * FROM strategies
-                WHERE elite_status = ?
+                WHERE elite_status = %s
                 ORDER BY elite_score DESC
-                LIMIT ? OFFSET ?
+                LIMIT %s OFFSET %s
             ''', (status_filter, limit, offset))
         else:
             cursor.execute('''
                 SELECT * FROM strategies
                 WHERE elite_status IS NOT NULL
                 ORDER BY elite_score DESC
-                LIMIT ? OFFSET ?
+                LIMIT %s OFFSET %s
             ''', (limit, offset))
 
         rows = cursor.fetchall()
         conn.close()
 
-        # Skip equity_curve parsing for list views
         return [self._row_to_dict(row, parse_equity_curve=False) for row in rows]
 
     def get_elite_leaderboard(self, limit: int = 20) -> Dict:
-        """
-        Get top elite strategies efficiently using SQL.
-
-        Returns:
-            Dict with 'leaderboard' list and 'total_elite' count
-        """
+        """Get top elite strategies efficiently."""
         conn = self._get_connection()
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Get leaderboard with LIMIT
         cursor.execute('''
             SELECT * FROM strategies
             WHERE elite_status = 'elite'
             ORDER BY elite_score DESC
-            LIMIT ?
+            LIMIT %s
         ''', (limit,))
         rows = cursor.fetchall()
 
-        # Get total count efficiently
         cursor.execute("SELECT COUNT(*) FROM strategies WHERE elite_status = 'elite'")
-        total_elite = cursor.fetchone()[0]
+        total_elite = cursor.fetchone()['count']
 
         conn.close()
 
@@ -1695,14 +1511,10 @@ class StrategyDatabase:
         }
 
     def get_elite_stats_optimized(self) -> Dict:
-        """
-        Get elite validation statistics using SQL aggregation.
-        Much faster than loading all strategies and counting in Python.
-        """
+        """Get elite validation statistics using SQL aggregation."""
         conn = self._get_connection()
         cursor = conn.cursor()
 
-        # Get counts by status in a single query
         cursor.execute('''
             SELECT
                 COALESCE(elite_status, 'not_validated') as status,
@@ -1712,13 +1524,8 @@ class StrategyDatabase:
         ''')
 
         status_counts = {
-            'elite': 0,
-            'partial': 0,
-            'failed': 0,
-            'pending': 0,
-            'untestable': 0,
-            'skipped': 0,
-            'not_validated': 0
+            'elite': 0, 'partial': 0, 'failed': 0, 'pending': 0,
+            'untestable': 0, 'skipped': 0, 'not_validated': 0
         }
 
         for row in cursor.fetchall():
@@ -1728,11 +1535,9 @@ class StrategyDatabase:
             else:
                 status_counts['not_validated'] += count
 
-        # Get total count
         cursor.execute('SELECT COUNT(*) FROM strategies')
         total = cursor.fetchone()[0]
 
-        # Get average elite score for elite strategies
         cursor.execute('''
             SELECT AVG(COALESCE(elite_score, 0))
             FROM strategies
@@ -1748,44 +1553,26 @@ class StrategyDatabase:
             "avg_elite_score": round(avg_score, 2)
         }
 
-    def get_top_strategies_per_market(
-        self,
-        top_n: int = 10,
-        symbol: str = None,
-        timeframe: str = None,
-        min_win_rate: float = 0.0,
-        total_limit: int = 500
-    ) -> List[Dict]:
-        """
-        Get top N strategies per (symbol, timeframe) pair using SQL window functions.
-        Much faster than loading all and grouping in Python.
-
-        Args:
-            top_n: Max strategies per market
-            symbol: Filter by symbol (optional)
-            timeframe: Filter by timeframe (optional)
-            min_win_rate: Minimum win rate filter
-            total_limit: Maximum total results
-        """
+    def get_top_strategies_per_market(self, top_n: int = 10, symbol: str = None,
+                                       timeframe: str = None, min_win_rate: float = 0.0,
+                                       total_limit: int = 500) -> List[Dict]:
+        """Get top N strategies per (symbol, timeframe) pair."""
         conn = self._get_connection()
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Build WHERE clause
-        where_parts = ['win_rate >= ?']
+        where_parts = ['win_rate >= %s']
         params = [min_win_rate]
 
         if symbol:
-            where_parts.append('symbol = ?')
+            where_parts.append('symbol = %s')
             params.append(symbol)
 
         if timeframe:
-            where_parts.append('timeframe = ?')
+            where_parts.append('timeframe = %s')
             params.append(timeframe)
 
         where_clause = ' AND '.join(where_parts)
 
-        # Use window function to get top N per market
         query = f'''
             WITH ranked AS (
                 SELECT *,
@@ -1797,9 +1584,9 @@ class StrategyDatabase:
                 WHERE {where_clause}
             )
             SELECT * FROM ranked
-            WHERE rank <= ?
+            WHERE rank <= %s
             ORDER BY composite_score DESC
-            LIMIT ?
+            LIMIT %s
         '''
 
         params.extend([top_n, total_limit])
@@ -1810,7 +1597,7 @@ class StrategyDatabase:
         return [self._row_to_dict(row, parse_equity_curve=False) for row in rows]
 
     def get_pending_validation_count(self) -> int:
-        """Get count of strategies pending validation (very fast)."""
+        """Get count of strategies pending validation."""
         conn = self._get_connection()
         cursor = conn.cursor()
         cursor.execute('''
@@ -1824,71 +1611,15 @@ class StrategyDatabase:
 
 # Singleton instance for easy access
 _db_instance: Optional[StrategyDatabase] = None
-_migration_done: bool = False
 
 
-def _run_migration(db_path: str):
-    """Run database migration to add any missing columns."""
-    global _migration_done
-    if _migration_done:
-        return
-
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-
-    # Check if strategies table exists
-    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='strategies'")
-    if not cursor.fetchone():
-        conn.close()
-        return
-
-    # Get existing columns
-    cursor.execute("PRAGMA table_info(strategies)")
-    existing_columns = {row[1] for row in cursor.fetchall()}
-
-    migration_columns = [
-        ('indicator_params', 'TEXT'),
-        ('tuning_improved', 'INTEGER DEFAULT 0'),
-        ('tuning_score_before', 'REAL'),
-        ('tuning_score_after', 'REAL'),
-        ('tuning_improvement_pct', 'REAL'),
-    ]
-
-    for col_name, col_type in migration_columns:
-        if col_name not in existing_columns:
-            try:
-                cursor.execute(f'ALTER TABLE strategies ADD COLUMN {col_name} {col_type}')
-                print(f"Migration: Added column {col_name}")
-            except Exception as e:
-                print(f"Migration warning for {col_name}: {e}")
-
-    conn.commit()
-    conn.close()
-    _migration_done = True
-    print("Database migration check complete")
-
-
-def get_strategy_db(db_path: str = None) -> StrategyDatabase:
+def get_strategy_db(database_url: str = None) -> StrategyDatabase:
     """Get or create the strategy database singleton."""
     global _db_instance
 
-    # Determine proper database path
-    if db_path is None:
-        from pathlib import Path
-        backend_dir = Path(__file__).parent
-        project_dir = backend_dir.parent
-
-        # Check if running in Docker
-        if Path("/app").exists():
-            db_path = "/app/data/strategies.db"
-        else:
-            data_dir = project_dir / "data"
-            data_dir.mkdir(exist_ok=True)
-            db_path = str(data_dir / "strategies.db")
-
-    # Always run migration check first
-    _run_migration(db_path)
+    if database_url is None:
+        database_url = os.environ.get('DATABASE_URL')
 
     if _db_instance is None:
-        _db_instance = StrategyDatabase(db_path)
+        _db_instance = StrategyDatabase(database_url)
     return _db_instance

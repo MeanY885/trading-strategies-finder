@@ -17,3 +17,6 @@ pandas-ta
 
 # System Resources
 psutil>=5.9.0
+
+# Database
+psycopg2-binary>=2.9.9

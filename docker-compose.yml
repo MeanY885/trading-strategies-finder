@@ -1,14 +1,46 @@
 services:
-  btcgbp-optimizer:
-    build: .
+  frontend:
+    build: ./frontend
     ports:
-      - "8080:8080"
+      - "8080:80"
+    volumes:
+      - ./frontend:/usr/share/nginx/html:ro  # Hot reload frontend changes
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  backend:
+    build: ./backend
+    expose:
+      - "8080"
     volumes:
       - ./data:/app/data
       - ./output:/app/output
-      - ./frontend:/app/frontend  # Hot reload frontend changes
-      - ./backend:/app/backend    # Hot reload backend changes (requires restart)
+      - ./backend:/app/backend  # Hot reload backend changes (requires restart)
     environment:
       - PYTHONUNBUFFERED=1
+      - DATABASE_URL=postgresql://btcgbp:btcgbp_dev@db:5432/btcgbp_optimizer
+    depends_on:
+      db:
+        condition: service_healthy
     restart: unless-stopped
 
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: btcgbp
+      POSTGRES_PASSWORD: btcgbp_dev
+      POSTGRES_DB: btcgbp_optimizer
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    expose:
+      - "5432"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U btcgbp"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:

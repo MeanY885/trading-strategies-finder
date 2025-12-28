@@ -26,11 +26,9 @@ from pathlib import Path
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
 
 # Configuration and state
-from config import FRONTEND_DIR, DATA_DIR, OUTPUT_DIR
+from config import DATA_DIR, OUTPUT_DIR
 from state import app_state, concurrency_config
 from logging_config import log, UVICORN_LOG_CONFIG
 from strategy_database import get_strategy_db
@@ -166,20 +164,6 @@ register_routes(app)
 # Set thread pool reference for autonomous routes
 from api.autonomous_routes import set_thread_pool
 set_thread_pool(thread_pool)
-
-
-# =============================================================================
-# FRONTEND ROUTES
-# =============================================================================
-
-@app.get("/")
-async def serve_frontend():
-    """Serve the main UI."""
-    return FileResponse(FRONTEND_DIR / "index.html")
-
-
-# Mount static files
-app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
 
 
 # =============================================================================
