@@ -486,7 +486,6 @@ async def run_single_optimization(
 
     async def update_progress():
         import re
-        last_logged_pct = 0
 
         while temp_status["running"]:
             if not app_state.is_autonomous_enabled():
@@ -496,21 +495,39 @@ async def run_single_optimization(
             mapped_progress = 15 + int(inner_progress * 0.8)
             app_state.update_autonomous_status(progress=mapped_progress)
 
+            # Try to parse trial progress from message
             msg = temp_status.get("message", "")
+            current_trial = 0
+            total_trials = granularity["n_trials"]
+
+            # Try multiple regex patterns for different message formats
             match = re.search(r'\|\s*([\d,]+)\s*/\s*([\d,]+)\s*\(', msg)
+            if not match:
+                match = re.search(r'(\d+)\s*/\s*(\d+)', msg)
+
             if match:
                 current_trial = int(match.group(1).replace(',', ''))
                 total_trials = int(match.group(2).replace(',', ''))
-                progress_pct = int((current_trial / total_trials) * 100) if total_trials > 0 else 0
 
-                app_state.update_autonomous_status(
-                    trial_current=current_trial,
-                    trial_total=total_trials,
-                    message=f"Optimizing {pair} - {current_trial:,}/{total_trials:,}"
-                )
-                await update_parallel_status(f"{pair} - {current_trial:,}/{total_trials:,}", progress_pct)
+            # Always update status based on progress, even if can't parse message
+            progress_pct = int(inner_progress) if inner_progress else 0
+            if current_trial > 0:
+                progress_pct = int((current_trial / total_trials) * 100) if total_trials > 0 else progress_pct
 
-            await asyncio.sleep(0.3)
+            status_msg = f"Optimizing {pair}..."
+            if current_trial > 0:
+                status_msg = f"{pair} - {current_trial:,}/{total_trials:,}"
+            elif progress_pct > 0:
+                status_msg = f"Optimizing {pair} ({progress_pct}%)"
+
+            app_state.update_autonomous_status(
+                trial_current=current_trial,
+                trial_total=total_trials,
+                message=status_msg
+            )
+            await update_parallel_status(status_msg, progress_pct)
+
+            await asyncio.sleep(0.5)
 
     loop = asyncio.get_event_loop()
     progress_task = asyncio.create_task(update_progress())
@@ -803,9 +820,9 @@ async def start_autonomous_optimizer(thread_pool):
                     active_tasks, timeout=0.1, return_when=asyncio.FIRST_COMPLETED
                 )
 
-            # Spawn new tasks - limit to 4 concurrent to avoid overwhelming system
-            # Each optimization uses significant RAM, so we need to be conservative
-            max_concurrent = min(4, concurrency_config.get("max_concurrent", 4))
+            # Spawn new tasks - limit concurrent to avoid overwhelming system
+            # User has 27GB RAM, so 8 concurrent should be safe
+            max_concurrent = min(8, concurrency_config.get("max_concurrent", 8))
             available_slots = max_concurrent - len(active_tasks)
 
             # Only spawn ONE task per loop iteration to spread load
