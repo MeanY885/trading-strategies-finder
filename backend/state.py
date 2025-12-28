@@ -97,7 +97,7 @@ class AppState:
         "auto_running": False,
         "running": False,
         "paused": False,
-        "enabled": True,
+        "enabled": False,
         "message": "Idle",
         "progress": 0,
         "current_source": None,
@@ -230,7 +230,7 @@ class AppState:
     def is_autonomous_enabled(self) -> bool:
         """Check if autonomous optimizer is enabled."""
         with self._lock:
-            return self.autonomous_status.get("enabled", True)
+            return self.autonomous_status.get("enabled", False)
 
     def is_autonomous_running(self) -> bool:
         """Check if autonomous optimizer is running."""
