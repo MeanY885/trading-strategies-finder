@@ -757,9 +757,14 @@ async def start_autonomous_optimizer(thread_pool):
     active_tasks = set()
     current_index = start_index
 
+    log(f"[Parallel Optimizer] Entering main loop. auto_running={app_state.is_autonomous_running()}, enabled={app_state.is_autonomous_enabled()}")
+
     while app_state.is_autonomous_running() and app_state.is_autonomous_enabled():
         try:
+            log(f"[Parallel Optimizer] Loop iteration: {len(active_tasks)} active tasks, index={current_index}")
+
             if not app_state.is_autonomous_enabled():
+                log("[Parallel Optimizer] Exiting: not enabled")
                 break
 
             # Wait for manual optimizer
@@ -820,13 +825,16 @@ async def start_autonomous_optimizer(thread_pool):
                     message=f"Running {len(active_tasks)}/{max_concurrent} parallel optimizations..."
                 )
 
+            log(f"[Parallel Optimizer] Broadcasting... active={len(active_tasks)}, index={current_index}")
             from services.websocket_manager import broadcast_autonomous_status
             broadcast_autonomous_status(app_state.get_autonomous_status())
 
             await asyncio.sleep(0.5)
 
         except Exception as e:
+            import traceback
             log(f"[Parallel Optimizer] Loop error: {e}", level='ERROR')
+            traceback.print_exc()
             await asyncio.sleep(5)
 
     # Cleanup
