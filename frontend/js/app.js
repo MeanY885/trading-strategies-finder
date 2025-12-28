@@ -109,6 +109,7 @@
 
         function handleWebSocketMessage(message) {
             const type = message.type;
+            console.log('[WebSocket] Message received, type:', type);
 
             // First check if this is a response to a pending request
             if (message.id && handleWsResponse(message)) {
@@ -138,6 +139,7 @@
                     break;
 
                 case 'autonomous_status':
+                    console.log('[WebSocket] Received autonomous_status:', message);
                     if (message.autonomous) updateAutonomousUI(message.autonomous);
                     // Queue data is now included in autonomous_status broadcasts
                     if (message.queue) {
