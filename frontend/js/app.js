@@ -28,6 +28,20 @@
         // Priority Queue State (3-list system - actual state in priority section)
         let priorityInitialized = false;
 
+        // Expanded row tracking - prevents O(n²) querySelectorAll loops
+        let currentExpandedHistoryRow = null;
+        let currentExpandedHistoryId = null;
+        let currentExpandedEliteRow = null;
+        let currentExpandedEliteId = null;
+
+        // Queue render batching - prevents layout thrashing
+        let pendingQueueRender = null;
+        let queueRenderScheduled = false;
+
+        // Strategy result batching - accumulates results for batch DOM insert
+        let pendingStrategyResults = [];
+        let strategyResultsScheduled = false;
+
         // =============================================================================
         // HELPER FUNCTIONS
         // =============================================================================
@@ -82,8 +96,8 @@
             'autonomous_status',
             'elite_status',
             'optimization_status',
-            'data_status',
-            'strategy_result'
+            'data_status'
+            // Note: strategy_result uses its own batching (see handleStrategyResult)
         ]);
 
         function initWebSocket() {
@@ -544,31 +558,54 @@
         }
 
         // Handle individual strategy results (replaces SSE)
+        // Uses batching to prevent DOM thrashing - accumulates results then batch inserts
         function handleStrategyResult(result) {
-            // Add to results table if it exists
-            const resultsBody = document.getElementById('streamingResultsBody');
-            if (resultsBody && result.strategy_name) {
-                const row = document.createElement('tr');
-                const metrics = result.metrics || {};
-                const pnl = metrics.total_pnl || 0;
-                const pnlClass = pnl >= 0 ? 'text-success' : 'text-danger';
+            if (!result.strategy_name) return;
 
-                row.innerHTML = `
-                    <td>${result.strategy_name || '-'}</td>
-                    <td>${result.direction || '-'}</td>
-                    <td>${metrics.win_rate?.toFixed(1) || '-'}%</td>
-                    <td>${metrics.profit_factor?.toFixed(2) || '-'}</td>
-                    <td class="${pnlClass}">£${pnl.toFixed(2)}</td>
-                `;
+            // Accumulate result
+            pendingStrategyResults.push(result);
 
-                // Insert at top
-                resultsBody.insertBefore(row, resultsBody.firstChild);
+            // Schedule batch render if not already scheduled
+            if (strategyResultsScheduled) return;
+            strategyResultsScheduled = true;
 
-                // Limit rows
-                while (resultsBody.children.length > 50) {
+            requestAnimationFrame(() => {
+                strategyResultsScheduled = false;
+                const results = pendingStrategyResults;
+                pendingStrategyResults = [];
+
+                if (results.length === 0) return;
+
+                const resultsBody = document.getElementById('streamingResultsBody');
+                if (!resultsBody) return;
+
+                // Build all rows as DocumentFragment (single DOM insert)
+                const fragment = document.createDocumentFragment();
+                results.forEach(result => {
+                    const row = document.createElement('tr');
+                    const metrics = result.metrics || {};
+                    const pnl = metrics.total_pnl || 0;
+                    const pnlClass = pnl >= 0 ? 'text-success' : 'text-danger';
+
+                    row.innerHTML = `
+                        <td>${result.strategy_name || '-'}</td>
+                        <td>${result.direction || '-'}</td>
+                        <td>${metrics.win_rate?.toFixed(1) || '-'}%</td>
+                        <td>${metrics.profit_factor?.toFixed(2) || '-'}</td>
+                        <td class="${pnlClass}">£${pnl.toFixed(2)}</td>
+                    `;
+                    fragment.appendChild(row);
+                });
+
+                // Single DOM operation: insert all new rows at top
+                resultsBody.insertBefore(fragment, resultsBody.firstChild);
+
+                // Batch trim excess rows
+                const maxRows = 50;
+                while (resultsBody.children.length > maxRows) {
                     resultsBody.removeChild(resultsBody.lastChild);
                 }
-            }
+            });
         }
 
         // =============================================================================
@@ -1239,6 +1276,9 @@
         function renderHistoryTable() {
             const tbody = document.getElementById('history-tbody');
             tbody.innerHTML = '';
+            // Reset expanded state since DOM is being rebuilt
+            currentExpandedHistoryRow = null;
+            currentExpandedHistoryId = null;
 
             // Group strategies by name+symbol+timeframe
             const groups = {};
@@ -1291,6 +1331,8 @@
                 return historySortOrder === 'asc' ? aVal - bVal : bVal - aVal;
             });
 
+            // Use DocumentFragment for batch DOM insert (single reflow instead of N)
+            const fragment = document.createDocumentFragment();
             let rowIndex = 0;
             sortedGroups.forEach(group => {
                 const bestStrategy = group[0]; // Lowest SL
@@ -1359,7 +1401,7 @@
                 `;
 
                 // Event handling is done via delegation in setupHistoryTableDelegation()
-                tbody.appendChild(row);
+                fragment.appendChild(row);
 
                 // Create variants container row (hidden by default)
                 if (hasVariants) {
@@ -1368,9 +1410,12 @@
                     variantsRow.id = `variants-row-${bestStrategy.id}`;
                     variantsRow.style.display = 'none';
                     variantsRow.innerHTML = `<td colspan="15" class="variants-cell" style="padding: 0; background: var(--bg-secondary);"></td>`;
-                    tbody.appendChild(variantsRow);
+                    fragment.appendChild(variantsRow);
                 }
             });
+
+            // Single DOM operation: append all rows at once
+            tbody.appendChild(fragment);
 
             // Update sort indicators
             updateSortIndicators();
@@ -1384,25 +1429,23 @@
 
             if (!variantsRow) return;
 
-            // Close all other expanded rows
-            document.querySelectorAll('.variants-row').forEach(r => {
-                if (r.id !== `variants-row-${bestStrategy.id}`) {
-                    r.style.display = 'none';
-                }
-            });
-            document.querySelectorAll('.strategy-row').forEach(r => {
-                if (r !== rowElement) {
-                    r.classList.remove('expanded');
-                    const icon = r.querySelector('.expand-icon');
-                    if (icon && icon.textContent === '▼') icon.textContent = '▶';
-                }
-            });
+            // Close previously expanded row (O(1) instead of O(n²))
+            if (currentExpandedHistoryRow && currentExpandedHistoryRow !== rowElement) {
+                const prevVariantsRow = document.getElementById(`variants-row-${currentExpandedHistoryId}`);
+                if (prevVariantsRow) prevVariantsRow.style.display = 'none';
+                currentExpandedHistoryRow.classList.remove('expanded');
+                const prevIcon = currentExpandedHistoryRow.querySelector('.expand-icon');
+                if (prevIcon) prevIcon.textContent = '▶';
+            }
 
             // Toggle current row
             if (variantsRow.style.display === 'none') {
                 variantsRow.style.display = 'table-row';
                 rowElement.classList.add('expanded');
                 expandIcon.textContent = '▼';
+                // Track expanded state
+                currentExpandedHistoryRow = rowElement;
+                currentExpandedHistoryId = bestStrategy.id;
 
                 // Build variants table
                 const variantsCell = variantsRow.querySelector('.variants-cell');
@@ -1452,6 +1495,9 @@
                 variantsRow.style.display = 'none';
                 rowElement.classList.remove('expanded');
                 expandIcon.textContent = '▶';
+                // Clear expanded state
+                currentExpandedHistoryRow = null;
+                currentExpandedHistoryId = null;
             }
         }
 
@@ -4399,6 +4445,9 @@
             table.style.display = 'table';
             emptyMsg.style.display = 'none';
             tbody.innerHTML = '';
+            // Reset expanded state since DOM is being rebuilt
+            currentExpandedEliteRow = null;
+            currentExpandedEliteId = null;
 
             // Helper to format P&L cell with validated date
             function formatPnL(periodData) {
@@ -4540,6 +4589,8 @@
             // Store grouped data for event delegation
             eliteGroupedData = sortedGroups;
 
+            // Use DocumentFragment for batch DOM insert (single reflow instead of N)
+            const fragment = document.createDocumentFragment();
             let rank = 0;
             let groupIndex = 0;
             sortedGroups.forEach(group => {
@@ -4616,7 +4667,7 @@
                 `;
 
                 // Event handling is done via delegation in setupEliteTableDelegation()
-                tbody.appendChild(row);
+                fragment.appendChild(row);
 
                 // Create variants container row (hidden by default)
                 if (hasVariants) {
@@ -4625,7 +4676,7 @@
                     variantsRow.id = `elite-variants-${best.id}`;
                     variantsRow.style.display = 'none';
                     variantsRow.innerHTML = `<td colspan="14" style="padding: 0; background: var(--bg-secondary);"></td>`;
-                    tbody.appendChild(variantsRow);
+                    fragment.appendChild(variantsRow);
 
                     // Restore expanded state if this was the previously expanded group
                     const groupKey = `${best.strategy_name}|${best.symbol}|${best.timeframe}|${direction}`;
@@ -4635,6 +4686,9 @@
                     }
                 }
             });
+
+            // Single DOM operation: append all rows at once
+            tbody.appendChild(fragment);
         }
 
         // Toggle elite variants dropdown
@@ -4647,19 +4701,14 @@
 
             if (!variantsRow) return;
 
-            // Close all other expanded rows
-            document.querySelectorAll('.elite-variants-row').forEach(r => {
-                if (r.id !== `elite-variants-${best.id}`) {
-                    r.style.display = 'none';
-                }
-            });
-            document.querySelectorAll('.elite-row').forEach(r => {
-                if (r !== rowElement) {
-                    r.classList.remove('expanded');
-                    const icon = r.querySelector('.expand-icon');
-                    if (icon && icon.textContent === '▼') icon.textContent = '▶';
-                }
-            });
+            // Close previously expanded row (O(1) instead of O(n²))
+            if (currentExpandedEliteRow && currentExpandedEliteRow !== rowElement) {
+                const prevVariantsRow = document.getElementById(`elite-variants-${currentExpandedEliteId}`);
+                if (prevVariantsRow) prevVariantsRow.style.display = 'none';
+                currentExpandedEliteRow.classList.remove('expanded');
+                const prevIcon = currentExpandedEliteRow.querySelector('.expand-icon');
+                if (prevIcon) prevIcon.textContent = '▶';
+            }
 
             // Toggle current row
             if (variantsRow.style.display === 'none') {
@@ -4667,6 +4716,9 @@
                 rowElement.classList.add('expanded');
                 expandIcon.textContent = '▼';
                 expandedEliteGroupKey = groupKey;  // Track expanded state
+                // Track expanded row for O(1) collapse
+                currentExpandedEliteRow = rowElement;
+                currentExpandedEliteId = best.id;
 
                 // Build variants table
                 const variantsCell = variantsRow.querySelector('td');
@@ -4735,6 +4787,9 @@
                 rowElement.classList.remove('expanded');
                 expandIcon.textContent = '▶';
                 expandedEliteGroupKey = null;  // Clear expanded state
+                // Clear expanded row tracking
+                currentExpandedEliteRow = null;
+                currentExpandedEliteId = null;
             }
         }
 
@@ -4926,9 +4981,28 @@
         }
 
         // Render task queue from cached/pushed data (no network request)
+        // Uses requestAnimationFrame to batch DOM updates and prevent layout thrashing
         function renderTaskQueueFromCache(queue) {
+            if (!queue) return;
+
+            // Store latest queue data and schedule render
+            pendingQueueRender = queue;
+            if (queueRenderScheduled) return;  // Already scheduled, will use latest data
+
+            queueRenderScheduled = true;
+            requestAnimationFrame(() => {
+                queueRenderScheduled = false;
+                const queueData = pendingQueueRender;
+                if (!queueData) return;
+
+                actuallyRenderTaskQueue(queueData);
+            });
+        }
+
+        // Internal function that does the actual DOM updates
+        function actuallyRenderTaskQueue(queue) {
             const queueBody = document.getElementById('taskQueueBody');
-            if (!queueBody || !queue) return;
+            if (!queueBody) return;
 
             // If no queue data yet
             if (queue.total === 0) {
