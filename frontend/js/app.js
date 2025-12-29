@@ -68,8 +68,30 @@
         let wsMaxReconnectAttempts = 10;
         let wsReconnectDelay = 1000; // Start with 1 second
         let wsConnected = false;
+        let wsPingInterval = null;  // Track ping interval to prevent memory leak
+
+        // UI update throttling - prevent excessive DOM updates from rapid WebSocket messages
+        const uiThrottleState = {
+            pending: {},       // Pending messages per type
+            timeouts: {},      // Timeout IDs per type
+            minInterval: 100   // Minimum ms between UI updates per type (10 updates/sec max)
+        };
+
+        // Types that should be throttled (frequent status updates)
+        const throttledMessageTypes = new Set([
+            'autonomous_status',
+            'elite_status',
+            'optimization_status',
+            'data_status'
+        ]);
 
         function initWebSocket() {
+            // Clear existing ping interval before creating new one
+            if (wsPingInterval) {
+                clearInterval(wsPingInterval);
+                wsPingInterval = null;
+            }
+
             // Determine WebSocket URL based on current location
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             const wsUrl = `${protocol}//${window.location.host}/ws/status`;
@@ -124,7 +146,7 @@
                 };
 
                 // Send periodic pings to keep connection alive
-                setInterval(() => {
+                wsPingInterval = setInterval(() => {
                     if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
                         wsConnection.send('ping');
                     }
@@ -146,6 +168,37 @@
             if (message.id && handleWsResponse(message)) {
                 return; // Handled as request response
             }
+
+            // Apply throttling for frequent message types to prevent UI thrashing
+            if (throttledMessageTypes.has(type)) {
+                // Store latest message (overwrites any pending)
+                uiThrottleState.pending[type] = message;
+
+                // If we already have a timeout scheduled, let it handle this
+                if (uiThrottleState.timeouts[type]) {
+                    return;
+                }
+
+                // Schedule the actual UI update
+                uiThrottleState.timeouts[type] = setTimeout(() => {
+                    const pendingMessage = uiThrottleState.pending[type];
+                    uiThrottleState.timeouts[type] = null;
+                    uiThrottleState.pending[type] = null;
+
+                    if (pendingMessage) {
+                        processWebSocketMessage(pendingMessage);
+                    }
+                }, uiThrottleState.minInterval);
+                return;
+            }
+
+            // Non-throttled messages get immediate processing
+            processWebSocketMessage(message);
+        }
+
+        // Actual message processing (called after throttling)
+        function processWebSocketMessage(message) {
+            const type = message.type;
 
             switch(type) {
                 case 'full_state':
@@ -283,13 +336,6 @@
 
             if (message) {
                 message.textContent = status.message || 'Not running';
-            }
-
-            // Update cycle progress
-            const cycleProgress = document.getElementById('autonomousCycleProgress');
-            if (cycleProgress && status.total_combinations > 0) {
-                const progressPct = (status.cycle_index / status.total_combinations * 100).toFixed(1);
-                cycleProgress.textContent = `${status.cycle_index} / ${status.total_combinations} (${progressPct}%)`;
             }
 
             // Update toggle switch state
@@ -960,12 +1006,57 @@
             }
         }
 
+        // Set up event delegation for history table (only once)
+        let historyTableDelegationSetup = false;
+        function setupHistoryTableDelegation() {
+            if (historyTableDelegationSetup) return;
+            historyTableDelegationSetup = true;
+
+            const tbody = document.getElementById('history-tbody');
+            if (!tbody) return;
+
+            tbody.addEventListener('click', (e) => {
+                // Don't handle clicks on buttons or action buttons
+                if (e.target.closest('.action-btn-group') || e.target.closest('button')) {
+                    return;
+                }
+
+                const row = e.target.closest('.strategy-row');
+                if (!row) return;
+
+                const strategyId = parseInt(row.dataset.strategyId, 10);
+                const hasVariants = row.dataset.hasVariants === 'true';
+                const groupKey = row.dataset.groupKey;
+
+                if (hasVariants && groupKey) {
+                    // Find the group from historyStrategies
+                    const groups = {};
+                    historyStrategies.forEach(strategy => {
+                        const key = `${strategy.strategy_name}|${strategy.symbol}|${strategy.timeframe}`;
+                        if (!groups[key]) groups[key] = [];
+                        groups[key].push(strategy);
+                    });
+                    const group = groups[groupKey];
+                    if (group) toggleVariants(row, group);
+                } else if (strategyId) {
+                    toggleStrategyDetails(strategyId, row);
+                }
+            });
+        }
+
         // Initialize History Tab
         async function initHistoryTab() {
             historyInitialized = true;
             try {
-                // Load strategies via WebSocket (much faster than HTTP polling)
-                historyStrategies = await loadStrategiesViaWs();
+                // Try WebSocket first (much faster than HTTP polling)
+                // Fall back to HTTP if WebSocket fails
+                try {
+                    historyStrategies = await loadStrategiesViaWs();
+                } catch (wsError) {
+                    console.log('[History] WebSocket failed, falling back to HTTP:', wsError.message);
+                    const response = await fetch('/api/db/strategies?limit=500');
+                    historyStrategies = await response.json();
+                }
 
                 // Extract filter options from strategies
                 const symbols = [...new Set(historyStrategies.map(s => s.symbol).filter(Boolean))].sort();
@@ -997,6 +1088,8 @@
                 if (historyStrategies.length > 0) {
                     loading.style.display = 'none';
                     table.style.display = 'table';
+                    // Set up event delegation before rendering
+                    setupHistoryTableDelegation();
                     renderHistoryTable();
                 } else {
                     loading.style.display = 'none';
@@ -1004,6 +1097,8 @@
                 }
             } catch (error) {
                 console.error('Failed to initialize history tab:', error);
+                // Reset flag so user can retry by switching tabs
+                historyInitialized = false;
                 document.getElementById('history-loading').textContent = 'Failed to load. Please try again.';
             }
         }
@@ -1198,6 +1293,7 @@
                 row.className = 'strategy-row';
                 row.dataset.strategyId = bestStrategy.id;
                 row.dataset.groupKey = `${bestStrategy.strategy_name}|${bestStrategy.symbol}|${bestStrategy.timeframe}`;
+                row.dataset.hasVariants = hasVariants ? 'true' : 'false';
                 row.style.cursor = 'pointer';
 
                 // Win rate color class
@@ -1254,13 +1350,7 @@
                     </td>
                 `;
 
-                // Click to expand variants or show details
-                if (hasVariants) {
-                    row.addEventListener('click', () => toggleVariants(row, group));
-                } else {
-                    row.addEventListener('click', () => toggleStrategyDetails(bestStrategy.id, row));
-                }
-
+                // Event handling is done via delegation in setupHistoryTableDelegation()
                 tbody.appendChild(row);
 
                 // Create variants container row (hidden by default)
@@ -4166,8 +4256,55 @@
 
         let elitePolling = false;
 
+        // Set up event delegation for elite table (only once)
+        let eliteTableDelegationSetup = false;
+        function setupEliteTableDelegation() {
+            if (eliteTableDelegationSetup) return;
+            eliteTableDelegationSetup = true;
+
+            const tbody = document.getElementById('eliteTableBody');
+            if (!tbody) return;
+
+            tbody.addEventListener('click', (e) => {
+                // Don't handle clicks on buttons
+                if (e.target.closest('button')) return;
+
+                const row = e.target.closest('.elite-row');
+                if (!row) return;
+
+                const hasVariants = row.dataset.hasVariants === 'true';
+                if (!hasVariants) return;
+
+                const groupIndex = parseInt(row.dataset.groupIndex, 10);
+
+                // Find the group from stored grouped data
+                if (eliteGroupedData && eliteGroupedData[groupIndex]) {
+                    const group = eliteGroupedData[groupIndex];
+                    // formatPnL helper matching the one used in renderEliteTable
+                    const formatPnL = (periodData) => {
+                        if (!periodData) return '<span style="color: var(--text-muted);">--</span>';
+                        if (periodData.status === 'limit_exceeded') return '<span style="color: var(--text-muted);">N/A</span>';
+                        if (periodData.status === 'no_trades') return '<span style="color: var(--text-muted);">0</span>';
+                        if (periodData.status === 'error') return '<span style="color: var(--text-muted);">err</span>';
+                        if (periodData.pnl === undefined) return '<span style="color: var(--text-muted);">--</span>';
+                        const pnl = periodData.pnl;
+                        const returnPct = periodData.return_pct !== undefined
+                            ? periodData.return_pct
+                            : Math.round((pnl / 1000) * 1000) / 10;
+                        const sign = pnl >= 0 ? '+' : '';
+                        const colorClass = pnl >= 0 ? 'success' : 'danger';
+                        const pctSign = returnPct >= 0 ? '+' : '';
+                        return `<span class="${colorClass}">£${sign}${pnl.toFixed(0)}<br><small style="opacity: 0.7;">(${pctSign}${returnPct.toFixed(1)}%)</small></span>`;
+                    };
+                    toggleEliteVariants(row, group, formatPnL);
+                }
+            });
+        }
+
         async function initEliteTab() {
             eliteInitialized = true;
+            // Set up event delegation before loading data
+            setupEliteTableDelegation();
             // Initialize sort indicators
             updateEliteSortIndicators();
             await loadEliteData();
@@ -4176,6 +4313,8 @@
 
         // Track expanded elite group to preserve state on re-render
         let expandedEliteGroupKey = null;
+        // Store grouped data for event delegation
+        let eliteGroupedData = [];
 
         async function loadEliteData() {
             try {
@@ -4390,7 +4529,11 @@
                 return eliteSortOrder === 'asc' ? aVal - bVal : bVal - aVal;
             });
 
+            // Store grouped data for event delegation
+            eliteGroupedData = sortedGroups;
+
             let rank = 0;
+            let groupIndex = 0;
             sortedGroups.forEach(group => {
                 const best = group[0];
                 const hasVariants = group.length > 1;
@@ -4428,7 +4571,10 @@
                 const row = document.createElement('tr');
                 row.className = 'elite-row';
                 row.dataset.groupKey = `${best.strategy_name}|${best.symbol}|${best.timeframe}|${direction}`;
+                row.dataset.groupIndex = groupIndex;
+                row.dataset.hasVariants = hasVariants ? 'true' : 'false';
                 row.style.cursor = hasVariants ? 'pointer' : 'default';
+                groupIndex++;
 
                 row.innerHTML = `
                     <td><span class="expand-icon">${hasVariants ? '▶' : '•'}</span> ${medal}#${rank}</td>
@@ -4461,10 +4607,7 @@
                     </td>
                 `;
 
-                if (hasVariants) {
-                    row.addEventListener('click', () => toggleEliteVariants(row, group, formatPnL));
-                }
-
+                // Event handling is done via delegation in setupEliteTableDelegation()
                 tbody.appendChild(row);
 
                 // Create variants container row (hidden by default)

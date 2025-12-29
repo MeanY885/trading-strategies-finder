@@ -2,12 +2,14 @@
 ELITE VALIDATION ROUTES
 ======================
 API endpoints for Elite strategy validation.
+Uses AsyncDatabase for non-blocking database operations.
 """
 import asyncio
 from typing import Optional
 from fastapi import APIRouter, HTTPException
 
 from state import app_state
+from async_database import AsyncDatabase
 
 router = APIRouter(prefix="/api/elite", tags=["elite"])
 
@@ -21,38 +23,29 @@ async def get_elite_status():
 @router.get("/strategies")
 async def get_elite_strategies(status_filter: Optional[str] = None, limit: int = 50):
     """
-    Get Elite validated strategies.
+    Get Elite validated strategies (non-blocking).
 
     Args:
         status_filter: Filter by status ('validated', 'pending', 'untestable', 'skipped')
         limit: Maximum number of strategies to return
     """
     try:
-        from strategy_database import get_strategy_db
-        db = get_strategy_db()
-
-        # Use optimized SQL query with WHERE clause instead of loading all
-        strategies = db.get_elite_strategies_filtered(
+        strategies = await AsyncDatabase.get_elite_strategies_filtered(
             status_filter=status_filter,
             limit=limit
         )
-
         return {"strategies": strategies}
-
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/leaderboard")
 async def get_elite_leaderboard(limit: int = 20):
-    """Get top Elite strategies sorted by score."""
+    """Get top Elite strategies sorted by score (non-blocking)."""
     try:
-        from strategy_database import get_strategy_db
-        db = get_strategy_db()
-
-        # Use optimized SQL query instead of loading all strategies
-        return db.get_elite_leaderboard(limit=limit)
-
+        # Use existing optimized async method
+        strategies = await AsyncDatabase.get_elite_strategies_optimized(top_n_per_market=limit)
+        return {"strategies": strategies[:limit]}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -60,15 +53,11 @@ async def get_elite_leaderboard(limit: int = 20):
 @router.post("/validate/{strategy_id}")
 async def trigger_validation(strategy_id: int):
     """
-    Manually trigger validation for a specific strategy.
+    Manually trigger validation for a specific strategy (non-blocking).
     Sets the strategy to 'pending' status so it will be picked up by the background validator.
     """
     try:
-        from strategy_database import get_strategy_db
-        db = get_strategy_db()
-
-        # Set strategy to pending
-        db.update_elite_status(
+        await AsyncDatabase.update_elite_status(
             strategy_id=strategy_id,
             elite_status='pending',
             periods_passed=0,
@@ -76,54 +65,48 @@ async def trigger_validation(strategy_id: int):
             validation_data=None,
             elite_score=0
         )
-
         return {
             "success": True,
             "message": f"Strategy {strategy_id} queued for validation"
         }
-
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/reset/{strategy_id}")
 async def reset_validation(strategy_id: int):
-    """Reset Elite validation for a specific strategy."""
+    """Reset Elite validation for a specific strategy (non-blocking)."""
     try:
-        from strategy_database import get_strategy_db
-        db = get_strategy_db()
-
-        db.update_elite_status(
+        await AsyncDatabase.update_elite_status(
             strategy_id=strategy_id,
-            elite_status=None,
+            elite_status='pending',  # Set to pending for re-validation
             periods_passed=0,
             periods_total=0,
             validation_data=None,
             elite_score=0
         )
-
         return {
             "success": True,
             "message": f"Strategy {strategy_id} validation reset"
         }
-
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/stats")
 async def get_elite_stats():
-    """Get Elite validation statistics."""
+    """Get Elite validation statistics (non-blocking)."""
     try:
-        from strategy_database import get_strategy_db
-        db = get_strategy_db()
-
-        # Use optimized SQL aggregation instead of loading all strategies
-        stats = db.get_elite_stats_optimized()
-        stats["validation_running"] = app_state.is_elite_running()
-
+        counts = await AsyncDatabase.get_elite_counts()
+        stats = {
+            "total": sum(counts.values()),
+            "validated_count": counts.get('validated', 0),
+            "pending_count": counts.get('pending', 0),
+            "untestable_count": counts.get('untestable', 0),
+            "skipped_count": counts.get('skipped', 0),
+            "validation_running": app_state.is_elite_running()
+        }
         return stats
-
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -161,30 +144,11 @@ async def trigger_validate_all():
 @router.post("/reset-all")
 async def reset_all_elite_validation():
     """
-    Reset all elite validation data.
+    Reset all elite validation data (non-blocking).
     Sets all strategies to 'pending' status so they will be re-validated.
     """
     try:
-        from strategy_database import get_strategy_db
-        db = get_strategy_db()
-
-        # Get count before reset
-        conn = db._get_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM strategies")
-        total_count = cursor.fetchone()[0]
-
-        # Reset all elite validation data
-        cursor.execute('''
-            UPDATE strategies
-            SET elite_status = 'pending',
-                elite_score = 0,
-                elite_periods_passed = 0,
-                elite_periods_total = 0,
-                elite_validation_data = NULL
-        ''')
-        conn.commit()
-        db._return_connection(conn)
+        total_count = await AsyncDatabase.reset_all_elite_validation()
 
         # Invalidate cache
         from services.cache import invalidate_counts_cache
@@ -195,6 +159,5 @@ async def reset_all_elite_validation():
             "reset_count": total_count,
             "message": f"Reset {total_count} strategies to pending validation"
         }
-
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

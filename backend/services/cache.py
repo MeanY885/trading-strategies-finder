@@ -146,8 +146,10 @@ def invalidate_strategy_caches():
 
 
 def invalidate_counts_cache():
-    """Call when elite status is updated."""
+    """Call when elite status is updated. Also clears elite strategies cache."""
     counts_cache.clear()
+    # Also invalidate elite strategies since validation status affects the elite table
+    strategies_cache.delete(CacheKeys.ELITE_STRATEGIES)
 
 
 def invalidate_priority_cache():

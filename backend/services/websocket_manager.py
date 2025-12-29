@@ -6,6 +6,7 @@ Extracted from main.py for better modularity.
 """
 import asyncio
 import json
+import time
 from datetime import datetime, date
 from typing import List, Dict, Any, Optional
 from fastapi import WebSocket
@@ -45,8 +46,9 @@ class WebSocketManager:
         self._lock = asyncio.Lock()
         self._broadcast_queue: asyncio.Queue = None
         self._broadcast_task: asyncio.Task = None
-        self._throttle_interval = 1  # Minimum seconds between broadcasts (1 second)
-        self._last_broadcast_time = 0
+        self._throttle_interval = 0.5  # Minimum seconds between broadcasts per message type
+        self._last_broadcast_times: Dict[str, float] = {}  # Per-type throttling
+        self._throttled_types = {"autonomous_status", "elite_status", "optimization_status"}  # Types to throttle
         self._main_loop = None  # Store reference to main event loop
 
     def set_main_loop(self, loop):
@@ -84,9 +86,18 @@ class WebSocketManager:
         """
         Broadcast a message to all connected clients.
         Thread-safe - can be called from sync code via broadcast_sync.
+        Throttles frequent message types to reduce network/UI load.
         """
         if not self.active_connections:
             return
+
+        # Apply throttling for frequent message types
+        if message_type in self._throttled_types:
+            now = time.time()
+            last_time = self._last_broadcast_times.get(message_type, 0)
+            if now - last_time < self._throttle_interval:
+                return  # Skip this broadcast - too soon
+            self._last_broadcast_times[message_type] = now
 
         # Serialize data to handle datetime objects
         message = serialize_for_json({"type": message_type, **data})
@@ -179,14 +190,13 @@ def broadcast_autonomous_status(autonomous_status: Dict, queue_data: Optional[Di
     if queue_data is None:
         queue_data = _get_queue_data_from_status(autonomous_status)
 
-    payload = {"autonomous": autonomous_status}
+    # Remove large arrays from status before broadcasting (combinations_list can be 100KB+)
+    status_for_broadcast = {k: v for k, v in autonomous_status.items()
+                           if k not in ("combinations_list", "queue_completed")}
+
+    payload = {"autonomous": status_for_broadcast}
     if queue_data:
         payload["queue"] = queue_data
-
-    # Debug: log broadcast attempt
-    client_count = ws_manager.client_count
-    if client_count > 0:
-        log(f"[WebSocket] Broadcasting autonomous_status to {client_count} clients")
 
     ws_manager.broadcast_sync("autonomous_status", payload)
 

@@ -321,3 +321,23 @@ class AsyncDatabase:
                 'granularities': [dict(row) for row in granularities],
                 'populated': populated
             }
+
+    @classmethod
+    async def reset_all_elite_validation(cls) -> int:
+        """Reset all elite validation data. Returns count of reset strategies."""
+        async with cls._pool.acquire() as conn:
+            # Get count first
+            count_row = await conn.fetchrow('SELECT COUNT(*) as count FROM strategies')
+            total_count = count_row['count']
+
+            # Reset all elite validation data
+            await conn.execute('''
+                UPDATE strategies
+                SET elite_status = 'pending',
+                    elite_score = 0,
+                    elite_periods_passed = 0,
+                    elite_periods_total = 0,
+                    elite_validation_data = NULL
+            ''')
+
+            return total_count
