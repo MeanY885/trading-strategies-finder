@@ -1052,7 +1052,7 @@
 
         .task-queue-item {
             display: grid;
-            grid-template-columns: 30px 100px 80px 50px 50px 1fr;
+            grid-template-columns: 30px 90px 70px 100px 60px 1fr;
             gap: 0.5rem;
             padding: 0.6rem 1rem;
             align-items: center;

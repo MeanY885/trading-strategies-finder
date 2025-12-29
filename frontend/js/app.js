@@ -459,71 +459,41 @@
 
             let html = '';
 
-            // Format running item WITH progress bar
+            // Format running item WITH progress bar (full-width grid layout like optimizer queue)
             const formatRunningItem = (item) => {
                 const progress = item.progress || 0;
                 const currentPeriod = item.current_period || '...';
                 const periodIndex = item.period_index !== undefined ? item.period_index + 1 : 0;
                 const totalPeriods = item.total_periods || 12;
-
-                const market = `${item.symbol || '?'} · ${item.timeframe || '?'}`;
-                const tpSl = item.tp_sl ? `TP/SL: ${item.tp_sl}` : '';
-                const score = item.score ? `Score: ${item.score}` : '';
-                const rankBadge = item.rank ? `<span style="background: var(--bg-secondary); padding: 1px 5px; border-radius: 3px; font-size: 0.65rem; margin-right: 6px;">#${item.rank}</span>` : '';
+                const message = `${currentPeriod} - ${periodIndex}/${totalPeriods}`;
 
                 return `
-                    <div class="task-queue-item running" style="display: flex; flex-direction: column; padding: 0.6rem 0.75rem; border-bottom: 1px solid var(--border-color); border-left: 3px solid var(--success); background: rgba(34, 197, 94, 0.05);">
-                        <div style="display: flex; align-items: center; margin-bottom: 0.4rem;">
-                            <span class="status-indicator" style="width: 8px; height: 8px; border-radius: 50%; background: var(--success); animation: pulse 1s infinite; margin-right: 0.75rem; flex-shrink: 0;"></span>
-                            <div style="flex: 1; min-width: 0;">
-                                <div style="display: flex; align-items: center; gap: 6px;">
-                                    ${rankBadge}
-                                    <span style="font-weight: 500; color: var(--primary);">${market}</span>
-                                </div>
-                                <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
-                                    ${item.name || 'Unknown'}${tpSl ? ` · ${tpSl}` : ''}${score ? ` · ${score}` : ''}
-                                </div>
+                    <div class="task-queue-item in-progress">
+                        <span class="task-status-icon"><span class="spinner"></span></span>
+                        <span>${item.symbol || '?'}</span>
+                        <span>${item.timeframe || '?'}</span>
+                        <span title="${item.name || ''}">${(item.name || '?').substring(0, 12)}</span>
+                        <span>${item.tp_sl || '-'}</span>
+                        <div class="task-progress">
+                            <div class="task-progress-bar">
+                                <div class="task-progress-fill" style="width: ${progress}%"></div>
                             </div>
-                            <div style="margin-left: 0.5rem; flex-shrink: 0;">
-                                <span style="color: var(--success); font-size: 0.7rem; padding: 2px 6px; background: rgba(34, 197, 94, 0.15); border-radius: 3px;">Validating</span>
-                            </div>
-                        </div>
-                        <!-- Progress bar -->
-                        <div style="margin-left: 1.5rem;">
-                            <div style="height: 4px; background: var(--bg-hover); border-radius: 2px; overflow: hidden; margin-bottom: 4px;">
-                                <div style="height: 100%; width: ${progress}%; background: linear-gradient(90deg, #22c55e, #eab308); transition: width 0.3s;"></div>
-                            </div>
-                            <div style="display: flex; justify-content: space-between; font-size: 0.7rem; color: var(--text-muted);">
-                                <span>Period: ${currentPeriod}</span>
-                                <span>${periodIndex}/${totalPeriods} (${progress}%)</span>
-                            </div>
+                            <span class="task-progress-text">${message}</span>
                         </div>
                     </div>
                 `;
             };
 
-            // Format pending item (no progress bar)
+            // Format pending item (no progress bar, full-width grid layout)
             const formatPendingItem = (item) => {
-                const market = `${item.symbol || '?'} · ${item.timeframe || '?'}`;
-                const tpSl = item.tp_sl ? `TP/SL: ${item.tp_sl}` : '';
-                const score = item.score ? `Score: ${item.score}` : '';
-                const rankBadge = item.rank ? `<span style="background: var(--bg-secondary); padding: 1px 5px; border-radius: 3px; font-size: 0.65rem; margin-right: 6px;">#${item.rank}</span>` : '';
-
                 return `
-                    <div class="task-queue-item pending" style="display: flex; align-items: center; padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border-color); opacity: 0.7;">
-                        <span class="status-indicator" style="width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); margin-right: 0.75rem; flex-shrink: 0;"></span>
-                        <div style="flex: 1; min-width: 0;">
-                            <div style="display: flex; align-items: center; gap: 6px;">
-                                ${rankBadge}
-                                <span style="font-weight: 500; color: var(--primary);">${market}</span>
-                            </div>
-                            <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
-                                ${item.name || 'Unknown'}${tpSl ? ` · ${tpSl}` : ''}${score ? ` · ${score}` : ''}
-                            </div>
-                        </div>
-                        <div style="margin-left: 0.5rem; flex-shrink: 0;">
-                            <span style="color: var(--text-muted); font-size: 0.7rem;">Pending</span>
-                        </div>
+                    <div class="task-queue-item pending">
+                        <span class="task-status-icon pending">○</span>
+                        <span>${item.symbol || '?'}</span>
+                        <span>${item.timeframe || '?'}</span>
+                        <span title="${item.name || ''}">${(item.name || '?').substring(0, 12)}</span>
+                        <span>${item.tp_sl || '-'}</span>
+                        <span class="task-result">Pending</span>
                     </div>
                 `;
             };
@@ -538,11 +508,11 @@
                 html += formatPendingItem(item);
             }
 
-            // Show remaining count if more pending
+            // Show remaining count if more pending (use same style as optimizer queue)
             const totalPending = (status.total || 0) - (status.processed || 0) - running.length;
             if (totalPending > pending.length) {
                 html += `
-                    <div style="padding: 0.5rem 0.75rem; text-align: center; color: var(--text-muted); font-size: 0.8rem;">
+                    <div class="task-queue-more">
                         +${totalPending - pending.length} more pending...
                     </div>
                 `;
