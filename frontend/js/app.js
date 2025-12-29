@@ -373,15 +373,32 @@
             const progressFill = document.getElementById('eliteProgressFill');
             const progressText = document.getElementById('eliteProgressText');
             const progressCount = document.getElementById('eliteProgressCount');
+            // Update queue elements
+            const queueContainer = document.getElementById('eliteValidationQueue');
+            const queueBody = document.getElementById('eliteQueueBody');
+            const queueParallelCount = document.getElementById('eliteQueueParallelCount');
 
             if (status.running && status.total > 0) {
                 // Show progress bar when validating
                 if (progressContainer) progressContainer.style.display = 'block';
+                if (queueContainer) queueContainer.style.display = 'block';
 
                 // Calculate and update progress bar
                 const pct = Math.round((status.processed / status.total) * 100);
                 if (progressFill) progressFill.style.width = `${pct}%`;
                 if (progressCount) progressCount.textContent = `${status.processed} / ${status.total}`;
+
+                // Update parallel count display
+                if (queueParallelCount) {
+                    const parallelCount = status.parallel_count || 0;
+                    const maxParallel = status.max_parallel || 1;
+                    queueParallelCount.textContent = `${parallelCount}/${maxParallel} parallel`;
+                }
+
+                // Render validation queue
+                if (queueBody) {
+                    renderEliteValidationQueue(queueBody, status);
+                }
 
                 if (status.paused) {
                     // Paused state
@@ -399,8 +416,9 @@
                     if (progressText) progressText.textContent = status.message || 'Validating...';
                 }
             } else {
-                // Hide progress bar when not running
+                // Hide progress bar and queue when not running
                 if (progressContainer) progressContainer.style.display = 'none';
+                if (queueContainer) queueContainer.style.display = 'none';
 
                 if (progressEl) {
                     if (status.message) {
@@ -416,6 +434,59 @@
             if (status.running === false) {
                 loadEliteData();
             }
+        }
+
+        // Render the elite validation queue
+        function renderEliteValidationQueue(container, status) {
+            const running = status.running_validations || [];
+            const pending = status.pending_queue || [];
+
+            if (running.length === 0 && pending.length === 0) {
+                container.innerHTML = `
+                    <div style="padding: 1rem; text-align: center; color: var(--text-muted);">
+                        No pending validations
+                    </div>
+                `;
+                return;
+            }
+
+            let html = '';
+
+            // Running validations (highlighted)
+            for (const item of running) {
+                html += `
+                    <div class="task-queue-item running" style="display: flex; align-items: center; padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border-color);">
+                        <span class="status-indicator" style="width: 8px; height: 8px; border-radius: 50%; background: var(--success); margin-right: 0.75rem; animation: pulse 1s infinite;"></span>
+                        <span style="flex: 1; font-weight: 500;">${item.name || 'Unknown'}</span>
+                        <span style="color: var(--text-muted); font-size: 0.8rem; margin-left: 0.5rem;">${item.symbol || ''} ${item.timeframe || ''}</span>
+                        <span style="color: var(--success); font-size: 0.75rem; margin-left: 0.5rem;">Validating...</span>
+                    </div>
+                `;
+            }
+
+            // Pending validations
+            for (const item of pending) {
+                html += `
+                    <div class="task-queue-item pending" style="display: flex; align-items: center; padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border-color); opacity: 0.7;">
+                        <span class="status-indicator" style="width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); margin-right: 0.75rem;"></span>
+                        <span style="flex: 1;">${item.name || 'Unknown'}</span>
+                        <span style="color: var(--text-muted); font-size: 0.8rem; margin-left: 0.5rem;">${item.symbol || ''} ${item.timeframe || ''}</span>
+                        <span style="color: var(--text-muted); font-size: 0.75rem; margin-left: 0.5rem;">Pending</span>
+                    </div>
+                `;
+            }
+
+            // Show remaining count if more pending
+            const totalPending = (status.total || 0) - (status.processed || 0) - running.length;
+            if (totalPending > pending.length) {
+                html += `
+                    <div style="padding: 0.5rem 0.75rem; text-align: center; color: var(--text-muted); font-size: 0.8rem;">
+                        +${totalPending - pending.length} more pending...
+                    </div>
+                `;
+            }
+
+            container.innerHTML = html;
         }
 
         // Handle individual strategy results (replaces SSE)

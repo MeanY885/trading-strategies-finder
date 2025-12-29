@@ -12,6 +12,8 @@ Features:
 """
 import asyncio
 import json
+import threading
+import psutil
 from datetime import datetime
 from typing import Dict, List, Optional
 import pandas as pd
@@ -21,6 +23,51 @@ from state import app_state, concurrency_config
 from logging_config import log
 from services.autonomous_optimizer import has_period_boundary_crossed, get_stale_periods
 from services.cache import invalidate_counts_cache
+
+# =============================================================================
+# PARALLEL VALIDATION SUPPORT
+# =============================================================================
+
+# Semaphore for limiting concurrent validations
+elite_validation_semaphore: Optional[asyncio.Semaphore] = None
+
+# Track running validations for queue display
+running_validations: Dict[int, dict] = {}
+running_validations_lock = threading.Lock()
+running_validations_async_lock: Optional[asyncio.Lock] = None
+
+# Pending strategies list for queue display
+pending_strategies_list: List[dict] = []
+
+
+def get_max_concurrent_validations() -> int:
+    """Determine max concurrent validations based on system resources."""
+    # Check config first
+    config_max = concurrency_config.get("elite_max_concurrent", 0)
+    if config_max > 0:
+        return config_max
+
+    # Auto-detect based on CPU cores
+    cpu_count = psutil.cpu_count(logical=True) or 4
+    if cpu_count >= 16:
+        return 4
+    elif cpu_count >= 8:
+        return 3
+    elif cpu_count >= 4:
+        return 2
+    else:
+        return 1
+
+
+def init_elite_async_primitives():
+    """Initialize async primitives for parallel validation."""
+    global elite_validation_semaphore, running_validations_async_lock
+
+    max_concurrent = get_max_concurrent_validations()
+    elite_validation_semaphore = asyncio.Semaphore(max_concurrent)
+    running_validations_async_lock = asyncio.Lock()
+
+    log(f"[Elite Validation] Initialized: max_concurrent={max_concurrent}")
 
 
 # =============================================================================
@@ -246,11 +293,95 @@ async def validate_strategy(
     }
 
 
+async def validate_single_strategy_worker(strategy: dict, db, processed_count: list):
+    """
+    Worker function to validate a single strategy with semaphore control.
+    """
+    global running_validations, pending_strategies_list
+    from services.websocket_manager import broadcast_elite_status
+
+    strategy_id = strategy.get('id')
+    strategy_name = strategy.get('strategy_name', 'Unknown')
+    symbol = strategy.get('symbol', '')
+    timeframe = strategy.get('timeframe', '')
+
+    async with elite_validation_semaphore:
+        # Add to running validations
+        async with running_validations_async_lock:
+            running_validations[strategy_id] = {
+                "id": strategy_id,
+                "name": strategy_name,
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "status": "validating",
+                "progress": 0
+            }
+            # Remove from pending list if present
+            pending_strategies_list[:] = [s for s in pending_strategies_list if s.get('id') != strategy_id]
+
+            # Update status with queue info
+            _update_queue_status()
+
+        log(f"[Elite Validation] Validating: {strategy_name} (#{strategy_id})")
+
+        try:
+            result = await validate_strategy(strategy, VALIDATION_PERIODS)
+
+            if result:
+                db.update_elite_status(
+                    strategy_id=strategy_id,
+                    elite_status=result["elite_status"],
+                    periods_passed=result["periods_passed"],
+                    periods_total=result["periods_total"],
+                    validation_data=result["validation_data"],
+                    elite_score=result["elite_score"]
+                )
+                invalidate_counts_cache()
+                log(f"[Elite Validation] Result: {result['elite_status'].upper()} - {result['periods_passed']}/{result['periods_total']} periods")
+
+        except Exception as e:
+            log(f"[Elite Validation] Error validating {strategy_name}: {e}", level='ERROR')
+
+        finally:
+            # Remove from running validations
+            async with running_validations_async_lock:
+                if strategy_id in running_validations:
+                    del running_validations[strategy_id]
+
+            # Update processed count
+            processed_count[0] += 1
+            app_state.update_elite_status(
+                processed=processed_count[0]
+            )
+            _update_queue_status()
+            broadcast_elite_status(app_state.get_elite_status())
+
+
+def _update_queue_status():
+    """Update elite status with current queue information."""
+    global running_validations, pending_strategies_list
+
+    running_list = list(running_validations.values())
+    pending_preview = pending_strategies_list[:5]  # Next 5 pending
+
+    app_state.update_elite_status(
+        running_validations=running_list,
+        pending_queue=pending_preview,
+        parallel_count=len(running_list),
+        max_parallel=get_max_concurrent_validations()
+    )
+
+
 async def validate_all_strategies():
     """
-    Background task: Validate ALL pending strategies.
+    Background task: Validate ALL pending strategies with parallel processing.
     """
+    global pending_strategies_list, running_validations
     from strategy_database import get_strategy_db
+
+    # Initialize async primitives if needed
+    if elite_validation_semaphore is None:
+        init_elite_async_primitives()
 
     try:
         db = get_strategy_db()
@@ -281,61 +412,42 @@ async def validate_all_strategies():
         except:
             pass
 
+        # Store pending list for queue display
+        pending_strategies_list = [{
+            "id": s.get('id'),
+            "name": s.get('strategy_name', 'Unknown'),
+            "symbol": s.get('symbol', ''),
+            "timeframe": s.get('timeframe', ''),
+            "status": "pending"
+        } for s in pending]
+
+        max_concurrent = get_max_concurrent_validations()
         app_state.update_elite_status(
             running=True,
             total=len(pending),
             processed=0,
-            message=f"Validating {len(pending)} strategies..."
+            max_parallel=max_concurrent,
+            message=f"Validating {len(pending)} strategies ({max_concurrent} parallel)..."
         )
 
         from services.websocket_manager import broadcast_elite_status
+        _update_queue_status()
         broadcast_elite_status(app_state.get_elite_status())
 
-        for strategy in pending:
-            # Check for parallel mode vs legacy mode
-            if not concurrency_config.get("elite_parallel", True):
-                while app_state.is_unified_running():
-                    app_state.update_elite_status(
-                        paused=True,
-                        message="Paused (optimizer running)"
-                    )
-                    await asyncio.sleep(2)
-                app_state.update_elite_status(paused=False)
+        # Use shared counter for processed count
+        processed_count = [0]
 
-            strategy_id = strategy.get('id')
-            strategy_name = strategy.get('strategy_name', 'Unknown')
+        # Create tasks for all strategies
+        tasks = [
+            validate_single_strategy_worker(strategy, db, processed_count)
+            for strategy in pending
+        ]
 
-            log(f"[Elite Validation] Validating: {strategy_name} (#{strategy_id})")
-
-            app_state.update_elite_status(
-                current_strategy_id=strategy_id,
-                message=f"Validating: {strategy_name}"
-            )
-
-            result = await validate_strategy(strategy, VALIDATION_PERIODS)
-
-            if result:
-                db.update_elite_status(
-                    strategy_id=strategy_id,
-                    elite_status=result["elite_status"],
-                    periods_passed=result["periods_passed"],
-                    periods_total=result["periods_total"],
-                    validation_data=result["validation_data"],
-                    elite_score=result["elite_score"]
-                )
-                # Invalidate cache after elite status update
-                invalidate_counts_cache()
-
-                log(f"[Elite Validation] Result: {result['elite_status'].upper()} - {result['periods_passed']}/{result['periods_total']} periods")
-
-            status = app_state.get_elite_status()
-            app_state.update_elite_status(
-                processed=status.get("processed", 0) + 1
-            )
-            broadcast_elite_status(app_state.get_elite_status())
+        # Run all tasks (semaphore controls concurrency)
+        await asyncio.gather(*tasks, return_exceptions=True)
 
         app_state.update_elite_status(
-            message=f"Complete! Validated {app_state.get_elite_status().get('processed', 0)} strategies"
+            message=f"Complete! Validated {processed_count[0]} strategies"
         )
 
     except Exception as e:
@@ -344,10 +456,17 @@ async def validate_all_strategies():
         app_state.update_elite_status(message=f"Error: {str(e)}")
 
     finally:
+        # Clear queue tracking
+        running_validations.clear()
+        pending_strategies_list.clear()
+
         app_state.update_elite_status(
             running=False,
             paused=False,
-            current_strategy_id=None
+            current_strategy_id=None,
+            running_validations=[],
+            pending_queue=[],
+            parallel_count=0
         )
         from services.websocket_manager import broadcast_elite_status
         broadcast_elite_status(app_state.get_elite_status())
