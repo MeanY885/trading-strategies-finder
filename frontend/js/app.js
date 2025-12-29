@@ -825,8 +825,15 @@
 
         async function loadPriorityLists() {
             try {
-                // Load via WebSocket (much faster than HTTP)
-                const data = await loadPriorityViaWs();
+                let data;
+                // Try WebSocket first (faster), fall back to HTTP if not connected
+                try {
+                    data = await loadPriorityViaWs();
+                } catch (wsError) {
+                    console.log('[Priority] WebSocket failed, falling back to HTTP:', wsError.message);
+                    const response = await fetch('/api/priority/lists');
+                    data = await response.json();
+                }
 
                 priorityPairs = data.pairs || [];
                 priorityPeriods = data.periods || [];
