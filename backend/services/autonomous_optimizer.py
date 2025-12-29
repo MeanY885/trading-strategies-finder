@@ -913,7 +913,7 @@ async def start_autonomous_optimizer(thread_pool):
             CPU_SPAWN_THRESHOLD = 80  # Only spawn if CPU < 80%
             MEM_SPAWN_THRESHOLD = 4.0  # Only spawn if > 4GB available
             SPAWN_COOLDOWN = 60  # Seconds between spawns
-            MAX_CONCURRENT = 4  # Allow 4 optimization tasks in parallel
+            MAX_CONCURRENT = 2  # Allow 2 optimization tasks in parallel
 
             # Check if we can spawn based on resources
             can_spawn_cpu = cpu_percent < CPU_SPAWN_THRESHOLD
