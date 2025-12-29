@@ -226,10 +226,16 @@ def get_elite_status() -> dict:
 
 async def validate_strategy(
     strategy: dict,
-    validation_periods: List[dict]
+    validation_periods: List[dict],
+    progress_callback=None
 ) -> dict:
     """
     Validate a single strategy across multiple time periods.
+
+    Args:
+        strategy: Strategy dict with id, name, params, etc.
+        validation_periods: List of periods to validate
+        progress_callback: Optional async callback(period_index, period_name, total_periods)
 
     Returns:
         dict with validation results including elite_status, score, periods passed
@@ -314,7 +320,15 @@ async def validate_strategy(
     results = []
 
     # Process each period
-    for vp in validation_periods:
+    total_periods = len(validation_periods)
+    for period_idx, vp in enumerate(validation_periods):
+        # Report progress
+        if progress_callback:
+            try:
+                await progress_callback(period_idx, vp["period"], total_periods)
+            except Exception:
+                pass
+
         # Keep fresh results
         if vp["period"] not in stale_period_names and existing_results:
             for er in existing_results:
@@ -498,8 +512,20 @@ async def validate_single_strategy_worker(strategy: dict, processed_count: list,
 
         log(f"[Elite Validation] Validating: {strategy_name} (#{strategy_id})")
 
+        # Progress callback to update running_validations
+        async def on_period_progress(period_idx, period_name, total_periods):
+            progress_pct = int((period_idx / total_periods) * 100) if total_periods > 0 else 0
+            async with running_validations_async_lock:
+                if strategy_id in running_validations:
+                    running_validations[strategy_id]["progress"] = progress_pct
+                    running_validations[strategy_id]["current_period"] = period_name
+                    running_validations[strategy_id]["period_index"] = period_idx
+                    running_validations[strategy_id]["total_periods"] = total_periods
+            _update_queue_status()
+            broadcast_elite_status(app_state.get_elite_status())
+
         try:
-            result = await validate_strategy(strategy, VALIDATION_PERIODS)
+            result = await validate_strategy(strategy, VALIDATION_PERIODS, progress_callback=on_period_progress)
 
             if result:
                 # Use async database to avoid blocking the event loop
