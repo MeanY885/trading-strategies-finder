@@ -451,7 +451,7 @@ async def validate_strategy(
     }
 
 
-async def validate_single_strategy_worker(strategy: dict, db, processed_count: list, task_slot: asyncio.Semaphore):
+async def validate_single_strategy_worker(strategy: dict, processed_count: list, task_slot: asyncio.Semaphore):
     """
     Worker function to validate a single strategy with resource-aware control.
     Uses a dynamic semaphore that respects other running services.
@@ -637,7 +637,7 @@ async def validate_all_strategies():
 
         # Create tasks for all strategies (pass semaphore for resource control)
         tasks = [
-            validate_single_strategy_worker(strategy, db, processed_count, task_slot)
+            validate_single_strategy_worker(strategy, processed_count, task_slot)
             for strategy in pending
         ]
 
