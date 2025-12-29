@@ -445,6 +445,10 @@ async def validate_single_strategy_worker(strategy: dict, db, processed_count: l
     strategy_name = strategy.get('strategy_name', 'Unknown')
     symbol = strategy.get('symbol', '')
     timeframe = strategy.get('timeframe', '')
+    tp_percent = strategy.get('tp_percent', 0)
+    sl_percent = strategy.get('sl_percent', 0)
+    composite_score = strategy.get('composite_score', 0)
+    rank = strategy.get('rank', 0)
 
     # Wait for a slot - semaphore is dynamically sized
     async with task_slot:
@@ -462,6 +466,9 @@ async def validate_single_strategy_worker(strategy: dict, db, processed_count: l
                 "name": strategy_name,
                 "symbol": symbol,
                 "timeframe": timeframe,
+                "tp_sl": f"{tp_percent:.1f}/{sl_percent:.1f}",
+                "score": round(composite_score, 1),
+                "rank": rank,
                 "status": "validating",
                 "progress": 0
             }
@@ -549,8 +556,9 @@ async def validate_all_strategies():
     try:
         db = get_strategy_db()
 
-        # Use optimized query instead of loading all strategies
-        pending = db.get_strategies_pending_validation(limit=1000)
+        # Use top N per market to reduce queue size and focus on best candidates
+        # This gets top 3 strategies per (symbol, timeframe) combination
+        pending = db.get_top_pending_per_market(top_n=3)
 
         if not pending:
             app_state.update_elite_status(message="No pending strategies to validate")
@@ -575,12 +583,15 @@ async def validate_all_strategies():
         except:
             pass
 
-        # Store pending list for queue display
+        # Store pending list for queue display (with richer info for better UI)
         pending_strategies_list = [{
             "id": s.get('id'),
             "name": s.get('strategy_name', 'Unknown'),
             "symbol": s.get('symbol', ''),
             "timeframe": s.get('timeframe', ''),
+            "tp_sl": f"{s.get('tp_percent', 0):.1f}/{s.get('sl_percent', 0):.1f}",
+            "score": round(s.get('composite_score', 0), 1),
+            "rank": s.get('rank', 0),
             "status": "pending"
         } for s in pending]
 

@@ -707,6 +707,35 @@ class StrategyDatabase:
 
         return [self._row_to_dict(row) for row in rows]
 
+    def get_top_pending_per_market(self, top_n: int = 3) -> List[Dict]:
+        """
+        Get top N pending strategies per (symbol, timeframe) combination.
+        Uses window functions to rank by composite_score within each market.
+        This reduces validation queue to only the best candidates per market.
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        cursor.execute('''
+            WITH ranked AS (
+                SELECT *,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY symbol, timeframe
+                        ORDER BY composite_score DESC
+                    ) as rank
+                FROM strategies
+                WHERE elite_status IS NULL OR elite_status = 'pending'
+            )
+            SELECT * FROM ranked
+            WHERE rank <= %s
+            ORDER BY composite_score DESC
+        ''', (top_n,))
+
+        rows = cursor.fetchall()
+        conn.close()
+
+        return [self._row_to_dict(row) for row in rows]
+
     def get_all_strategies(self) -> List[Dict]:
         """Get all strategies from the database."""
         conn = self._get_connection()
