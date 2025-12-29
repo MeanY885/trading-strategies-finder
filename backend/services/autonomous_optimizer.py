@@ -13,6 +13,8 @@ Features:
 import asyncio
 import threading
 import json
+import time
+import re
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Callable
 import pandas as pd
@@ -798,6 +800,7 @@ async def start_autonomous_optimizer(thread_pool):
 
     active_tasks = set()
     current_index = start_index
+    last_spawn_time = 0  # Allow immediate first spawn
 
     log(f"[Parallel Optimizer] Entering main loop. auto_running={app_state.is_autonomous_running()}, enabled={app_state.is_autonomous_enabled()}")
 
@@ -841,26 +844,52 @@ async def start_autonomous_optimizer(thread_pool):
                     active_tasks, timeout=0.1, return_when=asyncio.FIRST_COMPLETED
                 )
 
-            # Spawn new tasks - limit concurrent to avoid overwhelming system
-            # With 27GB RAM, 12 concurrent is safe (~2GB per optimization)
-            max_concurrent = min(12, concurrency_config.get("max_concurrent", 12))
-            available_slots = max_concurrent - len(active_tasks)
+            # Dynamic resource-based spawning
+            from services.resource_monitor import resource_monitor
 
-            # Only spawn ONE task per loop iteration to spread load
-            if available_slots > 0 and current_index < len(combinations):
+            resources = resource_monitor.get_current_resources()
+            cpu_percent = resources["cpu_percent"]
+            mem_available_gb = resources["memory_available_gb"]
+
+            # Resource thresholds for spawning
+            CPU_SPAWN_THRESHOLD = 80  # Only spawn if CPU < 80%
+            MEM_SPAWN_THRESHOLD = 4.0  # Only spawn if > 4GB available
+            SPAWN_COOLDOWN = 30  # Seconds between spawns
+
+            # Check if we can spawn based on resources
+            can_spawn_cpu = cpu_percent < CPU_SPAWN_THRESHOLD
+            can_spawn_mem = mem_available_gb > MEM_SPAWN_THRESHOLD
+            time_since_spawn = time.time() - last_spawn_time
+
+            # Spawn if: resources available AND cooldown elapsed AND work remaining
+            if can_spawn_cpu and can_spawn_mem and time_since_spawn >= SPAWN_COOLDOWN and current_index < len(combinations):
                 combo = combinations[current_index]
                 task = asyncio.create_task(
                     process_single_combination(combo, current_index, combinations, thread_pool)
                 )
                 active_tasks.add(task)
                 current_index += 1
+                last_spawn_time = time.time()
                 app_state.update_autonomous_status(cycle_index=current_index)
 
-                app_state.update_autonomous_status(
-                    running=len(active_tasks) > 0,
-                    max_parallel=max_concurrent,
-                    message=f"Running {len(active_tasks)}/{max_concurrent} parallel optimizations..."
-                )
+                log(f"[Parallel Optimizer] Spawned task #{current_index} | CPU: {cpu_percent:.1f}% | Mem: {mem_available_gb:.1f}GB")
+
+            # Update status with resource info
+            status_msg = f"Running {len(active_tasks)} tasks | CPU: {cpu_percent:.0f}% | Mem: {mem_available_gb:.1f}GB"
+            if not can_spawn_cpu:
+                status_msg += " | CPU high, waiting..."
+            elif not can_spawn_mem:
+                status_msg += " | Memory low, waiting..."
+            elif time_since_spawn < SPAWN_COOLDOWN and current_index < len(combinations):
+                status_msg += f" | Next spawn in {SPAWN_COOLDOWN - int(time_since_spawn)}s"
+
+            app_state.update_autonomous_status(
+                running=len(active_tasks) > 0,
+                max_parallel=len(active_tasks),  # Dynamic - no fixed max
+                message=status_msg,
+                cpu_percent=cpu_percent,
+                memory_available_gb=mem_available_gb
+            )
 
             log(f"[Parallel Optimizer] Broadcasting... active={len(active_tasks)}, index={current_index}")
             # Use async broadcast directly since we're in async context
