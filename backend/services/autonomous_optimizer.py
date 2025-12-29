@@ -412,6 +412,22 @@ async def run_single_optimization(
     timeframe = combo["timeframe"]
     granularity = combo["granularity"]
 
+    # Look up historical average duration for ETA estimation
+    historical_avg_duration = None
+    try:
+        from strategy_database import get_strategy_db
+        db = get_strategy_db()
+        historical_avg_duration = db.get_average_duration(
+            pair=pair,
+            period_label=period["label"],
+            timeframe_label=timeframe["label"],
+            granularity_label=granularity["label"]
+        )
+        if historical_avg_duration:
+            log(f"[Autonomous Optimizer] Historical avg duration for {pair} {timeframe['label']}: {historical_avg_duration}s")
+    except Exception as e:
+        log(f"[Autonomous Optimizer] Error getting historical duration: {e}", level='WARNING')
+
     status = app_state.get_autonomous_status()
 
     last_broadcast_time = [0]  # Use list to allow mutation in nested function
@@ -472,10 +488,10 @@ async def run_single_optimization(
                 )
             except asyncio.TimeoutError:
                 log(f"[Autonomous Optimizer] Data fetch TIMEOUT for {pair}", level='ERROR')
-                return "error"
+                return "error", 0
             except Exception as e:
                 log(f"[Autonomous Optimizer] Data fetch error: {e}", level='ERROR')
-                return "error"
+                return "error", 0
 
             if df is not None and len(df) >= 100:
                 # Store in cache for future use
@@ -483,7 +499,7 @@ async def run_single_optimization(
                 log(f"[Autonomous Optimizer] Cached: {pair} {timeframe['label']} {period['label']} ({len(df):,} rows)")
 
     if df is None or len(df) < 100:
-        return "error"
+        return "error", 0
 
     data_validation = validate_data_range(df, period, timeframe)
 
@@ -494,12 +510,20 @@ async def run_single_optimization(
             skipped_count=status.get("skipped_count", 0) + 1,
             message=f"SKIPPED {pair} - {data_validation['message']}"
         )
-        return "skipped"
+        return "skipped", 0
 
     # Run optimization
     log(f"[Autonomous Optimizer] Starting optimization for {pair} ({granularity['n_trials']} trials)...")
     temp_status = {"running": True, "progress": 0, "message": "", "report": None, "abort": False}
     current_optimization_status = temp_status
+    optimization_start_time = datetime.now()
+
+    # Set initial ETA based on historical average
+    if historical_avg_duration:
+        app_state.update_autonomous_status(
+            estimated_remaining_seconds=historical_avg_duration,
+            historical_avg_duration=historical_avg_duration
+        )
 
     async def update_progress():
         import re
@@ -528,6 +552,25 @@ async def run_single_optimization(
             if current_trial > 0 and total_trials > 0:
                 progress_pct = int((current_trial / total_trials) * 100)
 
+            # Calculate ETA based on progress
+            estimated_remaining = None
+            elapsed_seconds = (datetime.now() - optimization_start_time).total_seconds()
+
+            if progress_pct > 5 and elapsed_seconds > 10:
+                # Progress-based ETA: (elapsed / progress) * remaining
+                estimated_total = elapsed_seconds / (progress_pct / 100)
+                estimated_remaining = int(estimated_total - elapsed_seconds)
+            elif historical_avg_duration and progress_pct > 0:
+                # Blend historical with early progress
+                estimated_remaining = int(historical_avg_duration * (1 - progress_pct / 100))
+            elif historical_avg_duration:
+                # Use historical average before progress starts
+                estimated_remaining = int(historical_avg_duration - elapsed_seconds)
+
+            # Ensure ETA is never negative
+            if estimated_remaining is not None and estimated_remaining < 0:
+                estimated_remaining = 0
+
             # Build status message
             if current_trial > 0 and total_trials > 0:
                 status_msg = f"{pair} - {current_trial:,}/{total_trials:,}"
@@ -539,7 +582,8 @@ async def run_single_optimization(
             app_state.update_autonomous_status(
                 trial_current=current_trial,
                 trial_total=total_trials,
-                message=status_msg
+                message=status_msg,
+                estimated_remaining_seconds=estimated_remaining
             )
             await update_parallel_status(status_msg, progress_pct)
 
@@ -572,7 +616,7 @@ async def run_single_optimization(
 
     if temp_status.get("abort"):
         log(f"[Autonomous Optimizer] {pair} - Aborted")
-        return "aborted"
+        return "aborted", 0
 
     # Process results
     if temp_status.get("report"):
@@ -612,7 +656,7 @@ async def run_single_optimization(
         autonomous_runs_history = autonomous_runs_history[:MAX_HISTORY_SIZE]
 
     log(f"[Autonomous Optimizer] Completed {pair} - {strategies_found} strategies found")
-    return "completed"
+    return "completed", strategies_found
 
 
 async def process_single_combination(
@@ -637,6 +681,7 @@ async def process_single_combination(
             await asyncio.sleep(1)
 
         # Register this optimization
+        started_at = datetime.now()
         combo_status = {
             "id": combo_id,
             "index": combo_index,
@@ -645,7 +690,7 @@ async def process_single_combination(
             "timeframe": combo["timeframe"]["label"],
             "granularity": combo["granularity"]["label"],
             "status": "running",
-            "started_at": datetime.now().isoformat(),
+            "started_at": started_at.isoformat(),
             "progress": 0,
             "message": f"Starting {combo['pair']}...",
         }
@@ -660,7 +705,10 @@ async def process_single_combination(
         log(f"[Parallel Optimizer] Starting: {combo['pair']} {combo['timeframe']['label']}")
 
         try:
-            result = await run_single_optimization(combo, combo_id, thread_pool)
+            result, strategies_found = await run_single_optimization(combo, combo_id, thread_pool)
+
+            completed_at = datetime.now()
+            duration_seconds = int((completed_at - started_at).total_seconds())
 
             completed_item = {
                 "index": combo_index,
@@ -668,18 +716,20 @@ async def process_single_combination(
                 "period": combo["period"]["label"],
                 "timeframe": combo["timeframe"]["label"],
                 "granularity": combo["granularity"]["label"],
-                "completed_at": datetime.now().isoformat(),
+                "completed_at": completed_at.isoformat(),
                 "status": result,
+                "strategies_found": strategies_found,
+                "duration_seconds": duration_seconds,
             }
 
             if result == "completed":
                 status = app_state.get_autonomous_status()
                 app_state.update_autonomous_status(
                     completed_count=status.get("completed_count", 0) + 1,
-                    last_completed_at=datetime.now().isoformat()
+                    last_completed_at=completed_at.isoformat()
                 )
 
-                # Record in database
+                # Record in database with duration
                 try:
                     from strategy_database import get_strategy_db
                     db = get_strategy_db()
@@ -688,11 +738,19 @@ async def process_single_combination(
                         period_label=combo["period"]["label"],
                         timeframe_label=combo["timeframe"]["label"],
                         granularity_label=combo["granularity"]["label"],
-                        strategies_found=0,
-                        source=combo.get("source", "binance")
+                        strategies_found=strategies_found,
+                        source=combo.get("source", "binance"),
+                        duration_seconds=duration_seconds
                     )
+                    log(f"[Parallel Optimizer] Completed in {duration_seconds}s: {combo['pair']} {combo['timeframe']['label']}")
                 except Exception as e:
                     log(f"[Parallel Optimizer] Error recording completion: {e}", level='WARNING')
+
+                # Clear ETA after completion
+                app_state.update_autonomous_status(
+                    estimated_remaining_seconds=None,
+                    historical_avg_duration=None
+                )
 
             elif result == "error":
                 status = app_state.get_autonomous_status()
@@ -854,8 +912,8 @@ async def start_autonomous_optimizer(thread_pool):
             # Resource thresholds for spawning
             CPU_SPAWN_THRESHOLD = 80  # Only spawn if CPU < 80%
             MEM_SPAWN_THRESHOLD = 4.0  # Only spawn if > 4GB available
-            SPAWN_COOLDOWN = 30  # Seconds between spawns
-            MAX_CONCURRENT = 1  # TEST MODE: Only 1 task at a time
+            SPAWN_COOLDOWN = 60  # Seconds between spawns
+            MAX_CONCURRENT = 4  # Allow 4 optimization tasks in parallel
 
             # Check if we can spawn based on resources
             can_spawn_cpu = cpu_percent < CPU_SPAWN_THRESHOLD

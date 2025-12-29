@@ -123,6 +123,10 @@ class AppState:
         "parallel_running": [],
         "parallel_count": 0,
         "max_parallel": 4,
+        # ETA tracking for countdown display
+        "estimated_remaining_seconds": None,
+        "estimated_completion_time": None,
+        "historical_avg_duration": None,
     })
 
     # Running optimizations tracking (for parallel processing)

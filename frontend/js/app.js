@@ -29,6 +29,37 @@
         let priorityInitialized = false;
 
         // =============================================================================
+        // HELPER FUNCTIONS
+        // =============================================================================
+
+        /**
+         * Format seconds into a human-readable ETA string
+         * @param {number} seconds - Total seconds remaining
+         * @returns {string} Formatted string like "15m 22s" or "1h 5m"
+         */
+        function formatETA(seconds) {
+            if (seconds === null || seconds === undefined || seconds < 0) {
+                return 'calculating...';
+            }
+
+            seconds = Math.round(seconds);
+
+            if (seconds < 60) {
+                return `${seconds}s`;
+            }
+
+            const hours = Math.floor(seconds / 3600);
+            const minutes = Math.floor((seconds % 3600) / 60);
+            const secs = seconds % 60;
+
+            if (hours > 0) {
+                return `${hours}h ${minutes}m`;
+            }
+
+            return `${minutes}m ${secs}s`;
+        }
+
+        // =============================================================================
         // WEBSOCKET CLIENT - Real-time updates (replaces polling)
         // =============================================================================
 
@@ -282,11 +313,21 @@
                     progressContainer.style.display = 'block';
                     if (progressFill) progressFill.style.width = `${status.progress || 0}%`;
                     if (progressText) {
+                        // Build progress text with optional ETA
+                        let text = '';
                         if (status.trial_current > 0 && status.trial_total > 0) {
-                            progressText.textContent = `Trial ${status.trial_current}/${status.trial_total} (${status.progress || 0}%)`;
+                            text = `Trial ${status.trial_current.toLocaleString()}/${status.trial_total.toLocaleString()} (${status.progress || 0}%)`;
                         } else {
-                            progressText.textContent = `${status.progress || 0}%`;
+                            text = `${status.progress || 0}%`;
                         }
+
+                        // Add ETA if available
+                        if (status.estimated_remaining_seconds !== null && status.estimated_remaining_seconds !== undefined) {
+                            const eta = formatETA(status.estimated_remaining_seconds);
+                            text += ` | Est: ${eta} remaining`;
+                        }
+
+                        progressText.textContent = text;
                     }
                 } else {
                     progressContainer.style.display = 'none';
@@ -4481,9 +4522,10 @@
                 completedToShow.reverse().forEach(item => {
                     const statusIcon = item.status === 'completed' ? '✓' : item.status === 'skipped' ? '⏭' : '✗';
                     const statusClass = item.status;
-                    const resultClass = item.strategies_found > 0 ? 'has-strategies' : '';
+                    const strategiesFound = item.strategies_found ?? 0;
+                    const resultClass = strategiesFound > 0 ? 'has-strategies' : '';
                     const resultText = item.status === 'completed'
-                        ? `${item.strategies_found} strategies`
+                        ? `${strategiesFound} strategies`
                         : item.status === 'skipped' ? 'Skipped' : 'Error';
 
                     html += `
@@ -4609,9 +4651,10 @@
             completedToShow.reverse().forEach(item => {
                 const statusIcon = item.status === 'completed' ? '✓' : item.status === 'skipped' ? '⏭' : '✗';
                 const statusClass = item.status;
-                const resultClass = item.strategies_found > 0 ? 'has-strategies' : '';
+                const strategiesFound = item.strategies_found ?? 0;
+                const resultClass = strategiesFound > 0 ? 'has-strategies' : '';
                 const resultText = item.status === 'completed'
-                    ? `${item.strategies_found} strategies`
+                    ? `${strategiesFound} strategies`
                     : item.status === 'skipped' ? 'Skipped' : 'Error';
 
                 html += `

@@ -6,10 +6,35 @@ Allows loading historical results and comparing performance over time.
 """
 import psycopg2
 from psycopg2.extras import RealDictCursor
+from psycopg2.extensions import register_adapter, AsIs
 import json
 from datetime import datetime
 from typing import Dict, List, Any, Optional
 import os
+import numpy as np
+
+# Register numpy type adapters for psycopg2
+# Without this, numpy.float64 gets serialized as "np.float64(...)" which crashes PostgreSQL
+def _adapt_numpy_float64(numpy_float64):
+    return AsIs(float(numpy_float64))
+
+def _adapt_numpy_float32(numpy_float32):
+    return AsIs(float(numpy_float32))
+
+def _adapt_numpy_int64(numpy_int64):
+    return AsIs(int(numpy_int64))
+
+def _adapt_numpy_int32(numpy_int32):
+    return AsIs(int(numpy_int32))
+
+def _adapt_numpy_bool(numpy_bool):
+    return AsIs(bool(numpy_bool))
+
+register_adapter(np.float64, _adapt_numpy_float64)
+register_adapter(np.float32, _adapt_numpy_float32)
+register_adapter(np.int64, _adapt_numpy_int64)
+register_adapter(np.int32, _adapt_numpy_int32)
+register_adapter(np.bool_, _adapt_numpy_bool)
 
 
 class StrategyDatabase:
@@ -159,8 +184,15 @@ class StrategyDatabase:
                 strategies_found INTEGER DEFAULT 0,
                 completed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 source TEXT DEFAULT 'binance',
+                duration_seconds INTEGER DEFAULT NULL,
                 UNIQUE(pair, period_label, timeframe_label, granularity_label)
             )
+        ''')
+
+        # Add duration_seconds column if it doesn't exist (for existing databases)
+        cursor.execute('''
+            ALTER TABLE completed_optimizations
+            ADD COLUMN IF NOT EXISTS duration_seconds INTEGER DEFAULT NULL
         ''')
 
         # Create indexes for fast querying
@@ -753,21 +785,81 @@ class StrategyDatabase:
 
     def record_completed_optimization(self, pair: str, period_label: str,
                                        timeframe_label: str, granularity_label: str,
-                                       strategies_found: int = 0, source: str = 'binance'):
+                                       strategies_found: int = 0, source: str = 'binance',
+                                       duration_seconds: int = None):
         """Record that an optimization combination has been completed."""
         conn = self._get_connection()
         cursor = conn.cursor()
 
         cursor.execute('''
             INSERT INTO completed_optimizations
-            (pair, period_label, timeframe_label, granularity_label, strategies_found, completed_at, source)
-            VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP, %s)
+            (pair, period_label, timeframe_label, granularity_label, strategies_found, completed_at, source, duration_seconds)
+            VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP, %s, %s)
             ON CONFLICT (pair, period_label, timeframe_label, granularity_label)
-            DO UPDATE SET strategies_found = EXCLUDED.strategies_found, completed_at = CURRENT_TIMESTAMP
-        ''', (pair, period_label, timeframe_label, granularity_label, strategies_found, source))
+            DO UPDATE SET strategies_found = EXCLUDED.strategies_found,
+                          completed_at = CURRENT_TIMESTAMP,
+                          duration_seconds = EXCLUDED.duration_seconds
+        ''', (pair, period_label, timeframe_label, granularity_label, strategies_found, source, duration_seconds))
 
         conn.commit()
         conn.close()
+
+    def get_average_duration(self, pair: str = None, period_label: str = None,
+                             timeframe_label: str = None, granularity_label: str = None) -> int:
+        """Get average duration in seconds for a specific combination or similar combinations.
+
+        Returns average duration, falling back to broader matches if exact match not found:
+        1. Exact match (all 4 params)
+        2. Same granularity and timeframe (most similar workload)
+        3. Same granularity only
+        4. Global average
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        # Try exact match first
+        if all([pair, period_label, timeframe_label, granularity_label]):
+            cursor.execute('''
+                SELECT AVG(duration_seconds) FROM completed_optimizations
+                WHERE pair = %s AND period_label = %s AND timeframe_label = %s
+                AND granularity_label = %s AND duration_seconds IS NOT NULL
+            ''', (pair, period_label, timeframe_label, granularity_label))
+            result = cursor.fetchone()[0]
+            if result:
+                conn.close()
+                return int(result)
+
+        # Fallback: same granularity and timeframe (similar workload)
+        if granularity_label and timeframe_label:
+            cursor.execute('''
+                SELECT AVG(duration_seconds) FROM completed_optimizations
+                WHERE granularity_label = %s AND timeframe_label = %s
+                AND duration_seconds IS NOT NULL
+            ''', (granularity_label, timeframe_label))
+            result = cursor.fetchone()[0]
+            if result:
+                conn.close()
+                return int(result)
+
+        # Fallback: same granularity only (n_trials is main factor)
+        if granularity_label:
+            cursor.execute('''
+                SELECT AVG(duration_seconds) FROM completed_optimizations
+                WHERE granularity_label = %s AND duration_seconds IS NOT NULL
+            ''', (granularity_label,))
+            result = cursor.fetchone()[0]
+            if result:
+                conn.close()
+                return int(result)
+
+        # Final fallback: global average
+        cursor.execute('''
+            SELECT AVG(duration_seconds) FROM completed_optimizations
+            WHERE duration_seconds IS NOT NULL
+        ''')
+        result = cursor.fetchone()[0]
+        conn.close()
+        return int(result) if result else None
 
     def is_optimization_completed(self, pair: str, period_label: str,
                                    timeframe_label: str, granularity_label: str) -> bool:

@@ -22,6 +22,7 @@ import os
 import psutil
 import threading
 import concurrent.futures
+import multiprocessing
 from itertools import product
 
 # Import database
@@ -599,6 +600,19 @@ print(f"  Workers (CPU-based): {SYSTEM_RESOURCES['cpu_based_workers']}")
 print(f"  Workers (Memory-based): {SYSTEM_RESOURCES['memory_based_workers']}")
 print(f"  USING: {OPTIMAL_WORKERS} workers")
 print(f"=================================")
+
+
+# ============================================
+# MULTIPROCESSING WORKER SUPPORT
+# ============================================
+# Global holder for worker process data (set by initializer)
+_worker_engine_data = {}
+
+def _init_worker(df_dict, buy_hold_return):
+    """Initialize worker process with shared DataFrame data."""
+    global _worker_engine_data
+    _worker_engine_data['df'] = pd.DataFrame(df_dict)
+    _worker_engine_data['buy_hold_return'] = buy_hold_return
 
 
 @dataclass
@@ -4552,7 +4566,8 @@ class StrategyEngine:
         mode_desc = "bidirectional" if mode == "bidirectional" else ("separate + bidirectional" if mode == "all" else "separate (long/short)")
 
         # Determine number of workers based on CPU cores
-        num_workers = max(2, psutil.cpu_count(logical=True) - 2)
+        num_workers = 4  # TEST: 4 workers for parallel performance test
+        # num_workers = max(2, psutil.cpu_count(logical=True) - 2)
         self._update_status(f"Testing {total:,} combinations with {num_workers} parallel workers ({num_strategies} strategies, {mode_desc}, {num_tp}×{num_sl} TP/SL @ {increment:.2f}% steps)...", 2)
 
         # Start database run if available
@@ -4576,92 +4591,88 @@ class StrategyEngine:
         if mode in ['bidirectional', 'all']:
             bidir_combos = list(product(strategies, tp_range, sl_range))
 
-        # === PARALLEL BACKTEST WORKER ===
-        def run_backtest_separate(args):
-            """Worker function for separate direction backtests."""
-            strategy, direction, tp, sl = args
+        # === PREPARE DATA FOR MULTIPROCESSING ===
+        # Convert DataFrame to dict for serialization (done once)
+        df_dict = self.df.to_dict('list')
 
-            # Check abort
-            if abort_flag[0] or (self.status and self.status.get("abort")):
-                abort_flag[0] = True
-                return None
+        # Create work items with all necessary data (no closures)
+        separate_work = [
+            (strategy, direction, tp, sl, self.capital, self.position_size_pct, self.source_currency)
+            for strategy, direction, tp, sl in separate_combos
+        ]
 
-            result = self.backtest(strategy, direction, tp, sl,
-                                   initial_capital=self.capital,
-                                   position_size_pct=self.position_size_pct,
-                                   source_currency=self.source_currency,
-                                   fx_fetcher=self.fx_fetcher)
+        bidir_work = [
+            (strategy, tp, sl, self.capital, self.position_size_pct, self.source_currency)
+            for strategy, tp, sl in bidir_combos
+        ]
 
-            # Update progress (thread-safe)
-            with progress_lock:
-                tested_counter[0] += 1
-                tested = tested_counter[0]
+        # === EXECUTE IN PARALLEL WITH ProcessPoolExecutor ===
+        # This bypasses Python's GIL for true multi-core parallelism
+        tested_count = 0
+        profitable_count = 0
 
-                if tested % update_interval == 0:
-                    progress = int(2 + (tested / total) * 88)
-                    overall_pct = self.progress_min + ((progress / 100) * (self.progress_max - self.progress_min))
-                    self._update_status(
-                        f"[Parallel] {tested:,}/{total:,} ({overall_pct:.1f}%) | Found: {profitable_counter[0]}",
-                        progress
-                    )
-
-            return result
-
-        def run_backtest_bidir(args):
-            """Worker function for bidirectional backtests."""
-            strategy, tp, sl = args
-
-            # Check abort
-            if abort_flag[0] or (self.status and self.status.get("abort")):
-                abort_flag[0] = True
-                return None
-
-            result = self.backtest_bidirectional(strategy, tp, sl,
-                                                  initial_capital=self.capital,
-                                                  position_size_pct=self.position_size_pct,
-                                                  source_currency=self.source_currency,
-                                                  fx_fetcher=self.fx_fetcher)
-
-            # Update progress (thread-safe)
-            with progress_lock:
-                tested_counter[0] += 1
-                tested = tested_counter[0]
-
-                if tested % update_interval == 0:
-                    progress = int(2 + (tested / total) * 88)
-                    overall_pct = self.progress_min + ((progress / 100) * (self.progress_max - self.progress_min))
-                    self._update_status(
-                        f"[Parallel] {tested:,}/{total:,} ({overall_pct:.1f}%) | Found: {profitable_counter[0]}",
-                        progress
-                    )
-
-            return result
-
-        # === EXECUTE IN PARALLEL ===
-        with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
+        with concurrent.futures.ProcessPoolExecutor(
+            max_workers=num_workers,
+            initializer=_init_worker,
+            initargs=(df_dict, self.buy_hold_return)
+        ) as executor:
             # Process separate direction combinations
-            if separate_combos:
-                for result in executor.map(run_backtest_separate, separate_combos):
+            if separate_work:
+                for result in executor.map(_backtest_worker_separate, separate_work):
+                    tested_count += 1
+
+                    # Check abort
+                    if abort_flag[0] or (self.status and self.status.get("abort")):
+                        abort_flag[0] = True
+                        break
+
                     if result is None:
                         continue
                     if result.total_trades >= min_trades and (result.win_rate or 0) >= min_win_rate:
                         results.append(result)
                         if result.total_pnl is not None and result.total_pnl > 0:
-                            with progress_lock:
-                                profitable_counter[0] += 1
+                            profitable_count += 1
                             self._publish_result(result)
+
+                    # Progress update (every update_interval)
+                    if tested_count % update_interval == 0:
+                        progress = int(2 + (tested_count / total) * 88)
+                        overall_pct = self.progress_min + ((progress / 100) * (self.progress_max - self.progress_min))
+                        self._update_status(
+                            f"[Parallel] {tested_count:,}/{total:,} ({overall_pct:.1f}%) | Found: {profitable_count}",
+                            progress
+                        )
 
             # Process bidirectional combinations
-            if bidir_combos:
-                for result in executor.map(run_backtest_bidir, bidir_combos):
+            if bidir_work and not abort_flag[0]:
+                for result in executor.map(_backtest_worker_bidir, bidir_work):
+                    tested_count += 1
+
+                    # Check abort
+                    if abort_flag[0] or (self.status and self.status.get("abort")):
+                        abort_flag[0] = True
+                        break
+
                     if result is None:
                         continue
                     if result.total_trades >= min_trades and (result.win_rate or 0) >= min_win_rate:
                         results.append(result)
                         if result.total_pnl is not None and result.total_pnl > 0:
-                            with progress_lock:
-                                profitable_counter[0] += 1
+                            profitable_count += 1
                             self._publish_result(result)
+
+                    # Progress update (every update_interval)
+                    if tested_count % update_interval == 0:
+                        progress = int(2 + (tested_count / total) * 88)
+                        overall_pct = self.progress_min + ((progress / 100) * (self.progress_max - self.progress_min))
+                        self._update_status(
+                            f"[Parallel] {tested_count:,}/{total:,} ({overall_pct:.1f}%) | Found: {profitable_count}",
+                            progress
+                        )
+
+        # Update counters for later use
+        tested_counter[0] = tested_count
+        profitable_counter[0] = profitable_count
 
         # Check if aborted
         if abort_flag[0]:
@@ -5721,6 +5732,57 @@ if barstate.islast
     table.cell(infoTable, 0, 5, "Python Score", text_color=color.gray, text_size=size.small)
     table.cell(infoTable, 1, 5, "{result.composite_score:.0f}", text_color=color.lime, text_size=size.small)
 '''
+
+
+# ============================================
+# MULTIPROCESSING WORKER FUNCTIONS
+# ============================================
+def _backtest_worker_separate(args):
+    """Module-level worker for ProcessPoolExecutor (separate long/short directions)."""
+    strategy, direction, tp, sl, capital, position_size_pct, source_currency = args
+
+    global _worker_engine_data
+    df = _worker_engine_data['df']
+    buy_hold_return = _worker_engine_data['buy_hold_return']
+
+    # Create minimal engine instance for backtest
+    engine = StrategyEngine.__new__(StrategyEngine)
+    engine.df = df
+    engine.capital = capital
+    engine.position_size_pct = position_size_pct
+    engine.source_currency = source_currency
+    engine.fx_fetcher = None
+    engine.buy_hold_return = buy_hold_return
+
+    result = engine.backtest(strategy, direction, tp, sl,
+                            initial_capital=capital,
+                            position_size_pct=position_size_pct,
+                            source_currency=source_currency)
+    return result
+
+
+def _backtest_worker_bidir(args):
+    """Module-level worker for ProcessPoolExecutor (bidirectional)."""
+    strategy, tp, sl, capital, position_size_pct, source_currency = args
+
+    global _worker_engine_data
+    df = _worker_engine_data['df']
+    buy_hold_return = _worker_engine_data['buy_hold_return']
+
+    # Create minimal engine instance for backtest
+    engine = StrategyEngine.__new__(StrategyEngine)
+    engine.df = df
+    engine.capital = capital
+    engine.position_size_pct = position_size_pct
+    engine.source_currency = source_currency
+    engine.fx_fetcher = None
+    engine.buy_hold_return = buy_hold_return
+
+    result = engine.backtest_bidirectional(strategy, tp, sl,
+                                           initial_capital=capital,
+                                           position_size_pct=position_size_pct,
+                                           source_currency=source_currency)
+    return result
 
 
 # Main entry point
