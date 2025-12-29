@@ -97,7 +97,7 @@ def get_max_concurrent_validations() -> int:
         autonomous_parallel = auto_status.get("parallel_count", 0) or len(auto_status.get("parallel_running", []))
 
     # Check if manual optimizer is running
-    optimizer_running = app_state.is_running()
+    optimizer_running = app_state.is_optimization_running()
 
     # =================================================================
     # MEMORY-BASED CALCULATION (respects reserved resources)
