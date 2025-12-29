@@ -303,35 +303,17 @@
                 }
             }
 
-            // Update progress bar
-            const progressContainer = document.getElementById('autonomousProgressContainer');
-            const progressFill = document.getElementById('autonomousProgressFill');
-            const progressText = document.getElementById('autonomousProgressText');
-
-            if (progressContainer) {
-                if (status.running || status.enabled) {
-                    progressContainer.style.display = 'block';
-                    if (progressFill) progressFill.style.width = `${status.progress || 0}%`;
-                    if (progressText) {
-                        // Build progress text with optional ETA
-                        let text = '';
-                        if (status.trial_current > 0 && status.trial_total > 0) {
-                            text = `Trial ${status.trial_current.toLocaleString()}/${status.trial_total.toLocaleString()} (${status.progress || 0}%)`;
-                        } else {
-                            text = `${status.progress || 0}%`;
-                        }
-
-                        // Add ETA if available
-                        if (status.estimated_remaining_seconds !== null && status.estimated_remaining_seconds !== undefined) {
-                            const eta = formatETA(status.estimated_remaining_seconds);
-                            text += ` | Est: ${eta} remaining`;
-                        }
-
-                        progressText.textContent = text;
-                    }
-                } else {
-                    progressContainer.style.display = 'none';
+            // Update cycle progress (shown inline in status bar)
+            const cycleProgress = document.getElementById('autonomousCycleProgress');
+            if (cycleProgress && status.running) {
+                const completed = status.completed_count || 0;
+                const total = status.total_combinations || 0;
+                if (total > 0) {
+                    const pct = Math.round((completed / total) * 100);
+                    cycleProgress.textContent = `${completed} / ${total} (${pct}%)`;
                 }
+            } else if (cycleProgress) {
+                cycleProgress.textContent = '';
             }
 
             // Update summary stats
@@ -4839,12 +4821,25 @@
                 `;
             });
 
-            // PARALLEL: Show all running items
+            // PARALLEL: Show all running items with percentage and ETA
             const runningItems = queue.running || [];
             if (runningItems.length > 0) {
                 runningItems.forEach((item, idx) => {
                     const progress = item.progress || 0;
-                    const message = item.message || 'Processing...';
+
+                    // Build progress message with trial info, percentage, and ETA
+                    let progressMsg = '';
+                    if (item.trial_current > 0 && item.trial_total > 0) {
+                        progressMsg = `${item.pair} - ${item.trial_current.toLocaleString()}/${item.trial_total.toLocaleString()}`;
+                    } else {
+                        progressMsg = item.message || 'Processing...';
+                    }
+
+                    // Add percentage and ETA
+                    let etaText = `(${progress}%)`;
+                    if (item.estimated_remaining !== null && item.estimated_remaining !== undefined) {
+                        etaText += ` | Est: ${formatETA(item.estimated_remaining)}`;
+                    }
 
                     html += `
                         <div class="task-queue-item in-progress">
@@ -4857,7 +4852,10 @@
                                 <div class="task-progress-bar">
                                     <div class="task-progress-fill" style="width: ${progress}%"></div>
                                 </div>
-                                <span class="task-progress-text">${message}</span>
+                                <div style="display: flex; justify-content: space-between; align-items: center;">
+                                    <span class="task-progress-text">${progressMsg}</span>
+                                    <span style="color: var(--text-muted); font-size: 0.75rem; white-space: nowrap;">${etaText}</span>
+                                </div>
                             </div>
                         </div>
                     `;
@@ -4940,26 +4938,17 @@
 
                 message.textContent = status.message || 'Not running';
 
-                // Update progress with trial info
-                const progressContainer = document.getElementById('autonomousProgressContainer');
-                const progressFill = document.getElementById('autonomousProgressFill');
-                const progressText = document.getElementById('autonomousProgressText');
+                // Update cycle progress (inline in status bar)
                 const cycleProgress = document.getElementById('autonomousCycleProgress');
-
-                if (status.running || status.enabled) {
-                    progressContainer.style.display = 'block';
-                    progressFill.style.width = `${status.progress || 0}%`;
-
-                    // Show trial progress if available
-                    if (status.trial_current > 0 && status.trial_total > 0) {
-                        progressText.textContent = `Trial ${status.trial_current}/${status.trial_total} (${status.progress || 0}%)`;
+                if (cycleProgress) {
+                    if (status.running && status.total_combinations > 0) {
+                        const completed = status.completed_count || 0;
+                        const total = status.total_combinations || 0;
+                        const pct = Math.round((completed / total) * 100);
+                        cycleProgress.textContent = `${completed} / ${total} (${pct}%)`;
                     } else {
-                        progressText.textContent = `${status.progress || 0}%`;
+                        cycleProgress.textContent = '';
                     }
-
-                    cycleProgress.textContent = `${status.completed_count || 0} / ${status.total_combinations || 0} combinations completed`;
-                } else {
-                    progressContainer.style.display = 'none';
                 }
 
                 // Update task queue

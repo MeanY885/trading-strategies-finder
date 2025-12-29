@@ -432,13 +432,18 @@ async def run_single_optimization(
 
     last_broadcast_time = [0]  # Use list to allow mutation in nested function
 
-    async def update_parallel_status(message: str, progress: int = None):
+    async def update_parallel_status(message: str, progress: int = None, estimated_remaining: int = None, trial_current: int = 0, trial_total: int = 0):
         if combo_id and combo_id in running_optimizations:
             async with running_optimizations_async_lock:
                 if combo_id in running_optimizations:
                     running_optimizations[combo_id]["message"] = message
                     if progress is not None:
                         running_optimizations[combo_id]["progress"] = progress
+                    if estimated_remaining is not None:
+                        running_optimizations[combo_id]["estimated_remaining"] = estimated_remaining
+                    if trial_current > 0:
+                        running_optimizations[combo_id]["trial_current"] = trial_current
+                        running_optimizations[combo_id]["trial_total"] = trial_total
                     app_state.update_autonomous_status(
                         parallel_running=list(running_optimizations.values())
                     )
@@ -585,7 +590,7 @@ async def run_single_optimization(
                 message=status_msg,
                 estimated_remaining_seconds=estimated_remaining
             )
-            await update_parallel_status(status_msg, progress_pct)
+            await update_parallel_status(status_msg, progress_pct, estimated_remaining, current_trial, total_trials)
 
             await asyncio.sleep(0.3)
 
