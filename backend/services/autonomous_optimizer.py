@@ -855,14 +855,16 @@ async def start_autonomous_optimizer(thread_pool):
             CPU_SPAWN_THRESHOLD = 80  # Only spawn if CPU < 80%
             MEM_SPAWN_THRESHOLD = 4.0  # Only spawn if > 4GB available
             SPAWN_COOLDOWN = 30  # Seconds between spawns
+            MAX_CONCURRENT = 1  # TEST MODE: Only 1 task at a time
 
             # Check if we can spawn based on resources
             can_spawn_cpu = cpu_percent < CPU_SPAWN_THRESHOLD
             can_spawn_mem = mem_available_gb > MEM_SPAWN_THRESHOLD
+            can_spawn_slots = len(active_tasks) < MAX_CONCURRENT
             time_since_spawn = time.time() - last_spawn_time
 
-            # Spawn if: resources available AND cooldown elapsed AND work remaining
-            if can_spawn_cpu and can_spawn_mem and time_since_spawn >= SPAWN_COOLDOWN and current_index < len(combinations):
+            # Spawn if: resources available AND slots available AND cooldown elapsed AND work remaining
+            if can_spawn_cpu and can_spawn_mem and can_spawn_slots and time_since_spawn >= SPAWN_COOLDOWN and current_index < len(combinations):
                 combo = combinations[current_index]
                 task = asyncio.create_task(
                     process_single_combination(combo, current_index, combinations, thread_pool)
