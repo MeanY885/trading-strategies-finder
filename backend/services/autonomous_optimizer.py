@@ -107,13 +107,14 @@ def has_period_boundary_crossed(period: str, last_validated_at: str) -> bool:
         return True  # Never validated
 
     try:
-        # Parse the validation timestamp
-        if 'T' in last_validated_at:
-            validated = datetime.fromisoformat(last_validated_at.replace('Z', '+00:00'))
-            if validated.tzinfo:
-                validated = validated.replace(tzinfo=None)
-        else:
-            validated = datetime.strptime(last_validated_at, '%Y-%m-%d %H:%M:%S')
+        # Parse the validation timestamp - handle various formats from PostgreSQL
+        # PostgreSQL can return: "2025-12-29 13:38:00" or "2025-12-29 13:38:00.123456"
+        # Normalize to ISO format by replacing space with T
+        normalized = last_validated_at.replace(' ', 'T') if ' ' in last_validated_at else last_validated_at
+        normalized = normalized.replace('Z', '+00:00')
+        validated = datetime.fromisoformat(normalized)
+        if validated.tzinfo:
+            validated = validated.replace(tzinfo=None)
 
         now = datetime.now()
 
@@ -270,6 +271,11 @@ def find_resume_index(combinations: list, db) -> int:
     completed = db.get_completed_optimizations(with_timestamps=True)
     log(f"[Resume] Found {len(completed)} completed optimization records in database")
 
+    # Debug: show sample of completed keys if any exist
+    if completed:
+        sample_keys = list(completed.keys())[:3]
+        log(f"[Resume] Sample completed keys: {sample_keys}")
+
     skipped_fresh = 0
     for i, combo in enumerate(combinations):
         key = (
@@ -280,16 +286,21 @@ def find_resume_index(combinations: list, db) -> int:
         )
 
         if key not in completed:
+            if i == 0:
+                log(f"[Resume] First key {key} NOT found in completed - starting from beginning")
             return i
 
         completed_at = completed[key]
         period_label = combo['period']['label']
 
-        if has_period_boundary_crossed(period_label, completed_at):
-            log(f"[Resume] {combo['pair']} {period_label} needs re-optimization (period boundary crossed)")
+        boundary_crossed = has_period_boundary_crossed(period_label, completed_at)
+        if boundary_crossed:
+            log(f"[Resume] {combo['pair']} {period_label} needs re-optimization (period boundary crossed since {completed_at})")
             return i
 
         skipped_fresh += 1
+        if skipped_fresh <= 3:
+            log(f"[Resume] Skipping fresh: {key} (completed at {completed_at})")
 
     log(f"[Resume] All {skipped_fresh} combinations are still fresh (within period boundaries)")
     # Return length to indicate "nothing to process" - don't return 0 which would restart from beginning
