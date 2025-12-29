@@ -22,6 +22,14 @@ import pandas as pd
 from config import AUTONOMOUS_CONFIG, MAX_HISTORY_SIZE
 from state import app_state, concurrency_config
 from logging_config import log
+from services.task_watchdog import (
+    TimeoutCalculator,
+    InterruptibleSleep,
+    TaskWatchdog,
+    OrphanCleaner,
+    init_orphan_cleaner,
+    stop_orphan_cleaner
+)
 
 
 # =============================================================================
@@ -45,6 +53,12 @@ autonomous_runs_history: List[dict] = []
 
 # Reference to current optimization status (for abort signaling)
 current_optimization_status: Optional[dict] = None
+
+# Orphan cleaner instance
+orphan_cleaner_instance: Optional[OrphanCleaner] = None
+
+# Interruptible sleep for cycle waiting
+cycle_sleeper: Optional[InterruptibleSleep] = None
 
 
 def init_async_primitives():
@@ -642,22 +656,63 @@ async def run_single_optimization(
     loop = asyncio.get_event_loop()
     progress_task = asyncio.create_task(update_progress())
 
+    # Calculate dynamic timeout based on task parameters
+    timeout_seconds = TimeoutCalculator.get_optimization_timeout(
+        timeframe_minutes=timeframe["minutes"],
+        period_months=period["months"],
+        n_trials=granularity["n_trials"]
+    )
+    log(f"[Autonomous Optimizer] {pair} - Dynamic timeout: {timeout_seconds}s")
+
+    # Create watchdog to monitor progress
+    watchdog = TaskWatchdog(
+        task_id=combo_id,
+        status_dict=temp_status,
+        timeout_seconds=timeout_seconds,
+        progress_key="progress",
+        abort_key="abort",
+        running_key="running"
+    )
+    watchdog_task = asyncio.create_task(watchdog.start())
+
     try:
         from strategy_engine import run_strategy_finder
         log(f"[Autonomous Optimizer] {pair} - Submitting to thread pool...")
-        await loop.run_in_executor(
-            thread_pool,
-            run_optimization_sync,
-            df, combo, temp_status, run_strategy_finder, thread_pool
+
+        # Wrap executor call with timeout
+        await asyncio.wait_for(
+            loop.run_in_executor(
+                thread_pool,
+                run_optimization_sync,
+                df, combo, temp_status, run_strategy_finder, thread_pool
+            ),
+            timeout=timeout_seconds
         )
         log(f"[Autonomous Optimizer] {pair} - Thread pool execution completed")
+
+    except asyncio.TimeoutError:
+        log(f"[Autonomous Optimizer] {pair} - TIMEOUT after {timeout_seconds}s", level='ERROR')
+        temp_status["abort"] = True
+        return "timeout", 0
+
     except Exception as e:
         log(f"[Autonomous Optimizer] {pair} - EXCEPTION: {e}", level='ERROR')
         import traceback
         traceback.print_exc()
+
     finally:
         temp_status["running"] = False
         current_optimization_status = None
+
+        # Stop watchdog
+        await watchdog.stop()
+        watchdog_task.cancel()
+        try:
+            await watchdog_task
+        except asyncio.CancelledError:
+            pass
+
+        # Stop progress task
         progress_task.cancel()
         try:
             await progress_task
@@ -749,10 +804,17 @@ async def process_single_combination(
         if not app_state.is_autonomous_enabled():
             return "aborted"
 
-        # Wait for manual optimizer if running
+        # Wait for manual optimizer if running (with timeout)
+        MANUAL_WAIT_TIMEOUT = 600  # 10 minutes max wait
+        wait_start = time.time()
+
         while app_state.is_unified_running():
             if not app_state.is_autonomous_enabled():
                 return "aborted"
+            if time.time() - wait_start > MANUAL_WAIT_TIMEOUT:
+                log("[Autonomous Optimizer] Manual optimizer wait timeout after 10 minutes", level='WARNING')
+                # Continue anyway - manual optimizer may be stuck
+                break
             await asyncio.sleep(1)
 
         # Register this optimization
@@ -877,6 +939,24 @@ async def start_autonomous_optimizer(thread_pool):
         log("[Parallel Optimizer] Initializing async primitives...")
         init_async_primitives()
 
+    # Clean any orphaned entries from previous run/crash
+    global orphan_cleaner_instance
+    async with running_optimizations_async_lock:
+        orphan_count = len(running_optimizations)
+        if orphan_count > 0:
+            log(f"[Parallel Optimizer] Cleaning {orphan_count} orphaned entries from previous run")
+            running_optimizations.clear()
+            app_state.clear_running_optimizations()
+
+    # Start orphan cleaner background task if not already running
+    if orphan_cleaner_instance is None:
+        orphan_cleaner_instance = OrphanCleaner(
+            running_dict=running_optimizations,
+            lock=running_optimizations_async_lock
+        )
+        asyncio.create_task(orphan_cleaner_instance.start_cleanup_loop())
+        log("[Parallel Optimizer] Started orphan cleaner background task")
+
     log(f"[Parallel Optimizer] Setting auto_running=True, max_parallel={concurrency_config['max_concurrent']}")
 
     app_state.update_autonomous_status(
@@ -980,7 +1060,18 @@ async def start_autonomous_optimizer(thread_pool):
                         message="All optimizations are fresh - waiting for period boundaries..."
                     )
                     log("[Parallel Optimizer] All combinations fresh, waiting 5 minutes before re-checking")
-                    await asyncio.sleep(300)  # Wait 5 minutes before re-checking
+
+                    # Use interruptible sleep - check every 10s if still enabled
+                    global cycle_sleeper
+                    if cycle_sleeper is None:
+                        cycle_sleeper = InterruptibleSleep()
+
+                    for _ in range(30):  # 30 x 10s = 5 minutes
+                        if not app_state.is_autonomous_enabled():
+                            log("[Parallel Optimizer] Stop requested during cycle wait")
+                            break
+                        await cycle_sleeper.sleep(10, check_callback=app_state.is_autonomous_enabled)
+
                     continue
 
                 # Found items that need processing
@@ -1094,7 +1185,7 @@ async def start_autonomous_optimizer(thread_pool):
 
 async def stop_autonomous_optimizer():
     """Stop the autonomous optimizer."""
-    global running_optimizations
+    global running_optimizations, orphan_cleaner_instance, cycle_sleeper
 
     app_state.update_autonomous_status(
         enabled=False,
@@ -1108,11 +1199,20 @@ async def stop_autonomous_optimizer():
     if current_optimization_status:
         current_optimization_status["abort"] = True
 
+    # Interrupt any waiting cycle sleep
+    if cycle_sleeper:
+        cycle_sleeper.interrupt()
+
     # Signal all running optimizations to abort
     with running_optimizations_lock:
         for combo_id, status in running_optimizations.items():
             status["abort"] = True
         running_optimizations.clear()
+
+    # Stop orphan cleaner
+    if orphan_cleaner_instance:
+        await orphan_cleaner_instance.stop()
+        orphan_cleaner_instance = None
 
     # Clear app state tracking
     app_state.clear_running_optimizations()

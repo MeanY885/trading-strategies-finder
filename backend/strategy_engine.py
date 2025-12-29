@@ -4618,8 +4618,9 @@ class StrategyEngine:
         stalled_batches = []  # Track stalled work for history
 
         # Stall detection settings
-        STALL_TIMEOUT = 15 * 60  # 15 minutes
-        CHECK_INTERVAL = 60  # Check every 1 minute
+        # Reduced from 15 minutes to 5 minutes for faster freeze detection
+        STALL_TIMEOUT = 5 * 60  # 5 minutes (was 15 minutes)
+        CHECK_INTERVAL = 30  # Check every 30 seconds (was 60 seconds)
 
         def process_work_batch(work_items, worker_fn, work_type, executor):
             """Process a batch of work with stall detection and retry logic."""

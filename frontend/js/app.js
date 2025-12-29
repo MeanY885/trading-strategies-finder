@@ -82,7 +82,8 @@
             'autonomous_status',
             'elite_status',
             'optimization_status',
-            'data_status'
+            'data_status',
+            'strategy_result'
         ]);
 
         function initWebSocket() {

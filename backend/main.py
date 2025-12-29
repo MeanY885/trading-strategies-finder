@@ -429,6 +429,75 @@ async def ping():
 
 
 # =============================================================================
+# WATCHDOG STATUS ENDPOINTS
+# =============================================================================
+
+@app.get("/api/watchdog/status")
+async def get_watchdog_status():
+    """Get current watchdog and task monitoring status."""
+    from services.autonomous_optimizer import (
+        running_optimizations,
+        orphan_cleaner_instance
+    )
+    from services.elite_validator import running_validations
+    from config import WATCHDOG_CONFIG
+
+    return {
+        "watchdog": {
+            "orphan_cleaner_running": orphan_cleaner_instance is not None,
+            "orphans_cleaned": orphan_cleaner_instance.total_cleaned if orphan_cleaner_instance else 0,
+        },
+        "running_optimizations": len(running_optimizations),
+        "running_validations": len(running_validations),
+        "config": {
+            "orphan_threshold_seconds": WATCHDOG_CONFIG["orphan_threshold_seconds"],
+            "no_progress_abort_seconds": WATCHDOG_CONFIG["no_progress_abort_seconds"],
+            "stall_timeout": WATCHDOG_CONFIG["stall_timeout"],
+        }
+    }
+
+
+@app.post("/api/watchdog/cleanup")
+async def trigger_watchdog_cleanup():
+    """Manually trigger orphan cleanup for running tasks."""
+    from services.autonomous_optimizer import (
+        running_optimizations,
+        running_optimizations_async_lock,
+        orphan_cleaner_instance
+    )
+    from services.elite_validator import (
+        running_validations,
+        running_validations_async_lock
+    )
+
+    results = {
+        "optimizations_cleaned": 0,
+        "validations_cleaned": 0,
+    }
+
+    # Clean orphaned optimizations
+    if orphan_cleaner_instance:
+        results["optimizations_cleaned"] = await orphan_cleaner_instance.cleanup_orphans()
+    else:
+        # Manual cleanup if orphan cleaner not running
+        if running_optimizations_async_lock:
+            async with running_optimizations_async_lock:
+                count = len(running_optimizations)
+                running_optimizations.clear()
+                results["optimizations_cleaned"] = count
+
+    # Clean orphaned validations
+    if running_validations_async_lock:
+        async with running_validations_async_lock:
+            count = len(running_validations)
+            running_validations.clear()
+            results["validations_cleaned"] = count
+
+    log(f"[Watchdog] Manual cleanup: {results}")
+    return results
+
+
+# =============================================================================
 # MAIN ENTRY POINT
 # =============================================================================
 

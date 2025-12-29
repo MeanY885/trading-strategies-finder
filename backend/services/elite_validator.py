@@ -13,6 +13,7 @@ Features:
 import asyncio
 import json
 import threading
+import time
 import psutil
 from datetime import datetime
 from typing import Dict, List, Optional
@@ -22,6 +23,7 @@ from config import VALIDATION_PERIODS
 from state import app_state, concurrency_config
 from logging_config import log
 from services.autonomous_optimizer import has_period_boundary_crossed, get_stale_periods
+from services.task_watchdog import TimeoutCalculator
 from services.cache import invalidate_counts_cache
 from async_database import AsyncDatabase
 
@@ -36,6 +38,13 @@ running_validations_async_lock: Optional[asyncio.Lock] = None
 
 # Pending strategies list for queue display
 pending_strategies_list: List[dict] = []
+
+# Resource cache to avoid blocking psutil calls
+_cached_resources = {"data": None, "timestamp": 0}
+RESOURCE_CACHE_TTL = 2  # 2 second cache
+
+# Timeout constants for validation
+RESOURCE_WAIT_TIMEOUT = 300  # 5 minutes max wait for resources
 
 # =============================================================================
 # RESOURCE THRESHOLDS FOR ELITE VALIDATION
@@ -354,13 +363,29 @@ async def validate_strategy(
             continue
 
         try:
-            # Fetch data
+            # Fetch data with timeout
             if data_source and 'binance' in data_source.lower():
                 fetcher = BinanceDataFetcher()
             else:
                 fetcher = YFinanceDataFetcher()
 
-            df = await fetcher.fetch_ohlcv(pair=symbol, interval=tf_minutes, months=vp["months"])
+            # Calculate dynamic timeout based on period
+            data_fetch_timeout = TimeoutCalculator.get_data_fetch_timeout(vp["months"])
+
+            try:
+                df = await asyncio.wait_for(
+                    fetcher.fetch_ohlcv(pair=symbol, interval=tf_minutes, months=vp["months"]),
+                    timeout=data_fetch_timeout
+                )
+            except asyncio.TimeoutError:
+                log(f"[Elite Validation] Data fetch TIMEOUT for {symbol} ({vp['period']})", level='ERROR')
+                results.append({
+                    "period": vp["period"],
+                    "status": "timeout",
+                    "message": f"Data fetch timeout ({data_fetch_timeout}s)",
+                    "validated_at": datetime.now().isoformat()
+                })
+                continue
 
             if len(df) < 50:
                 results.append({
@@ -370,17 +395,36 @@ async def validate_strategy(
                 })
                 continue
 
-            # Run backtest
-            engine = StrategyEngine(df)
-            result = engine.backtest(
-                strategy=entry_rule,
-                direction=direction,
-                tp_percent=tp_percent,
-                sl_percent=sl_percent,
-                initial_capital=1000.0,
-                position_size_pct=100.0,
-                commission_pct=0.1
-            )
+            # Run backtest with timeout (in executor to not block event loop)
+            backtest_timeout = TimeoutCalculator.get_backtest_timeout(vp["months"])
+
+            def run_backtest():
+                engine = StrategyEngine(df)
+                return engine.backtest(
+                    strategy=entry_rule,
+                    direction=direction,
+                    tp_percent=tp_percent,
+                    sl_percent=sl_percent,
+                    initial_capital=1000.0,
+                    position_size_pct=100.0,
+                    commission_pct=0.1
+                )
+
+            loop = asyncio.get_event_loop()
+            try:
+                result = await asyncio.wait_for(
+                    loop.run_in_executor(None, run_backtest),
+                    timeout=backtest_timeout
+                )
+            except asyncio.TimeoutError:
+                log(f"[Elite Validation] Backtest TIMEOUT for {symbol} ({vp['period']})", level='ERROR')
+                results.append({
+                    "period": vp["period"],
+                    "status": "timeout",
+                    "message": f"Backtest timeout ({backtest_timeout}s)",
+                    "validated_at": datetime.now().isoformat()
+                })
+                continue
 
             # Simple profitability check - no comparison to original metrics
             # A period passes if it made any profit (PnL > 0)
@@ -484,9 +528,16 @@ async def validate_single_strategy_worker(strategy: dict, processed_count: list,
 
     # Wait for a slot - semaphore is dynamically sized
     async with task_slot:
-        # Additional resource check before starting
+        # Additional resource check before starting (with timeout)
+        wait_start = time.time()
         can_spawn, reason = can_spawn_validation()
+
         while not can_spawn:
+            # Check timeout
+            if time.time() - wait_start > RESOURCE_WAIT_TIMEOUT:
+                log(f"[Elite Validation] Resource wait timeout after {RESOURCE_WAIT_TIMEOUT}s, skipping {strategy_name}", level='WARNING')
+                return  # Skip this strategy, don't block forever
+
             log(f"[Elite Validation] Waiting for resources: {reason}")
             await asyncio.sleep(5)
             can_spawn, reason = can_spawn_validation()
@@ -560,14 +611,20 @@ async def validate_single_strategy_worker(strategy: dict, processed_count: list,
 
 def _update_queue_status():
     """Update elite status with current queue information and resource state."""
-    global running_validations, pending_strategies_list
+    global running_validations, pending_strategies_list, _cached_resources
     from services.resource_monitor import resource_monitor
 
     running_list = list(running_validations.values())
     pending_preview = pending_strategies_list[:5]  # Next 5 pending
 
-    # Get current resource state
-    resources = resource_monitor.get_current_resources()
+    # Get current resource state with caching to avoid blocking psutil calls
+    now = time.time()
+    if now - _cached_resources["timestamp"] < RESOURCE_CACHE_TTL and _cached_resources["data"]:
+        resources = _cached_resources["data"]
+    else:
+        resources = resource_monitor.get_current_resources()
+        _cached_resources = {"data": resources, "timestamp": now}
+
     mem_available = resources["memory_available_gb"]
 
     # Calculate available memory for validation (after reserved)

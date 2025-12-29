@@ -186,3 +186,35 @@ DEFAULT_TRADING_COSTS = {
     "spread_pct": 0.05,          # 0.05% spread assumption
     "slippage_pct": 0.03,        # 0.03% slippage estimate
 }
+
+# =============================================================================
+# WATCHDOG CONFIGURATION
+# =============================================================================
+# Settings for task monitoring, timeouts, and orphan cleanup
+
+WATCHDOG_CONFIG = {
+    # Base timeouts in seconds (scaled by TimeoutCalculator)
+    "base_optimization_timeout": 300,    # 5 minutes base for optimization tasks
+    "base_data_fetch_timeout": 120,      # 2 minutes base for data fetching
+    "base_backtest_timeout": 60,         # 1 minute base for single backtest
+
+    # Absolute timeout limits
+    "min_timeout": 60,                   # 1 minute minimum timeout
+    "max_timeout": 3600,                 # 1 hour maximum timeout
+
+    # Progress monitoring thresholds
+    "no_progress_warning_seconds": 300,  # 5 minutes without progress = warning
+    "no_progress_abort_seconds": 600,    # 10 minutes without progress = abort
+
+    # Orphan cleanup settings
+    "orphan_cleanup_interval": 60,       # Check for orphans every minute
+    "orphan_threshold_seconds": 1800,    # 30 minutes without update = orphan
+
+    # Resource wait timeouts
+    "manual_optimizer_wait_timeout": 600,  # 10 minutes max wait for manual optimizer
+    "resource_wait_timeout": 300,          # 5 minutes max wait for resources
+
+    # Strategy engine stall detection (see also strategy_engine.py)
+    "stall_check_interval": 30,          # Check every 30 seconds
+    "stall_timeout": 300,                # 5 minutes before declaring stall
+}

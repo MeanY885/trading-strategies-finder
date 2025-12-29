@@ -32,7 +32,7 @@ class OHLCVCache:
 
     Features:
     - Thread-safe with RLock
-    - TTL-based expiration (default 1 hour)
+    - TTL-based expiration (default 7 days)
     - Memory limit with LRU eviction
     - Hit statistics for monitoring
     """
@@ -42,7 +42,7 @@ class OHLCVCache:
         Initialize OHLCV cache.
 
         Args:
-            default_ttl: Time-to-live in seconds (default 1 hour)
+            default_ttl: Time-to-live in seconds (default 7 days)
             max_entries: Maximum cache entries before LRU eviction
         """
         self._cache: Dict[str, CacheEntry] = {}
@@ -181,8 +181,8 @@ class OHLCVCache:
 # SINGLETON INSTANCE
 # =============================================================================
 
-# Global cache instance - 1 hour TTL, up to 100 datasets
-ohlcv_cache = OHLCVCache(default_ttl=3600.0, max_entries=100)
+# Global cache instance - 7 day TTL, up to 100 datasets
+ohlcv_cache = OHLCVCache(default_ttl=604800.0, max_entries=100)
 
 
 def get_ohlcv_cache() -> OHLCVCache:
