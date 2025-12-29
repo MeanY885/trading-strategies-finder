@@ -353,6 +353,9 @@
 
             // Note: Queue rendering is handled separately via renderTaskQueueFromCache
             // when queue data is received in the autonomous_status message
+
+            // Update history table when status changes
+            updateAutonomousHistory();
         }
 
         // Helper to update elite UI from WebSocket

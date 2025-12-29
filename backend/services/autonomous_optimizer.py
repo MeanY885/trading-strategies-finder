@@ -443,10 +443,10 @@ async def run_single_optimization(
                         parallel_running=list(running_optimizations.values())
                     )
 
-            # Broadcast to WebSocket (throttled to every 0.5s to avoid flooding)
+            # Broadcast to WebSocket (throttled to every 1s to reduce UI updates)
             import time
             now = time.time()
-            if now - last_broadcast_time[0] >= 0.5:
+            if now - last_broadcast_time[0] >= 1:
                 last_broadcast_time[0] = now
                 status = app_state.get_autonomous_status()
                 await ws_manager.broadcast("autonomous_status", {
@@ -654,6 +654,9 @@ async def run_single_optimization(
     autonomous_runs_history.insert(0, history_entry)
     if len(autonomous_runs_history) > MAX_HISTORY_SIZE:
         autonomous_runs_history = autonomous_runs_history[:MAX_HISTORY_SIZE]
+
+    # Also add to app_state so the API endpoint can access it
+    app_state.add_to_history(history_entry)
 
     log(f"[Autonomous Optimizer] Completed {pair} - {strategies_found} strategies found")
     return "completed", strategies_found

@@ -164,7 +164,7 @@ MAX_CONCURRENT_FETCHES = int(os.getenv("MAX_FETCH_CONCURRENT", "5"))
 
 WEBSOCKET_CONFIG = {
     "keepalive_timeout": 30.0,   # Seconds for keepalive timeout
-    "broadcast_throttle": 0.5,   # Minimum seconds between broadcasts
+    "broadcast_throttle": 1,     # Minimum seconds between broadcasts (1 second)
 }
 
 # =============================================================================

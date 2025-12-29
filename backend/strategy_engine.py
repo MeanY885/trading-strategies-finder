@@ -4566,7 +4566,7 @@ class StrategyEngine:
         mode_desc = "bidirectional" if mode == "bidirectional" else ("separate + bidirectional" if mode == "all" else "separate (long/short)")
 
         # Determine number of workers based on CPU cores
-        num_workers = 6  # TEST: 6 workers for parallel performance test
+        num_workers = 8  # TEST: 8 workers for parallel performance test
         # num_workers = max(2, psutil.cpu_count(logical=True) - 2)
         self._update_status(f"Testing {total:,} combinations with {num_workers} parallel workers ({num_strategies} strategies, {mode_desc}, {num_tp}×{num_sl} TP/SL @ {increment:.2f}% steps)...", 2)
 

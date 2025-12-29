@@ -45,7 +45,7 @@ class WebSocketManager:
         self._lock = asyncio.Lock()
         self._broadcast_queue: asyncio.Queue = None
         self._broadcast_task: asyncio.Task = None
-        self._throttle_interval = 0.5  # Minimum seconds between broadcasts
+        self._throttle_interval = 1  # Minimum seconds between broadcasts (1 second)
         self._last_broadcast_time = 0
         self._main_loop = None  # Store reference to main event loop
 
@@ -204,12 +204,18 @@ def _get_queue_data_from_status(status: Dict) -> Dict:
     pending = []
     if combinations:
         running_indices = {r.get("index") for r in running}
+        # Also exclude pairs that are currently running to avoid showing same pair twice
+        running_pairs = {r.get("pair") for r in running}
         for i in range(cycle_index, min(cycle_index + 10, len(combinations))):
             if i not in running_indices:
                 combo = combinations[i]
+                pair = combo.get("pair", "")
+                # Skip if this pair is already running (even with different settings)
+                if pair in running_pairs:
+                    continue
                 pending.append({
                     "index": i,
-                    "pair": combo.get("pair", ""),
+                    "pair": pair,
                     "period": combo.get("period", ""),
                     "timeframe": combo.get("timeframe", ""),
                     "granularity": combo.get("granularity", ""),

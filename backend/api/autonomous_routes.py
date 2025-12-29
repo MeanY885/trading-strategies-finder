@@ -122,13 +122,19 @@ async def get_queue_status():
     pending_start = cycle_index
     pending_items = []
     running_indices = {r.get("index") for r in parallel_running}
+    # Also exclude pairs that are currently running to avoid showing same pair twice
+    running_pairs = {r.get("pair") for r in parallel_running}
 
     for i in range(pending_start, min(pending_start + 10, total)):
         if i < total and i not in running_indices:
             combo = combinations[i]
+            pair = combo.get("pair", "")
+            # Skip if this pair is already running (even with different settings)
+            if pair in running_pairs:
+                continue
             pending_items.append({
                 "index": i,
-                "pair": combo.get("pair", ""),
+                "pair": pair,
                 "period": combo.get("period", ""),
                 "timeframe": combo.get("timeframe", ""),
                 "granularity": combo.get("granularity", ""),
