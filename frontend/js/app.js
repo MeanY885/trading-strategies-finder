@@ -1091,7 +1091,7 @@
                 const dateStr = createdDate ? createdDate.toLocaleDateString('en-GB', {
                     day: '2-digit', month: 'short'
                 }) + ' ' + createdDate.toLocaleTimeString('en-GB', {
-                    hour: '2-digit', minute: '2-digit'
+                    hour: 'numeric', minute: '2-digit', hour12: true
                 }) : '-';
 
                 // TP/SL values
@@ -4135,7 +4135,7 @@
                         const date = new Date(timestamp);
                         const day = date.getDate();
                         const month = date.toLocaleString('en-GB', { month: 'short' });
-                        const time = date.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+                        const time = date.toLocaleTimeString('en-GB', { hour: 'numeric', minute: '2-digit', hour12: true });
                         return `${day} ${month} ${time}`;
                     } catch (e) {
                         return '';
