@@ -109,10 +109,43 @@ def has_period_boundary_crossed(period: str, last_validated_at: str) -> bool:
     try:
         # Parse the validation timestamp - handle various formats from PostgreSQL
         # PostgreSQL can return: "2025-12-29 13:38:00" or "2025-12-29 13:38:00.123456"
-        # Normalize to ISO format by replacing space with T
-        normalized = last_validated_at.replace(' ', 'T') if ' ' in last_validated_at else last_validated_at
-        normalized = normalized.replace('Z', '+00:00')
-        validated = datetime.fromisoformat(normalized)
+        date_str = str(last_validated_at).strip()
+
+        # Try multiple parsing approaches
+        validated = None
+
+        # Approach 1: Try fromisoformat with normalized string
+        try:
+            normalized = date_str.replace(' ', 'T') if ' ' in date_str else date_str
+            normalized = normalized.replace('Z', '+00:00')
+            validated = datetime.fromisoformat(normalized)
+        except ValueError:
+            pass
+
+        # Approach 2: Try strptime with microseconds
+        if validated is None:
+            try:
+                validated = datetime.strptime(date_str, '%Y-%m-%d %H:%M:%S.%f')
+            except ValueError:
+                pass
+
+        # Approach 3: Try strptime without microseconds
+        if validated is None:
+            try:
+                validated = datetime.strptime(date_str, '%Y-%m-%d %H:%M:%S')
+            except ValueError:
+                pass
+
+        # Approach 4: Try strptime with T separator and microseconds
+        if validated is None:
+            try:
+                validated = datetime.strptime(date_str, '%Y-%m-%dT%H:%M:%S.%f')
+            except ValueError:
+                pass
+
+        if validated is None:
+            raise ValueError(f"Could not parse date: {date_str}")
+
         if validated.tzinfo:
             validated = validated.replace(tzinfo=None)
 
