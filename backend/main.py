@@ -26,6 +26,7 @@ from pathlib import Path
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 
 # Configuration and state
 from config import DATA_DIR, OUTPUT_DIR
@@ -187,6 +188,16 @@ app = FastAPI(
     version="2.0.0",
     description="ML-powered cryptocurrency trading strategy optimizer",
     lifespan=lifespan
+)
+
+# Add CORS middleware
+# Note: For production, restrict allow_origins to specific domains instead of "*"
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allow all origins for development
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Register all API routes

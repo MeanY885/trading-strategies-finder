@@ -12,12 +12,10 @@ Features:
 """
 import asyncio
 import json
-import threading
 import time
 import psutil
 from datetime import datetime
 from typing import Dict, List, Optional
-import pandas as pd
 
 from config import VALIDATION_PERIODS
 from state import app_state, concurrency_config
@@ -26,6 +24,7 @@ from services.autonomous_optimizer import has_period_boundary_crossed, get_stale
 from services.task_watchdog import TimeoutCalculator
 from services.cache import invalidate_counts_cache
 from async_database import AsyncDatabase
+from services.vectorbt_engine import VectorBTEngine, is_vectorbt_available
 
 # =============================================================================
 # PARALLEL VALIDATION SUPPORT (Resource-Aware)
@@ -33,7 +32,7 @@ from async_database import AsyncDatabase
 
 # Track running validations for queue display
 running_validations: Dict[int, dict] = {}
-running_validations_lock = threading.Lock()
+# Note: threading.Lock removed - using async lock exclusively for async context
 running_validations_async_lock: Optional[asyncio.Lock] = None
 
 # Pending strategies list for queue display
@@ -62,7 +61,7 @@ RESOURCE_WAIT_TIMEOUT = 300  # 5 minutes max wait for resources
 # =============================================================================
 
 ELITE_CPU_THRESHOLD = 75      # Only spawn if CPU < 75% (reserve 25% for DB queries, system)
-ELITE_MEM_THRESHOLD = 2.0     # Only spawn if > 2GB available
+# Note: Memory threshold now calculated dynamically using TOTAL_RESERVED_MEMORY + ELITE_MEM_PER_VALIDATION
 ELITE_MEM_PER_VALIDATION = 0.5  # Each validation task uses ~500MB
 ELITE_BASE_CONCURRENT = 2     # Base concurrent validations
 ELITE_MAX_CONCURRENT = 8      # Maximum concurrent validations (increased from 4 for high-spec systems)
@@ -315,7 +314,7 @@ async def validate_strategy(
     if existing_validation_data:
         try:
             existing_results = json.loads(existing_validation_data) if isinstance(existing_validation_data, str) else existing_validation_data
-        except:
+        except json.JSONDecodeError:
             existing_results = []
 
     # Determine stale periods
@@ -401,6 +400,26 @@ async def validate_strategy(
             backtest_timeout = TimeoutCalculator.get_backtest_timeout(vp["months"])
 
             def run_backtest():
+                # Try VectorBT first for 100x faster backtesting
+                if is_vectorbt_available():
+                    try:
+                        vbt_engine = VectorBTEngine(
+                            df,
+                            initial_capital=1000.0,
+                            position_size_pct=100.0,
+                            commission_pct=0.1
+                        )
+                        vbt_result = vbt_engine.run_single_backtest(
+                            strategy=entry_rule,
+                            direction=direction,
+                            tp_percent=tp_percent,
+                            sl_percent=sl_percent
+                        )
+                        return vbt_result
+                    except Exception as e:
+                        log(f"[Elite Validation] VectorBT failed, falling back to StrategyEngine: {e}", level='WARNING')
+
+                # Fallback to standard StrategyEngine
                 engine = StrategyEngine(df)
                 return engine.backtest(
                     strategy=entry_rule,
@@ -412,7 +431,7 @@ async def validate_strategy(
                     commission_pct=0.1
                 )
 
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             try:
                 result = await asyncio.wait_for(
                     loop.run_in_executor(None, run_backtest),
@@ -681,8 +700,8 @@ async def validate_all_strategies():
                     return priority_lookup.get(key, 999999)
 
                 pending.sort(key=get_priority)
-        except:
-            pass
+        except Exception as e:
+            log(f"[Elite Validator] Error sorting pending strategies by priority: {e}", level='ERROR')
 
         # Store pending list for queue display (with richer info for better UI)
         pending_strategies_list = [{
@@ -806,7 +825,7 @@ async def start_auto_elite_validation():
                     if existing_data:
                         try:
                             existing_results = json.loads(existing_data) if isinstance(existing_data, str) else existing_data
-                        except:
+                        except json.JSONDecodeError:
                             existing_results = []
 
                     stale = get_stale_periods(existing_results, VALIDATION_PERIODS)

@@ -296,12 +296,20 @@ async def get_available_data():
 @router.post("/load-file/{filename}")
 async def load_data_file(filename: str):
     """Load a specific data file from the data directory."""
-    file_path = DATA_DIR / filename
+    import os
+
+    # Sanitize filename - remove any path components to prevent directory traversal
+    safe_filename = os.path.basename(filename)
+    file_path = DATA_DIR / safe_filename
+
+    # Verify the resolved path is still within DATA_DIR
+    if not file_path.resolve().is_relative_to(DATA_DIR.resolve()):
+        raise HTTPException(status_code=400, detail="Invalid filename")
 
     if not file_path.exists():
         raise HTTPException(status_code=404, detail=f"File not found: {filename}")
 
-    if not filename.endswith('.csv'):
+    if not safe_filename.endswith('.csv'):
         raise HTTPException(status_code=400, detail="Only CSV files are supported")
 
     try:

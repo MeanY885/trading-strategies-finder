@@ -12,6 +12,7 @@ from typing import List, Dict, Any, Optional
 from fastapi import WebSocket
 
 from logging_config import log
+from utils.converters import get_pending_queue_items
 
 
 class DateTimeEncoder(json.JSONEncoder):
@@ -44,6 +45,7 @@ class WebSocketManager:
     def __init__(self):
         self.active_connections: List[WebSocket] = []
         self._lock = asyncio.Lock()
+        self._throttle_lock = asyncio.Lock()  # Separate lock for atomic throttle check
         self._broadcast_queue: asyncio.Queue = None
         self._broadcast_task: asyncio.Task = None
         self._throttle_interval = 1.0  # Minimum seconds between broadcasts per message type (increased from 0.5 for better UI performance at scale)
@@ -91,13 +93,14 @@ class WebSocketManager:
         if not self.active_connections:
             return
 
-        # Apply throttling for frequent message types
+        # Apply throttling for frequent message types with atomic check-and-update
         if message_type in self._throttled_types:
-            now = time.time()
-            last_time = self._last_broadcast_times.get(message_type, 0)
-            if now - last_time < self._throttle_interval:
-                return  # Skip this broadcast - too soon
-            self._last_broadcast_times[message_type] = now
+            async with self._throttle_lock:
+                now = time.time()
+                last_time = self._last_broadcast_times.get(message_type, 0)
+                if now - last_time < self._throttle_interval:
+                    return  # Skip this broadcast - too soon
+                self._last_broadcast_times[message_type] = now
 
         # Serialize data to handle datetime objects
         message = serialize_for_json({"type": message_type, **data})
@@ -210,29 +213,14 @@ def _get_queue_data_from_status(status: Dict) -> Dict:
     total = len(combinations) if combinations else status.get("total_combinations", 0)
     pending_count = total - cycle_index
 
-    # Get pending items from combinations list
-    pending = []
-    if combinations:
-        running_indices = {r.get("index") for r in running}
-        # Also exclude pairs that are currently running to avoid showing same pair twice
-        running_pairs = {r.get("pair") for r in running}
-        for i in range(cycle_index, min(cycle_index + 10, len(combinations))):
-            if i not in running_indices:
-                combo = combinations[i]
-                pair = combo.get("pair", "")
-                # Skip if this pair is already running (even with different settings)
-                if pair in running_pairs:
-                    continue
-                pending.append({
-                    "index": i,
-                    "pair": pair,
-                    "period": combo.get("period", ""),
-                    "timeframe": combo.get("timeframe", ""),
-                    "granularity": combo.get("granularity", ""),
-                    "status": "pending"
-                })
-                if len(pending) >= 5:
-                    break
+    # Get pending items using shared helper
+    pending = get_pending_queue_items(
+        combinations=combinations,
+        cycle_index=cycle_index,
+        running_items=running,
+        max_items=5,
+        lookahead=10
+    )
 
     return {
         "total": total,

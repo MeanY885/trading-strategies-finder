@@ -6,8 +6,9 @@ Replaces scattered global variables with a centralized, locked state container.
 """
 import threading
 import asyncio
+from collections import deque
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Deque
 from datetime import datetime
 import copy
 
@@ -132,8 +133,8 @@ class AppState:
     # Running optimizations tracking (for parallel processing)
     running_optimizations: Dict = field(default_factory=dict)
 
-    # History of autonomous runs
-    autonomous_history: List = field(default_factory=list)
+    # History of autonomous runs (deque for O(1) appendleft with automatic maxlen)
+    autonomous_history: Deque = field(default_factory=lambda: deque(maxlen=MAX_HISTORY_SIZE))
 
     # Current optimization status reference (for abort signaling)
     current_optimization_status: Optional[Dict] = None
@@ -161,9 +162,15 @@ class AppState:
             self.current_df = df
 
     def get_dataframe(self) -> Any:
-        """Get the current dataframe."""
+        """Get a copy of the current dataframe.
+
+        Returns a copy to prevent race conditions when concurrent threads
+        modify the DataFrame in-place (e.g., VectorBT's df.set_index('time', inplace=True)).
+        """
         with self._lock:
-            return self.current_df
+            if self.current_df is not None:
+                return self.current_df.copy()
+            return None
 
     # ==========================================================================
     # UNIFIED (MANUAL) OPTIMIZATION STATUS METHODS
@@ -299,16 +306,18 @@ class AppState:
     # ==========================================================================
 
     def add_to_history(self, entry: Dict) -> None:
-        """Add an entry to autonomous runs history (capped at MAX_HISTORY_SIZE)."""
+        """Add an entry to autonomous runs history.
+
+        Uses deque.appendleft() for O(1) insertion at front.
+        The deque's maxlen automatically discards oldest entries.
+        """
         with self._lock:
-            self.autonomous_history.insert(0, entry)
-            if len(self.autonomous_history) > MAX_HISTORY_SIZE:
-                self.autonomous_history = self.autonomous_history[:MAX_HISTORY_SIZE]
+            self.autonomous_history.appendleft(entry)
 
     def get_history(self) -> List:
-        """Get autonomous runs history."""
+        """Get autonomous runs history as a list for JSON serialization."""
         with self._lock:
-            return copy.deepcopy(self.autonomous_history)
+            return list(self.autonomous_history)
 
     # ==========================================================================
     # CURRENT OPTIMIZATION STATUS (for abort signaling)

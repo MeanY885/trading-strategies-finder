@@ -28,6 +28,9 @@ from itertools import product
 import time
 import logging
 
+# Import logging for VectorBT path
+from logging_config import log
+
 # Import database
 try:
     from strategy_database import get_strategy_db

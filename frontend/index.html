@@ -253,6 +253,15 @@
                     <strong>🔬 Dual-Engine:</strong> TradingView engine for Pine Script export, Native engine (TA-Lib) for fast in-app execution with candlestick patterns.
                 </div>
 
+                <!-- VectorBT Status Indicator -->
+                <div id="vectorbtStatus" style="margin-top: 0.75rem; display: none;">
+                    <div id="vectorbtBadge" style="display: inline-flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem; border-radius: 8px; font-size: 0.9rem;">
+                        <span id="vectorbtIcon"></span>
+                        <span id="vectorbtText"></span>
+                        <span id="vectorbtSpeedup" style="font-weight: 600;"></span>
+                    </div>
+                </div>
+
                 <div class="actions">
                     <button class="btn btn-primary" id="unifiedBtn" onclick="runUnifiedOptimization()" style="background: linear-gradient(135deg, var(--accent-primary), #ec4899); font-size: 1.1rem; padding: 1rem 2rem; width: 100%;">
                         Find Best Strategies

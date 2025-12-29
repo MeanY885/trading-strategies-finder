@@ -11,7 +11,6 @@ Features:
 - Period boundary detection for re-optimization
 """
 import asyncio
-import threading
 import json
 import time
 import re
@@ -19,7 +18,14 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Callable
 import pandas as pd
 
-from config import AUTONOMOUS_CONFIG, MAX_HISTORY_SIZE
+from config import (
+    AUTONOMOUS_CONFIG,
+    MAX_HISTORY_SIZE,
+    MAX_CONCURRENT_OPTIMIZATIONS,
+    MAX_CONCURRENT_FETCHES,
+    MAX_CONCURRENT_CALCULATED,
+    calculate_max_concurrent,
+)
 from state import app_state, concurrency_config
 from logging_config import log
 from services.task_watchdog import (
@@ -43,16 +49,15 @@ optimization_semaphore: Optional[asyncio.Semaphore] = None
 # Binance allows ~10 req/sec, so 3 concurrent is safe
 data_fetch_semaphore: Optional[asyncio.Semaphore] = None
 
-# Running optimizations tracking (for parallel mode)
-running_optimizations: Dict[str, dict] = {}
-running_optimizations_lock = threading.Lock()  # For sync contexts
+# Async lock for running_optimizations access (uses app_state.running_optimizations)
 running_optimizations_async_lock: Optional[asyncio.Lock] = None  # For async contexts
 
 # History of completed optimizations
 autonomous_runs_history: List[dict] = []
 
-# Reference to current optimization status (for abort signaling)
-current_optimization_status: Optional[dict] = None
+# NOTE: running_optimizations and current_optimization_status are now managed
+# centrally via app_state to avoid race conditions with abort signaling.
+# Use app_state.running_optimizations and app_state.current_optimization_status
 
 # Orphan cleaner instance
 orphan_cleaner_instance: Optional[OrphanCleaner] = None
@@ -65,26 +70,18 @@ def init_async_primitives():
     """Initialize asyncio primitives. Must be called from async context."""
     global optimization_semaphore, data_fetch_semaphore, running_optimizations_async_lock
 
-    from config import MAX_CONCURRENT_OPTIMIZATIONS, MAX_CONCURRENT_FETCHES
     import psutil
 
     # Initialize async lock for running_optimizations in async contexts
     running_optimizations_async_lock = asyncio.Lock()
 
-    # Auto-detect if not specified, or use configured value
+    # Use centralized MAX_CONCURRENT calculation from config
+    # Priority: 1) Environment variable, 2) State config, 3) Auto-calculated
     if MAX_CONCURRENT_OPTIMIZATIONS > 0:
         max_concurrent = MAX_CONCURRENT_OPTIMIZATIONS
     else:
-        # Auto-detect based on CPU cores
-        cpu_count = psutil.cpu_count(logical=True) or 4
-        if cpu_count >= 32:
-            max_concurrent = cpu_count - 4
-        elif cpu_count >= 16:
-            max_concurrent = cpu_count - 2
-        elif cpu_count >= 8:
-            max_concurrent = cpu_count - 1
-        else:
-            max_concurrent = max(2, cpu_count)
+        # Use centralized calculation from config.py
+        max_concurrent = MAX_CONCURRENT_CALCULATED
 
     # Override from state config if set
     state_max = concurrency_config.get("max_concurrent", 0)
@@ -462,7 +459,8 @@ async def run_single_optimization(
     Run a single optimization for the given combination.
     Returns: "completed", "skipped", or "error"
     """
-    global current_optimization_status, running_optimizations
+    # NOTE: Uses app_state.running_optimizations and app_state.current_optimization_status
+    # to avoid race conditions with abort signaling
     from services.websocket_manager import ws_manager, _get_queue_data_from_status
 
     source = combo["source"]
@@ -492,19 +490,20 @@ async def run_single_optimization(
     last_broadcast_time = [0]  # Use list to allow mutation in nested function
 
     async def update_parallel_status(message: str, progress: int = None, estimated_remaining: int = None, trial_current: int = 0, trial_total: int = 0):
-        if combo_id and combo_id in running_optimizations:
+        # Use app_state.running_optimizations for centralized state management
+        if combo_id and combo_id in app_state.running_optimizations:
             async with running_optimizations_async_lock:
-                if combo_id in running_optimizations:
-                    running_optimizations[combo_id]["message"] = message
+                if combo_id in app_state.running_optimizations:
+                    app_state.running_optimizations[combo_id]["message"] = message
                     if progress is not None:
-                        running_optimizations[combo_id]["progress"] = progress
+                        app_state.running_optimizations[combo_id]["progress"] = progress
                     if estimated_remaining is not None:
-                        running_optimizations[combo_id]["estimated_remaining"] = estimated_remaining
+                        app_state.running_optimizations[combo_id]["estimated_remaining"] = estimated_remaining
                     if trial_current > 0:
-                        running_optimizations[combo_id]["trial_current"] = trial_current
-                        running_optimizations[combo_id]["trial_total"] = trial_total
+                        app_state.running_optimizations[combo_id]["trial_current"] = trial_current
+                        app_state.running_optimizations[combo_id]["trial_total"] = trial_total
                     app_state.update_autonomous_status(
-                        parallel_running=list(running_optimizations.values())
+                        parallel_running=list(app_state.running_optimizations.values())
                     )
 
             # Broadcast to WebSocket (throttled to every 1s to reduce UI updates)
@@ -579,7 +578,8 @@ async def run_single_optimization(
     # Run optimization
     log(f"[Autonomous Optimizer] Starting optimization for {pair} ({granularity['n_trials']} trials)...")
     temp_status = {"running": True, "progress": 0, "message": "", "report": None, "abort": False}
-    current_optimization_status = temp_status
+    # Register with app_state for centralized abort signaling
+    app_state.set_current_optimization(temp_status)
     optimization_start_time = datetime.now()
 
     # Set initial ETA based on historical average
@@ -593,8 +593,11 @@ async def run_single_optimization(
         import re
 
         while temp_status["running"]:
-            if not app_state.is_autonomous_enabled():
+            # Check for abort via both app_state.is_autonomous_enabled() and direct abort flag
+            # The temp_status dict is registered with app_state, so signal_abort() will set temp_status["abort"]
+            if not app_state.is_autonomous_enabled() or temp_status.get("abort"):
                 temp_status["abort"] = True
+                break
 
             inner_progress = temp_status.get("progress", 0)
             mapped_progress = 15 + int(inner_progress * 0.8)
@@ -653,7 +656,7 @@ async def run_single_optimization(
 
             await asyncio.sleep(0.3)
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     progress_task = asyncio.create_task(update_progress())
 
     # Calculate dynamic timeout based on task parameters
@@ -702,7 +705,8 @@ async def run_single_optimization(
 
     finally:
         temp_status["running"] = False
-        current_optimization_status = None
+        # Clear from app_state centralized tracking
+        app_state.set_current_optimization(None)
 
         # Stop watchdog
         await watchdog.stop()
@@ -796,7 +800,7 @@ async def process_single_combination(
     thread_pool
 ):
     """Process a single optimization with semaphore control."""
-    global running_optimizations
+    # NOTE: Uses app_state.running_optimizations for centralized state management
 
     combo_id = f"auto_{combo_index}_{combo['pair']}_{combo['timeframe']['label']}"
 
@@ -817,7 +821,7 @@ async def process_single_combination(
                 break
             await asyncio.sleep(1)
 
-        # Register this optimization
+        # Register this optimization using app_state for centralized tracking
         started_at = datetime.now()
         combo_status = {
             "id": combo_id,
@@ -832,12 +836,8 @@ async def process_single_combination(
             "message": f"Starting {combo['pair']}...",
         }
 
-        async with running_optimizations_async_lock:
-            running_optimizations[combo_id] = combo_status
-            app_state.update_autonomous_status(
-                parallel_running=list(running_optimizations.values()),
-                parallel_count=len(running_optimizations)
-            )
+        # Use app_state.add_running_optimization for centralized tracking
+        app_state.add_running_optimization(combo_id, combo_status)
 
         log(f"[Parallel Optimizer] Starting: {combo['pair']} {combo['timeframe']['label']}")
 
@@ -910,13 +910,8 @@ async def process_single_combination(
             return "error"
 
         finally:
-            async with running_optimizations_async_lock:
-                if combo_id in running_optimizations:
-                    del running_optimizations[combo_id]
-                app_state.update_autonomous_status(
-                    parallel_running=list(running_optimizations.values()),
-                    parallel_count=len(running_optimizations)
-                )
+            # Use app_state.remove_running_optimization for centralized tracking
+            app_state.remove_running_optimization(combo_id)
 
 
 async def start_autonomous_optimizer(thread_pool):
@@ -924,7 +919,7 @@ async def start_autonomous_optimizer(thread_pool):
     Main autonomous optimizer loop.
     Runs multiple optimizations in parallel.
     """
-    global running_optimizations
+    # NOTE: Uses app_state.running_optimizations for centralized state management
 
     log("[Parallel Optimizer] start_autonomous_optimizer() called")
 
@@ -941,17 +936,15 @@ async def start_autonomous_optimizer(thread_pool):
 
     # Clean any orphaned entries from previous run/crash
     global orphan_cleaner_instance
-    async with running_optimizations_async_lock:
-        orphan_count = len(running_optimizations)
-        if orphan_count > 0:
-            log(f"[Parallel Optimizer] Cleaning {orphan_count} orphaned entries from previous run")
-            running_optimizations.clear()
-            app_state.clear_running_optimizations()
+    orphan_count = app_state.get_running_count()
+    if orphan_count > 0:
+        log(f"[Parallel Optimizer] Cleaning {orphan_count} orphaned entries from previous run")
+        app_state.clear_running_optimizations()
 
     # Start orphan cleaner background task if not already running
     if orphan_cleaner_instance is None:
         orphan_cleaner_instance = OrphanCleaner(
-            running_dict=running_optimizations,
+            running_dict=app_state.running_optimizations,
             lock=running_optimizations_async_lock
         )
         asyncio.create_task(orphan_cleaner_instance.start_cleanup_loop())
@@ -1001,7 +994,8 @@ async def start_autonomous_optimizer(thread_pool):
             from strategy_database import get_strategy_db
             db = get_strategy_db()
             return find_resume_index(combinations, db)
-        except:
+        except Exception as e:
+            log(f"[Parallel Optimizer] Error finding resume index: {e}", level='ERROR')
             return 0
 
     start_index = await loop.run_in_executor(thread_pool, find_resume)
@@ -1048,7 +1042,8 @@ async def start_autonomous_optimizer(thread_pool):
                         from strategy_database import get_strategy_db
                         db = get_strategy_db()
                         return find_resume_index(combinations, db)
-                    except:
+                    except Exception as e:
+                        log(f"[Parallel Optimizer] Error rechecking freshness: {e}", level='ERROR')
                         return 0
 
                 next_index = await loop.run_in_executor(thread_pool, recheck_freshness)
@@ -1101,17 +1096,9 @@ async def start_autonomous_optimizer(thread_pool):
             MEM_SPAWN_THRESHOLD = 2.0  # Only spawn if > 2GB available
             SPAWN_COOLDOWN = 15  # Seconds between spawns (was 60)
 
-            # Dynamic MAX_CONCURRENT based on CPU cores (was hard-coded to 2)
-            import psutil
-            cpu_count = psutil.cpu_count(logical=True) or 4
-            if cpu_count >= 32:
-                MAX_CONCURRENT = cpu_count // 4  # 8 for 32-core
-            elif cpu_count >= 16:
-                MAX_CONCURRENT = cpu_count // 4  # 4 for 16-core
-            elif cpu_count >= 8:
-                MAX_CONCURRENT = 4  # 4 for 8-core
-            else:
-                MAX_CONCURRENT = max(2, cpu_count // 2)  # At least 2
+            # Use centralized MAX_CONCURRENT calculation from config.py
+            # Formula: min(cpu_count // 4, 16) - consistent with init_async_primitives()
+            MAX_CONCURRENT = MAX_CONCURRENT_CALCULATED
 
             # Check if we can spawn based on resources
             can_spawn_cpu = cpu_percent < CPU_SPAWN_THRESHOLD
@@ -1177,8 +1164,8 @@ async def start_autonomous_optimizer(thread_pool):
             task.cancel()
         await asyncio.gather(*active_tasks, return_exceptions=True)
 
-    with running_optimizations_lock:
-        running_optimizations.clear()
+    # Clear centralized state
+    app_state.clear_running_optimizations()
 
     app_state.update_autonomous_status(
         auto_running=False,
@@ -1196,7 +1183,7 @@ async def start_autonomous_optimizer(thread_pool):
 
 async def stop_autonomous_optimizer():
     """Stop the autonomous optimizer."""
-    global running_optimizations, orphan_cleaner_instance, cycle_sleeper
+    global orphan_cleaner_instance, cycle_sleeper
 
     app_state.update_autonomous_status(
         enabled=False,
@@ -1206,26 +1193,24 @@ async def stop_autonomous_optimizer():
         message="Stopped by user"
     )
 
-    # Signal current optimization to abort
-    if current_optimization_status:
-        current_optimization_status["abort"] = True
+    # Signal current optimization to abort via centralized app_state
+    app_state.signal_abort()
 
     # Interrupt any waiting cycle sleep
     if cycle_sleeper:
         cycle_sleeper.interrupt()
 
-    # Signal all running optimizations to abort
-    with running_optimizations_lock:
-        for combo_id, status in running_optimizations.items():
-            status["abort"] = True
-        running_optimizations.clear()
+    # Signal all running optimizations to abort via centralized app_state
+    # The running_optimizations dict is managed by app_state
+    for combo_id, status in app_state.running_optimizations.items():
+        status["abort"] = True
 
     # Stop orphan cleaner
     if orphan_cleaner_instance:
         await orphan_cleaner_instance.stop()
         orphan_cleaner_instance = None
 
-    # Clear app state tracking
+    # Clear centralized state tracking
     app_state.clear_running_optimizations()
     app_state.update_autonomous_status(
         parallel_running=[],

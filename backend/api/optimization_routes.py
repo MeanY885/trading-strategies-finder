@@ -5,18 +5,19 @@ API endpoints for manual optimization runs.
 """
 import asyncio
 import concurrent.futures
-from typing import Optional
+import io
+import csv
+from typing import Optional, Any
 from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from fastapi.responses import StreamingResponse, PlainTextResponse
-from pydantic import BaseModel
-import io
-import csv
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 
 from config import OUTPUT_DIR
 from state import app_state, concurrency_config
 from services.websocket_manager import broadcast_optimization_status, broadcast_strategy_result
+from utils.converters import dict_to_strategy_result
 
 router = APIRouter(prefix="/api", tags=["optimization"])
 
@@ -29,15 +30,143 @@ thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
 # REQUEST MODELS
 # =============================================================================
 
+class DateRangeConfig(BaseModel):
+    """Date range configuration for backtesting."""
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    enabled: bool = False
+    start_date: Optional[str] = Field(default=None, alias="startDate")
+    start_time: Optional[str] = Field(default=None, alias="startTime")
+    end_date: Optional[str] = Field(default=None, alias="endDate")
+    end_time: Optional[str] = Field(default=None, alias="endTime")
+    start_timestamp: Optional[str] = Field(default=None, alias="startTimestamp")
+    end_timestamp: Optional[str] = Field(default=None, alias="endTimestamp")
+
+
 class UnifiedOptimizationRequest(BaseModel):
-    symbol: str = "BTCGBP"
-    timeframe: str = "15m"
-    exchange: str = "BINANCE"
-    capital: float = 1000.0
-    position_size_pct: float = 100.0
-    engine: str = "tradingview"  # 'tradingview' or 'native'
-    n_trials: int = 400  # Number of optimization trials
-    source_currency: str = "GBP"
+    """
+    Request model for optimization runs.
+
+    Accepts both snake_case and camelCase parameter names for frontend compatibility.
+    All parameters have sensible defaults and validation.
+
+    Parameters:
+        symbol: Trading pair symbol (e.g., "BTCGBP", "BTCUSDT")
+        timeframe: Candlestick timeframe (e.g., "15m", "1h", "4h")
+        exchange: Exchange name (e.g., "BINANCE")
+        capital: Starting capital for backtesting
+        position_size_pct: Position size as percentage of capital (alias: positionSizePct)
+        engine: Backtesting engine - 'tradingview', 'native', or 'all'
+        n_trials: Number of optimization trials to run (alias: nTrials)
+        source_currency: Base currency for display (e.g., "GBP", "USD")
+        use_vectorbt: Enable VectorBT for faster backtesting (alias: useVectorbt)
+        risk_percent: Risk percentage per trade (alias: riskPercent)
+        date_range: Date range configuration for backtesting (alias: dateRange)
+    """
+    model_config = ConfigDict(
+        populate_by_name=True,  # Accept both snake_case and camelCase
+        extra="ignore",  # Ignore unknown fields gracefully
+    )
+
+    # Core parameters
+    symbol: str = Field(default="BTCGBP", description="Trading pair symbol")
+    timeframe: str = Field(default="15m", description="Candlestick timeframe")
+    exchange: str = Field(default="BINANCE", description="Exchange name")
+    capital: float = Field(default=1000.0, ge=0, description="Starting capital for backtesting")
+
+    # Position sizing
+    position_size_pct: float = Field(
+        default=100.0,
+        ge=0,
+        le=100,
+        alias="positionSizePct",
+        description="Position size as percentage of capital"
+    )
+
+    # Engine configuration
+    engine: str = Field(
+        default="tradingview",
+        description="Backtesting engine: 'tradingview', 'native', or 'all'"
+    )
+    n_trials: int = Field(
+        default=400,
+        ge=1,
+        le=10000,
+        alias="nTrials",
+        description="Number of optimization trials"
+    )
+
+    # Currency settings
+    source_currency: str = Field(
+        default="GBP",
+        alias="sourceCurrency",
+        description="Base currency for display"
+    )
+
+    # Performance options
+    use_vectorbt: bool = Field(
+        default=False,
+        alias="useVectorbt",
+        description="Enable VectorBT for faster backtesting"
+    )
+
+    # Risk settings
+    risk_percent: Optional[float] = Field(
+        default=None,
+        ge=0,
+        le=100,
+        alias="riskPercent",
+        description="Risk percentage per trade (overrides position_size_pct if set)"
+    )
+
+    # Date range filtering
+    date_range: Optional[Any] = Field(
+        default=None,
+        alias="dateRange",
+        description="Date range configuration for backtesting"
+    )
+
+    @field_validator("engine")
+    @classmethod
+    def validate_engine(cls, v: str) -> str:
+        """Validate engine is one of the allowed values."""
+        valid_engines = {"tradingview", "native", "all"}
+        if v.lower() not in valid_engines:
+            raise ValueError(
+                f"Invalid engine '{v}'. Must be one of: {', '.join(valid_engines)}"
+            )
+        return v.lower()
+
+    @field_validator("timeframe")
+    @classmethod
+    def validate_timeframe(cls, v: str) -> str:
+        """Validate timeframe format."""
+        valid_timeframes = {"1m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d", "1w"}
+        if v.lower() not in valid_timeframes:
+            # Allow it anyway but log a warning
+            import logging
+            logging.warning(f"Unusual timeframe '{v}' - valid options: {', '.join(valid_timeframes)}")
+        return v
+
+    @field_validator("date_range", mode="before")
+    @classmethod
+    def normalize_date_range(cls, v: Any) -> Optional[dict]:
+        """Normalize date range to consistent format."""
+        if v is None:
+            return None
+        if isinstance(v, dict):
+            # Normalize camelCase keys to snake_case for internal use
+            normalized = {
+                "enabled": v.get("enabled", False),
+                "startDate": v.get("startDate") or v.get("start_date"),
+                "startTime": v.get("startTime") or v.get("start_time") or "00:00",
+                "endDate": v.get("endDate") or v.get("end_date"),
+                "endTime": v.get("endTime") or v.get("end_time") or "23:59",
+                "startTimestamp": v.get("startTimestamp") or v.get("start_timestamp"),
+                "endTimestamp": v.get("endTimestamp") or v.get("end_timestamp"),
+            }
+            return normalized
+        return v
 
 
 # =============================================================================
@@ -49,6 +178,7 @@ def run_optimization_sync(request: UnifiedOptimizationRequest, status: dict, str
     Synchronous optimization wrapper that runs in thread pool.
     """
     from strategy_engine import run_strategy_finder
+    import pandas as pd
 
     try:
         df = app_state.get_dataframe()
@@ -56,6 +186,33 @@ def run_optimization_sync(request: UnifiedOptimizationRequest, status: dict, str
             status["message"] = "No data loaded"
             status["running"] = False
             return
+
+        # Apply date range filter if provided
+        if request.date_range and request.date_range.get("enabled"):
+            try:
+                start_str = request.date_range.get("startTimestamp") or request.date_range.get("startDate")
+                end_str = request.date_range.get("endTimestamp") or request.date_range.get("endDate")
+
+                if start_str and end_str:
+                    start_dt = pd.to_datetime(start_str)
+                    end_dt = pd.to_datetime(end_str)
+
+                    # Filter dataframe by date range
+                    if 'datetime' in df.columns:
+                        df = df[(df['datetime'] >= start_dt) & (df['datetime'] <= end_dt)].copy()
+                    elif df.index.name == 'datetime' or isinstance(df.index, pd.DatetimeIndex):
+                        df = df[(df.index >= start_dt) & (df.index <= end_dt)].copy()
+
+                    if len(df) == 0:
+                        status["message"] = "No data in selected date range"
+                        status["running"] = False
+                        return
+            except Exception as e:
+                # Log but continue with full dataframe if date filtering fails
+                print(f"Date range filtering failed: {e}")
+
+        # If risk_percent is provided, use it as position_size_pct
+        position_size = request.risk_percent if request.risk_percent is not None else request.position_size_pct
 
         report = run_strategy_finder(
             df=df,
@@ -65,10 +222,11 @@ def run_optimization_sync(request: UnifiedOptimizationRequest, status: dict, str
             timeframe=request.timeframe,
             exchange=request.exchange,
             capital=request.capital,
-            position_size_pct=request.position_size_pct,
+            position_size_pct=position_size,
             engine=request.engine,
             n_trials=request.n_trials,
             source_currency=request.source_currency,
+            use_vectorbt=request.use_vectorbt,
         )
 
         status["report"] = report
@@ -142,7 +300,7 @@ async def run_unified_optimization(request: UnifiedOptimizationRequest, backgrou
 
     async def run_in_background():
         """Async wrapper to run optimization and update state."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
 
         try:
             await loop.run_in_executor(
@@ -225,31 +383,8 @@ async def get_unified_pinescript(rank: int = 1):
     strategy = top_strategies[rank - 1]
 
     try:
-        # Generate Pine Script
-        from strategy_engine import StrategyResult
-
         # Convert dict to StrategyResult if needed
-        if isinstance(strategy, dict):
-            result = StrategyResult(
-                strategy_name=strategy.get("strategy_name", "Unknown"),
-                direction=strategy.get("direction", "long"),
-                entry_rule=strategy.get("entry_rule", ""),
-                tp_percent=strategy.get("tp_percent", 2.0),
-                sl_percent=strategy.get("sl_percent", 1.0),
-                total_trades=strategy.get("metrics", {}).get("total_trades", 0),
-                wins=strategy.get("metrics", {}).get("wins", 0),
-                losses=strategy.get("metrics", {}).get("losses", 0),
-                win_rate=strategy.get("metrics", {}).get("win_rate", 0),
-                total_pnl=strategy.get("metrics", {}).get("total_pnl", 0),
-                total_pnl_percent=strategy.get("metrics", {}).get("total_pnl_percent", 0),
-                profit_factor=strategy.get("metrics", {}).get("profit_factor", 0),
-                max_drawdown=strategy.get("metrics", {}).get("max_drawdown", 0),
-                max_drawdown_pct=strategy.get("metrics", {}).get("max_drawdown_pct", 0),
-                trades=[],
-                composite_score=strategy.get("metrics", {}).get("composite_score", 0),
-            )
-        else:
-            result = strategy
+        result = dict_to_strategy_result(strategy) if isinstance(strategy, dict) else strategy
 
         pinescript = generate_pinescript(result)
 
@@ -266,7 +401,7 @@ async def get_unified_pinescript(rank: int = 1):
 @router.get("/unified-pinescript-all")
 async def get_all_pinescripts():
     """Get Pine Scripts for all top strategies from the last run."""
-    from strategy_engine import generate_pinescript, StrategyResult
+    from strategy_engine import generate_pinescript
 
     status = app_state.get_unified_status()
     report = status.get("report")
@@ -281,27 +416,7 @@ async def get_all_pinescripts():
     results = []
     for i, strategy in enumerate(top_strategies):
         try:
-            if isinstance(strategy, dict):
-                result = StrategyResult(
-                    strategy_name=strategy.get("strategy_name", "Unknown"),
-                    direction=strategy.get("direction", "long"),
-                    entry_rule=strategy.get("entry_rule", ""),
-                    tp_percent=strategy.get("tp_percent", 2.0),
-                    sl_percent=strategy.get("sl_percent", 1.0),
-                    total_trades=strategy.get("metrics", {}).get("total_trades", 0),
-                    wins=strategy.get("metrics", {}).get("wins", 0),
-                    losses=strategy.get("metrics", {}).get("losses", 0),
-                    win_rate=strategy.get("metrics", {}).get("win_rate", 0),
-                    total_pnl=strategy.get("metrics", {}).get("total_pnl", 0),
-                    total_pnl_percent=strategy.get("metrics", {}).get("total_pnl_percent", 0),
-                    profit_factor=strategy.get("metrics", {}).get("profit_factor", 0),
-                    max_drawdown=strategy.get("metrics", {}).get("max_drawdown", 0),
-                    max_drawdown_pct=strategy.get("metrics", {}).get("max_drawdown_pct", 0),
-                    trades=[],
-                    composite_score=strategy.get("metrics", {}).get("composite_score", 0),
-                )
-            else:
-                result = strategy
+            result = dict_to_strategy_result(strategy) if isinstance(strategy, dict) else strategy
 
             pinescript = generate_pinescript(result)
             results.append({
@@ -322,7 +437,7 @@ async def get_all_pinescripts():
 @router.get("/download-unified-pinescript/{rank}")
 async def download_pinescript(rank: int = 1):
     """Download Pine Script as a file for a specific ranked strategy."""
-    from strategy_engine import generate_pinescript, StrategyResult
+    from strategy_engine import generate_pinescript
 
     status = app_state.get_unified_status()
     report = status.get("report")
@@ -337,27 +452,7 @@ async def download_pinescript(rank: int = 1):
     strategy = top_strategies[rank - 1]
 
     try:
-        if isinstance(strategy, dict):
-            result = StrategyResult(
-                strategy_name=strategy.get("strategy_name", "Unknown"),
-                direction=strategy.get("direction", "long"),
-                entry_rule=strategy.get("entry_rule", ""),
-                tp_percent=strategy.get("tp_percent", 2.0),
-                sl_percent=strategy.get("sl_percent", 1.0),
-                total_trades=strategy.get("metrics", {}).get("total_trades", 0),
-                wins=strategy.get("metrics", {}).get("wins", 0),
-                losses=strategy.get("metrics", {}).get("losses", 0),
-                win_rate=strategy.get("metrics", {}).get("win_rate", 0),
-                total_pnl=strategy.get("metrics", {}).get("total_pnl", 0),
-                total_pnl_percent=strategy.get("metrics", {}).get("total_pnl_percent", 0),
-                profit_factor=strategy.get("metrics", {}).get("profit_factor", 0),
-                max_drawdown=strategy.get("metrics", {}).get("max_drawdown", 0),
-                max_drawdown_pct=strategy.get("metrics", {}).get("max_drawdown_pct", 0),
-                trades=[],
-                composite_score=strategy.get("metrics", {}).get("composite_score", 0),
-            )
-        else:
-            result = strategy
+        result = dict_to_strategy_result(strategy) if isinstance(strategy, dict) else strategy
 
         pinescript = generate_pinescript(result)
         filename = f"strategy_{rank}_{result.strategy_name.replace(' ', '_')}.pine"

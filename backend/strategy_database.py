@@ -78,8 +78,8 @@ class StrategyDatabase:
                 if StrategyDatabase._pool is None:
                     try:
                         StrategyDatabase._pool = pool.ThreadedConnectionPool(
-                            minconn=2,
-                            maxconn=10,
+                            minconn=5,
+                            maxconn=40,
                             dsn=self.database_url,
                             options="-c statement_timeout=30000"  # 30s query timeout
                         )
@@ -187,7 +187,14 @@ class StrategyDatabase:
                 avg_winner_pct REAL DEFAULT 0,
                 avg_loser_pct REAL DEFAULT 0,
                 risk_reward_ratio REAL DEFAULT 0,
-                trend_following_score REAL DEFAULT 0
+                trend_following_score REAL DEFAULT 0,
+
+                -- VectorBT metrics
+                total_pnl_percent REAL DEFAULT 0,
+                avg_trade REAL DEFAULT 0,
+                buy_hold_return REAL DEFAULT 0,
+                vs_buy_hold REAL DEFAULT 0,
+                consistency_score REAL DEFAULT 0
             )
         ''')
 
@@ -230,6 +237,17 @@ class StrategyDatabase:
             ALTER TABLE completed_optimizations
             ADD COLUMN IF NOT EXISTS duration_seconds INTEGER DEFAULT NULL
         ''')
+
+        # Add VectorBT columns if they don't exist (for existing databases)
+        vectorbt_columns = [
+            "ALTER TABLE strategies ADD COLUMN IF NOT EXISTS total_pnl_percent REAL DEFAULT 0",
+            "ALTER TABLE strategies ADD COLUMN IF NOT EXISTS avg_trade REAL DEFAULT 0",
+            "ALTER TABLE strategies ADD COLUMN IF NOT EXISTS buy_hold_return REAL DEFAULT 0",
+            "ALTER TABLE strategies ADD COLUMN IF NOT EXISTS vs_buy_hold REAL DEFAULT 0",
+            "ALTER TABLE strategies ADD COLUMN IF NOT EXISTS consistency_score REAL DEFAULT 0",
+        ]
+        for stmt in vectorbt_columns:
+            cursor.execute(stmt)
 
         # Create indexes for fast querying
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_completed_combo ON completed_optimizations(pair, period_label, timeframe_label, granularity_label)')
@@ -372,8 +390,9 @@ class StrategyDatabase:
              indicator_params, tuning_improved, tuning_score_before, tuning_score_after, tuning_improvement_pct,
              val_pnl, val_profit_factor, val_win_rate, found_by, data_source, symbol,
              timeframe, data_start, data_end, optimization_run_id, equity_curve,
-             trade_mode, long_trades, long_wins, long_pnl, short_trades, short_wins, short_pnl, flip_count)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+             trade_mode, long_trades, long_wins, long_pnl, short_trades, short_wins, short_pnl, flip_count,
+             total_pnl_percent, avg_trade, buy_hold_return, vs_buy_hold, consistency_score)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
         ''', (
             getattr(result, 'strategy_name', 'unknown'),
@@ -413,7 +432,12 @@ class StrategyDatabase:
             getattr(result, 'short_trades', 0),
             getattr(result, 'short_wins', 0),
             getattr(result, 'short_pnl', 0.0),
-            getattr(result, 'flip_count', 0)
+            getattr(result, 'flip_count', 0),
+            getattr(result, 'total_pnl_percent', 0.0),
+            getattr(result, 'avg_trade', 0.0),
+            getattr(result, 'buy_hold_return', 0.0),
+            getattr(result, 'vs_buy_hold', 0.0),
+            getattr(result, 'consistency_score', 0.0)
         ))
 
         strategy_id = cursor.fetchone()[0]
@@ -650,19 +674,19 @@ class StrategyDatabase:
         if d.get('params'):
             try:
                 d['params'] = json.loads(d['params'])
-            except:
+            except json.JSONDecodeError:
                 d['params'] = {}
 
         if d.get('found_by'):
             try:
                 d['found_by'] = json.loads(d['found_by'])
-            except:
+            except json.JSONDecodeError:
                 d['found_by'] = []
 
         if parse_equity_curve and d.get('equity_curve'):
             try:
                 d['equity_curve'] = json.loads(d['equity_curve'])
-            except:
+            except json.JSONDecodeError:
                 d['equity_curve'] = []
         elif not parse_equity_curve:
             d['equity_curve'] = []

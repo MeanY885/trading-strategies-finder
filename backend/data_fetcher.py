@@ -360,8 +360,43 @@ class BinanceDataFetcher:
         # Remove duplicates and sort
         df = df.drop_duplicates(subset=['time']).sort_values('time').reset_index(drop=True)
 
+        # =====================================================================
+        # NaN Handling - Clean data before passing to VectorBT/indicators
+        # =====================================================================
+        # Drop rows with NaN in critical OHLCV columns
+        initial_len = len(df)
+        df = df.dropna(subset=['open', 'high', 'low', 'close', 'volume'])
+
+        # Forward fill and backward fill small gaps in remaining data
+        df = df.ffill().bfill()
+
+        # Log if significant data was dropped
+        dropped_count = initial_len - len(df)
+        if dropped_count > 0:
+            self._update_status(
+                f"[Binance] Cleaned {dropped_count} rows with NaN values",
+                92
+            )
+
+        # Validate we have enough data for indicator calculations
+        min_required_candles = 100  # Minimum for most indicators (e.g., SMA 200 needs 200)
+        if len(df) < min_required_candles:
+            self._update_status(
+                f"[Binance] Insufficient data after cleaning: {len(df)} candles (need {min_required_candles})",
+                0
+            )
+            return self._empty_dataframe()
+
         # Filter to requested time range
         df = df[df['time'] >= start_date.replace(tzinfo=None)].reset_index(drop=True)
+
+        # Final validation after time range filter
+        if len(df) < min_required_candles:
+            self._update_status(
+                f"[Binance] Insufficient data in range: {len(df)} candles (need {min_required_candles})",
+                0
+            )
+            return self._empty_dataframe()
 
         # Final stats
         if len(df) > 0:

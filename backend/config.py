@@ -158,6 +158,26 @@ MAX_CONCURRENT_OPTIMIZATIONS = int(os.getenv("MAX_CONCURRENT", "0"))
 # Max concurrent data fetches - Binance rate limit is ~10/sec, so 5 is safe
 MAX_CONCURRENT_FETCHES = int(os.getenv("MAX_FETCH_CONCURRENT", "5"))
 
+# Centralized MAX_CONCURRENT calculation for parallel optimizer tasks
+# Formula: min(cpu_count // 4, 16) - balances performance and resource usage
+# This is used by both init_async_primitives() and _run_parallel_optimizer()
+def calculate_max_concurrent(cpu_count: int = None) -> int:
+    """
+    Calculate the maximum concurrent tasks based on CPU cores.
+
+    Args:
+        cpu_count: Number of CPU cores. If None, auto-detects using psutil.
+
+    Returns:
+        Maximum concurrent tasks, capped at 16 to prevent resource exhaustion.
+    """
+    if cpu_count is None:
+        cpu_count = psutil.cpu_count(logical=True) or 4
+    return min(cpu_count // 4, 16) if cpu_count >= 4 else max(2, cpu_count)
+
+# Pre-calculated value for convenience
+MAX_CONCURRENT_CALCULATED = calculate_max_concurrent()
+
 # =============================================================================
 # VECTORBT CONFIGURATION
 # =============================================================================
@@ -170,11 +190,12 @@ USE_VECTORBT = os.getenv("USE_VECTORBT", "true").lower() in ("true", "1", "yes")
 # - VectorBT is not installed
 # - An error occurs during VectorBT execution
 
-# Check if VectorBT is actually available
-VECTORBT_AVAILABLE = False
+# Check if VectorBT is actually available (used for startup logging only)
+# Note: vectorbt_engine.py maintains its own VECTORBT_AVAILABLE for runtime checks
+_vectorbt_available = False
 try:
     import vectorbt
-    VECTORBT_AVAILABLE = True
+    _vectorbt_available = True
 except ImportError:
     pass
 
@@ -182,10 +203,10 @@ except ImportError:
 def _log_vectorbt_status():
     """Log VectorBT configuration status."""
     if USE_VECTORBT:
-        if VECTORBT_AVAILABLE:
-            print(f"[Config] ✅ VectorBT ENABLED and available (100x faster backtesting)")
+        if _vectorbt_available:
+            print(f"[Config] VectorBT ENABLED and available (100x faster backtesting)")
         else:
-            print(f"[Config] ⚠️ VectorBT ENABLED but not installed - will use standard engine")
+            print(f"[Config] VectorBT ENABLED but not installed - will use standard engine")
             print(f"[Config] To install: pip install vectorbt numba")
     else:
         print(f"[Config] VectorBT disabled (USE_VECTORBT=false)")

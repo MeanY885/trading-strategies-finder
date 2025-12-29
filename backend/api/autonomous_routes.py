@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException
 
 from config import AUTONOMOUS_CONFIG
 from state import app_state
+from utils.converters import get_pending_queue_items
 
 router = APIRouter(prefix="/api/autonomous", tags=["autonomous"])
 
@@ -118,30 +119,14 @@ async def get_queue_status():
     # For backwards compatibility, also check queue_current
     current = status.get("queue_current")
 
-    # Get pending items (next 5 after current index)
-    pending_start = cycle_index
-    pending_items = []
-    running_indices = {r.get("index") for r in parallel_running}
-    # Also exclude pairs that are currently running to avoid showing same pair twice
-    running_pairs = {r.get("pair") for r in parallel_running}
-
-    for i in range(pending_start, min(pending_start + 10, total)):
-        if i < total and i not in running_indices:
-            combo = combinations[i]
-            pair = combo.get("pair", "")
-            # Skip if this pair is already running (even with different settings)
-            if pair in running_pairs:
-                continue
-            pending_items.append({
-                "index": i,
-                "pair": pair,
-                "period": combo.get("period", ""),
-                "timeframe": combo.get("timeframe", ""),
-                "granularity": combo.get("granularity", ""),
-                "status": "pending"
-            })
-            if len(pending_items) >= 5:
-                break
+    # Get pending items using shared helper
+    pending_items = get_pending_queue_items(
+        combinations=combinations,
+        cycle_index=cycle_index,
+        running_items=parallel_running,
+        max_items=5,
+        lookahead=10
+    )
 
     return {
         "completed": status.get("queue_completed", []),

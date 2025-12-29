@@ -95,3 +95,15 @@ async def remove_duplicate_strategies():
         return {"success": True, "message": f"Removed {removed} duplicate strategies", "removed_count": removed}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/vectorbt-status")
+async def get_vectorbt_status():
+    """Check if VectorBT is available for high-performance backtesting."""
+    from services.vectorbt_engine import is_vectorbt_available
+    available = is_vectorbt_available()
+    return {
+        "available": available,
+        "speedup": "100x" if available else None,
+        "message": "VectorBT enabled for 100x faster backtesting" if available else "VectorBT not installed - using standard engine"
+    }

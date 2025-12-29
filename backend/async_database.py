@@ -4,6 +4,7 @@ ASYNC DATABASE
 Async PostgreSQL layer using asyncpg for non-blocking database operations.
 Used by WebSocket handlers and elite validation to prevent event loop blocking.
 """
+import asyncio
 import asyncpg
 import json
 import os
@@ -17,24 +18,30 @@ class AsyncDatabase:
     Provides non-blocking database operations for async contexts.
     """
     _pool: Optional[asyncpg.Pool] = None
+    _pool_lock: asyncio.Lock = None
 
     @classmethod
     async def init_pool(cls, database_url: str = None):
         """Initialize the connection pool."""
-        if cls._pool is not None:
-            return
+        # Lazy init the lock (safe because GIL protects attribute assignment)
+        if cls._pool_lock is None:
+            cls._pool_lock = asyncio.Lock()
 
-        url = database_url or os.environ.get('DATABASE_URL')
-        if not url:
-            raise ValueError("DATABASE_URL environment variable is required")
+        async with cls._pool_lock:
+            if cls._pool is not None:
+                return  # Already initialized
 
-        cls._pool = await asyncpg.create_pool(
-            url,
-            min_size=2,
-            max_size=10,
-            command_timeout=30,  # 30s query timeout
-            statement_cache_size=100
-        )
+            url = database_url or os.environ.get('DATABASE_URL')
+            if not url:
+                raise ValueError("DATABASE_URL environment variable is required")
+
+            cls._pool = await asyncpg.create_pool(
+                url,
+                min_size=5,
+                max_size=40,
+                command_timeout=30,  # 30s query timeout
+                statement_cache_size=100
+            )
 
     @classmethod
     async def close_pool(cls):

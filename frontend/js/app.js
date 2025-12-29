@@ -3965,10 +3965,91 @@
             // Yahoo Finance is the default source
             updatePairOptions();
 
+            // Check VectorBT availability
+            checkVectorBTStatus();
+
             // Initial state will come from WebSocket full_state message
             // NO HTTP FALLBACK - WebSocket is the only source of truth
             console.log('[Init] Waiting for WebSocket full_state message...');
         });
+
+        // =============================================================================
+        // VECTORBT STATUS
+        // =============================================================================
+
+        // VectorBT status tracking
+        let vectorbtAvailable = false;
+        let lastOptimizationSpeedup = null;
+
+        /**
+         * Check VectorBT availability and update the status indicator
+         */
+        async function checkVectorBTStatus() {
+            try {
+                const response = await fetch('/api/vectorbt-status');
+                const status = await response.json();
+
+                vectorbtAvailable = status.available;
+                updateVectorBTIndicator(status);
+
+                if (status.available) {
+                    addLog('VectorBT engine available - 100x faster backtesting enabled');
+                } else {
+                    addLog('VectorBT not available - using standard backtesting engine');
+                }
+            } catch (error) {
+                console.error('[VectorBT] Failed to check status:', error);
+                updateVectorBTIndicator({ available: false, message: 'Status check failed' });
+            }
+        }
+
+        /**
+         * Update the VectorBT status indicator in the UI
+         */
+        function updateVectorBTIndicator(status) {
+            const container = document.getElementById('vectorbtStatus');
+            const badge = document.getElementById('vectorbtBadge');
+            const icon = document.getElementById('vectorbtIcon');
+            const text = document.getElementById('vectorbtText');
+            const speedup = document.getElementById('vectorbtSpeedup');
+
+            if (!container || !badge || !icon || !text || !speedup) return;
+
+            container.style.display = 'block';
+
+            if (status.available) {
+                // VectorBT available - show green success badge
+                badge.style.background = 'linear-gradient(135deg, rgba(16, 185, 129, 0.2), rgba(5, 150, 105, 0.2))';
+                badge.style.border = '1px solid rgba(16, 185, 129, 0.5)';
+                badge.style.color = 'var(--accent-success)';
+                icon.textContent = '⚡';
+                text.textContent = 'VectorBT:';
+                speedup.textContent = status.speedup || '100x faster';
+                speedup.style.color = '#10b981';
+            } else {
+                // VectorBT not available - show neutral badge
+                badge.style.background = 'rgba(100, 100, 100, 0.1)';
+                badge.style.border = '1px solid rgba(100, 100, 100, 0.3)';
+                badge.style.color = 'var(--text-muted)';
+                icon.textContent = '🔧';
+                text.textContent = 'Standard Engine';
+                speedup.textContent = '';
+            }
+        }
+
+        /**
+         * Update VectorBT indicator with actual speedup achieved after optimization
+         */
+        function updateVectorBTSpeedupAchieved(actualSpeedup) {
+            if (!vectorbtAvailable) return;
+
+            const speedup = document.getElementById('vectorbtSpeedup');
+            if (speedup && actualSpeedup) {
+                lastOptimizationSpeedup = actualSpeedup;
+                speedup.textContent = `${Math.round(actualSpeedup)}x achieved`;
+                speedup.style.color = '#10b981';
+            }
+        }
 
         // =====================================================
         // VALIDATION TAB FUNCTIONS
