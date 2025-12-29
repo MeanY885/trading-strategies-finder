@@ -292,7 +292,8 @@ def find_resume_index(combinations: list, db) -> int:
         skipped_fresh += 1
 
     log(f"[Resume] All {skipped_fresh} combinations are still fresh (within period boundaries)")
-    return 0
+    # Return length to indicate "nothing to process" - don't return 0 which would restart from beginning
+    return len(combinations)
 
 
 # =============================================================================
@@ -917,13 +918,34 @@ async def start_autonomous_optimizer(thread_pool):
                     done, active_tasks = await asyncio.wait(active_tasks, timeout=1)
                     continue
 
-                current_index = 0
+                # Re-check which items need processing (period boundaries may have crossed)
+                def recheck_freshness():
+                    try:
+                        from strategy_database import get_strategy_db
+                        db = get_strategy_db()
+                        return find_resume_index(combinations, db)
+                    except:
+                        return 0
+
+                next_index = await loop.run_in_executor(thread_pool, recheck_freshness)
+
+                if next_index >= len(combinations):
+                    # All combinations still fresh - wait before checking again
+                    app_state.update_autonomous_status(
+                        cycle_index=len(combinations),
+                        message="All optimizations are fresh - waiting for period boundaries..."
+                    )
+                    log("[Parallel Optimizer] All combinations fresh, waiting 5 minutes before re-checking")
+                    await asyncio.sleep(300)  # Wait 5 minutes before re-checking
+                    continue
+
+                # Found items that need processing
+                current_index = next_index
                 app_state.update_autonomous_status(
-                    cycle_index=0,
-                    message="Completed full cycle, restarting..."
+                    cycle_index=next_index,
+                    message=f"Resuming from position {next_index + 1}..."
                 )
-                log("[Parallel Optimizer] Completed full cycle")
-                await asyncio.sleep(30)
+                log(f"[Parallel Optimizer] Resuming from {next_index + 1}/{len(combinations)}")
                 continue
 
             # Clean up completed tasks
