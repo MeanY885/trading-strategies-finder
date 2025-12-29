@@ -1057,9 +1057,36 @@
                 });
             });
 
-            // Convert to array and sort groups by best strategy's score
+            // Convert to array and sort groups by the selected column
             const sortedGroups = Object.values(groups).sort((a, b) => {
-                return (b[0].composite_score || 0) - (a[0].composite_score || 0);
+                let aVal, bVal;
+
+                // Special handling for period - calculate days from date range
+                if (historySortBy === 'period') {
+                    const getDays = (s) => {
+                        if (!s.data_start || !s.data_end) return 0;
+                        try {
+                            return (new Date(s.data_end) - new Date(s.data_start)) / (1000 * 60 * 60 * 24);
+                        } catch { return 0; }
+                    };
+                    aVal = getDays(a[0]);
+                    bVal = getDays(b[0]);
+                } else {
+                    aVal = a[0][historySortBy];
+                    bVal = b[0][historySortBy];
+                }
+
+                // Handle null/undefined
+                if (aVal === null || aVal === undefined) aVal = historySortOrder === 'desc' ? -Infinity : Infinity;
+                if (bVal === null || bVal === undefined) bVal = historySortOrder === 'desc' ? -Infinity : Infinity;
+
+                // String comparison for text fields
+                if (typeof aVal === 'string') {
+                    return historySortOrder === 'asc' ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
+                }
+
+                // Numeric comparison
+                return historySortOrder === 'asc' ? aVal - bVal : bVal - aVal;
             });
 
             let rowIndex = 0;
@@ -1339,6 +1366,7 @@
                 historySortOrder = 'desc'; // Default to descending for new column
             }
 
+            updateSortIndicators();
             sortStrategiesArray();
             renderHistoryTable();
         }
