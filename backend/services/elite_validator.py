@@ -61,11 +61,11 @@ RESOURCE_WAIT_TIMEOUT = 300  # 5 minutes max wait for resources
 # The thresholds below ensure these services always have resources available.
 # =============================================================================
 
-ELITE_CPU_THRESHOLD = 70      # Only spawn if CPU < 70% (reserve 30% for DB queries, system)
-ELITE_MEM_THRESHOLD = 3.0     # Only spawn if > 3GB available (reserves ~1.5GB for DB/Frontend/System)
+ELITE_CPU_THRESHOLD = 75      # Only spawn if CPU < 75% (reserve 25% for DB queries, system)
+ELITE_MEM_THRESHOLD = 2.0     # Only spawn if > 2GB available
 ELITE_MEM_PER_VALIDATION = 0.5  # Each validation task uses ~500MB
 ELITE_BASE_CONCURRENT = 2     # Base concurrent validations
-ELITE_MAX_CONCURRENT = 4      # Maximum concurrent validations
+ELITE_MAX_CONCURRENT = 8      # Maximum concurrent validations (increased from 4 for high-spec systems)
 
 # Reserved memory breakdown (in GB) - used for calculations
 RESERVED_FOR_DATABASE = 0.5   # PostgreSQL shared buffers, work mem, connections
@@ -128,12 +128,14 @@ def get_max_concurrent_validations() -> int:
         memory_based_max = 1  # Always allow at least 1 if any memory available
 
     # =================================================================
-    # CPU-BASED CALCULATION
+    # CPU-BASED CALCULATION (scaled for high-spec systems)
     # =================================================================
-    if cpu_cores >= 16:
-        cpu_based_max = 4
+    if cpu_cores >= 32:
+        cpu_based_max = 8
+    elif cpu_cores >= 16:
+        cpu_based_max = 6
     elif cpu_cores >= 8:
-        cpu_based_max = 3
+        cpu_based_max = 4
     elif cpu_cores >= 4:
         cpu_based_max = 2
     else:

@@ -46,7 +46,7 @@ class WebSocketManager:
         self._lock = asyncio.Lock()
         self._broadcast_queue: asyncio.Queue = None
         self._broadcast_task: asyncio.Task = None
-        self._throttle_interval = 0.5  # Minimum seconds between broadcasts per message type
+        self._throttle_interval = 1.0  # Minimum seconds between broadcasts per message type (increased from 0.5 for better UI performance at scale)
         self._last_broadcast_times: Dict[str, float] = {}  # Per-type throttling
         self._throttled_types = {"autonomous_status", "elite_status", "optimization_status"}  # Types to throttle
         self._main_loop = None  # Store reference to main event loop

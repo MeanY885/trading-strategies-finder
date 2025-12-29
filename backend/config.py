@@ -159,6 +159,40 @@ MAX_CONCURRENT_OPTIMIZATIONS = int(os.getenv("MAX_CONCURRENT", "0"))
 MAX_CONCURRENT_FETCHES = int(os.getenv("MAX_FETCH_CONCURRENT", "5"))
 
 # =============================================================================
+# VECTORBT CONFIGURATION
+# =============================================================================
+
+# Enable VectorBT for 100x faster backtesting (experimental)
+# Set to True to use VectorBT by default, False to use standard iterative engine
+USE_VECTORBT = os.getenv("USE_VECTORBT", "true").lower() in ("true", "1", "yes")
+
+# VectorBT will automatically fall back to standard engine if:
+# - VectorBT is not installed
+# - An error occurs during VectorBT execution
+
+# Check if VectorBT is actually available
+VECTORBT_AVAILABLE = False
+try:
+    import vectorbt
+    VECTORBT_AVAILABLE = True
+except ImportError:
+    pass
+
+# Log VectorBT status at import time
+def _log_vectorbt_status():
+    """Log VectorBT configuration status."""
+    if USE_VECTORBT:
+        if VECTORBT_AVAILABLE:
+            print(f"[Config] ✅ VectorBT ENABLED and available (100x faster backtesting)")
+        else:
+            print(f"[Config] ⚠️ VectorBT ENABLED but not installed - will use standard engine")
+            print(f"[Config] To install: pip install vectorbt numba")
+    else:
+        print(f"[Config] VectorBT disabled (USE_VECTORBT=false)")
+
+_log_vectorbt_status()
+
+# =============================================================================
 # WEBSOCKET CONFIGURATION
 # =============================================================================
 

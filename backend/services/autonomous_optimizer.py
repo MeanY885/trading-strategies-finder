@@ -1096,11 +1096,22 @@ async def start_autonomous_optimizer(thread_pool):
             cpu_percent = resources["cpu_percent"]
             mem_available_gb = resources["memory_available_gb"]
 
-            # Resource thresholds for spawning
-            CPU_SPAWN_THRESHOLD = 80  # Only spawn if CPU < 80%
-            MEM_SPAWN_THRESHOLD = 4.0  # Only spawn if > 4GB available
-            SPAWN_COOLDOWN = 60  # Seconds between spawns
-            MAX_CONCURRENT = 2  # Allow 2 optimization tasks in parallel
+            # Resource thresholds for spawning (tuned for high-spec systems)
+            CPU_SPAWN_THRESHOLD = 85  # Only spawn if CPU < 85%
+            MEM_SPAWN_THRESHOLD = 2.0  # Only spawn if > 2GB available
+            SPAWN_COOLDOWN = 15  # Seconds between spawns (was 60)
+
+            # Dynamic MAX_CONCURRENT based on CPU cores (was hard-coded to 2)
+            import psutil
+            cpu_count = psutil.cpu_count(logical=True) or 4
+            if cpu_count >= 32:
+                MAX_CONCURRENT = cpu_count // 4  # 8 for 32-core
+            elif cpu_count >= 16:
+                MAX_CONCURRENT = cpu_count // 4  # 4 for 16-core
+            elif cpu_count >= 8:
+                MAX_CONCURRENT = 4  # 4 for 8-core
+            else:
+                MAX_CONCURRENT = max(2, cpu_count // 2)  # At least 2
 
             # Check if we can spawn based on resources
             can_spawn_cpu = cpu_percent < CPU_SPAWN_THRESHOLD

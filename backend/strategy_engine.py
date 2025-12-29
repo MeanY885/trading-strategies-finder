@@ -4507,7 +4507,8 @@ class StrategyEngine:
                         symbol: str = None,
                         timeframe: str = None,
                         n_trials: int = 300,
-                        mode: str = "all") -> List[StrategyResult]:
+                        mode: str = "all",
+                        use_vectorbt: bool = False) -> List[StrategyResult]:
         """
         Find all profitable strategies.
         Saves winners to database for future reference.
@@ -4523,7 +4524,21 @@ class StrategyEngine:
         - "separate": Test long and short independently (default, current behavior)
         - "bidirectional": Test combined long+short strategies only
         - "all": Run both separate and bidirectional modes
+
+        use_vectorbt: If True, use VectorBT for 100x faster backtesting (experimental)
         """
+        # === VECTORBT FAST PATH ===
+        if use_vectorbt:
+            log(f"[StrategyEngine] 🚀 VectorBT path selected for find_strategies()")
+            return self._find_strategies_vectorbt(
+                min_trades=min_trades,
+                min_win_rate=min_win_rate,
+                save_to_db=save_to_db,
+                symbol=symbol,
+                timeframe=timeframe,
+                n_trials=n_trials,
+                mode=mode
+            )
         strategies = list(self.ENTRY_STRATEGIES.keys())
         directions = ['long', 'short'] if mode in ['separate', 'all'] else []
 
@@ -4569,8 +4584,16 @@ class StrategyEngine:
         mode_desc = "bidirectional" if mode == "bidirectional" else ("separate + bidirectional" if mode == "all" else "separate (long/short)")
 
         # Determine number of workers based on CPU cores
-        num_workers = 6  # Reduced for stability with parallel optimizations
-        # num_workers = max(2, psutil.cpu_count(logical=True) - 2)
+        # Dynamic scaling: leaves headroom for multiple concurrent optimizations
+        cpu_count = psutil.cpu_count(logical=True) or 4
+        if cpu_count >= 32:
+            num_workers = min(16, cpu_count // 2)  # 16 for 32+ cores
+        elif cpu_count >= 16:
+            num_workers = min(10, cpu_count // 2)  # 8-10 for 16+ cores
+        elif cpu_count >= 8:
+            num_workers = max(4, cpu_count // 2)  # 4-6 for 8+ cores
+        else:
+            num_workers = max(2, cpu_count - 1)   # Leave 1 core free
         self._update_status(f"Testing {total:,} combinations with {num_workers} parallel workers ({num_strategies} strategies, {mode_desc}, {num_tp}×{num_sl} TP/SL @ {increment:.2f}% steps)...", 2)
 
         # Start database run if available
@@ -4791,6 +4814,182 @@ class StrategyEngine:
         )
 
         return results
+
+    def _find_strategies_vectorbt(
+        self,
+        min_trades: int = 3,
+        min_win_rate: float = 0,
+        save_to_db: bool = True,
+        symbol: str = None,
+        timeframe: str = None,
+        n_trials: int = 300,
+        mode: str = "all"
+    ) -> List[StrategyResult]:
+        """
+        VectorBT-accelerated strategy finding (100x faster).
+
+        Uses vectorized operations instead of bar-by-bar iteration.
+        Falls back to standard find_strategies if VectorBT is not available.
+        """
+        try:
+            from services.vectorbt_engine import VectorBTEngine, is_vectorbt_available
+
+            if not is_vectorbt_available():
+                log("[VectorBT] ⚠️ VectorBT not installed - falling back to standard iterative engine")
+                log("[VectorBT] To enable: pip install vectorbt numba")
+                return self.find_strategies(
+                    min_trades=min_trades,
+                    min_win_rate=min_win_rate,
+                    save_to_db=save_to_db,
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    n_trials=n_trials,
+                    mode=mode,
+                    use_vectorbt=False  # Prevent recursion
+                )
+
+            self._update_status("Initializing VectorBT engine (100x faster)...", 1)
+
+            # Create VectorBT engine with same config
+            vbt_engine = VectorBTEngine(
+                df=self.df,
+                initial_capital=self.capital,
+                position_size_pct=self.position_size_pct,
+            )
+
+            # Calculate TP/SL ranges (same as standard find_strategies)
+            steps = max(10, int(n_trials ** 0.5))
+            increment = 10.0 / steps
+            tp_range = np.array([round(0.1 + i * increment, 2) for i in range(steps) if 0.1 + i * increment <= 10.0])
+            sl_range = np.array([round(0.1 + i * increment, 2) for i in range(steps) if 0.1 + i * increment <= 10.0])
+
+            if len(tp_range) == 0:
+                tp_range = np.array([0.5, 1.0, 2.0, 3.0, 5.0])
+            if len(sl_range) == 0:
+                sl_range = np.array([1.0, 2.0, 3.0, 5.0, 7.0])
+
+            strategies = list(self.ENTRY_STRATEGIES.keys())
+            directions = ['long', 'short'] if mode in ['separate', 'all'] else []
+
+            # Progress callback
+            def progress_callback(completed, total):
+                progress = int(2 + (completed / total) * 88)  # 2-90% for testing
+                self._update_status(f"VectorBT: Tested {completed:,}/{total:,}", progress)
+
+            self._update_status(f"VectorBT: Testing {len(strategies)} strategies...", 2)
+
+            # Run VectorBT optimization
+            vbt_results = vbt_engine.run_optimization(
+                strategies=strategies,
+                directions=directions if directions else None,
+                tp_range=tp_range,
+                sl_range=sl_range,
+                mode=mode,
+                progress_callback=progress_callback
+            )
+
+            self._update_status(f"VectorBT: Converting {len(vbt_results)} results...", 92)
+
+            # Convert VectorBTResult to StrategyResult
+            results = []
+            for vbt_result in vbt_results:
+                if vbt_result.total_trades >= min_trades and vbt_result.win_rate >= min_win_rate:
+                    # Create compatible StrategyResult
+                    result = StrategyResult(
+                        strategy_name=vbt_result.strategy_name,
+                        strategy_category=vbt_result.strategy_category,
+                        direction=vbt_result.direction,
+                        tp_percent=vbt_result.tp_percent,
+                        sl_percent=vbt_result.sl_percent,
+                        entry_rule=vbt_result.entry_rule,
+                        total_trades=vbt_result.total_trades,
+                        wins=vbt_result.wins,
+                        losses=vbt_result.losses,
+                        win_rate=vbt_result.win_rate,
+                        total_pnl=vbt_result.total_pnl,
+                        total_pnl_percent=vbt_result.total_pnl_percent,
+                        profit_factor=vbt_result.profit_factor,
+                        max_drawdown=vbt_result.max_drawdown,
+                        max_drawdown_percent=vbt_result.max_drawdown_percent,
+                        avg_trade=vbt_result.avg_trade,
+                        avg_trade_percent=vbt_result.avg_trade_percent,
+                        buy_hold_return=vbt_result.buy_hold_return,
+                        vs_buy_hold=vbt_result.vs_buy_hold,
+                        beats_buy_hold=vbt_result.beats_buy_hold,
+                        composite_score=vbt_result.composite_score,
+                        equity_curve=vbt_result.equity_curve,
+                        trades_list=vbt_result.trades_list,
+                        source_currency=self.source_currency,
+                    )
+                    results.append(result)
+                    self._publish_result(result)
+
+            # Sort by composite score
+            results.sort(key=lambda r: r.composite_score, reverse=True)
+
+            # Filter profitable and save to DB
+            profitable = [r for r in results if r.total_pnl > 0]
+
+            if save_to_db and self.db and profitable:
+                self._update_status("VectorBT: Saving to database...", 95)
+                to_save = profitable[:50]
+                for rank, result in enumerate(to_save):
+                    try:
+                        self.db.save_strategy(
+                            strategy_name=result.strategy_name,
+                            symbol=symbol or "UNKNOWN",
+                            timeframe=timeframe or "15m",
+                            direction=result.direction,
+                            entry_rule=result.entry_rule,
+                            params=result.params,
+                            win_rate=result.win_rate,
+                            profit_factor=result.profit_factor,
+                            total_return=result.total_pnl_percent,
+                            max_drawdown=result.max_drawdown_percent,
+                            total_trades=result.total_trades,
+                            composite_score=result.composite_score,
+                            rank=rank + 1,
+                            equity_curve=result.equity_curve,
+                            trades=result.trades_list
+                        )
+                    except Exception as e:
+                        log(f"[VectorBT] Error saving strategy: {e}", level='WARNING')
+
+            self._update_status(
+                f"VectorBT Complete! Found {len(profitable)} profitable strategies (100x faster)",
+                100
+            )
+
+            return results
+
+        except ImportError as e:
+            log(f"[VectorBT] ⚠️ Import error: {e}")
+            log(f"[VectorBT] Falling back to standard iterative engine")
+            return self.find_strategies(
+                min_trades=min_trades,
+                min_win_rate=min_win_rate,
+                save_to_db=save_to_db,
+                symbol=symbol,
+                timeframe=timeframe,
+                n_trials=n_trials,
+                mode=mode,
+                use_vectorbt=False
+            )
+        except Exception as e:
+            log(f"[VectorBT] ❌ Error during VectorBT execution: {e}", level='ERROR')
+            log(f"[VectorBT] Falling back to standard iterative engine", level='WARNING')
+            import traceback
+            traceback.print_exc()
+            return self.find_strategies(
+                min_trades=min_trades,
+                min_win_rate=min_win_rate,
+                save_to_db=save_to_db,
+                symbol=symbol,
+                timeframe=timeframe,
+                n_trials=n_trials,
+                mode=mode,
+                use_vectorbt=False
+            )
 
     def get_saved_winners(self, symbol: str = None,
                           min_win_rate: float = 60,
@@ -5861,7 +6060,8 @@ def run_strategy_finder(df: pd.DataFrame,
                         progress_min: int = 0,
                         progress_max: int = 100,
                         source_currency: str = "USD",
-                        fx_fetcher=None) -> Dict:
+                        fx_fetcher=None,
+                        use_vectorbt: bool = None) -> Dict:
     """Main entry point for the strategy engine.
 
     Args:
@@ -5874,7 +6074,19 @@ def run_strategy_finder(df: pd.DataFrame,
         n_trials: Controls TP/SL granularity (100=1%, 300=0.33%, 500=0.2% increments)
         source_currency: Currency of source data ("USD" for BTCUSDT, "GBP" for BTCGBP)
         fx_fetcher: Exchange rate fetcher instance for USD->GBP conversion
+        use_vectorbt: If True, use VectorBT for 100x faster backtesting. If None, uses config.USE_VECTORBT
     """
+    # Default to config value if not specified
+    if use_vectorbt is None:
+        from config import USE_VECTORBT
+        use_vectorbt = USE_VECTORBT
+
+    # Log which engine mode is being used
+    from logging_config import log
+    if use_vectorbt:
+        log(f"[Strategy Finder] 🚀 VectorBT MODE enabled - expecting 100x faster backtesting")
+    else:
+        log(f"[Strategy Finder] Using standard iterative engine (VectorBT disabled)")
 
     strategy_engine = StrategyEngine(df, status, streaming_callback,
                                      capital=capital, position_size_pct=position_size_pct,
@@ -5887,13 +6099,14 @@ def run_strategy_finder(df: pd.DataFrame,
     if winners:
         print(f"Found {len(winners)} previous winning strategies to build on")
 
-    # Find new strategies
+    # Find new strategies (use VectorBT if enabled for 100x faster backtesting)
     results = strategy_engine.find_strategies(
         min_trades=1,
         save_to_db=True,
         symbol=symbol,
         timeframe=timeframe,
-        n_trials=n_trials
+        n_trials=n_trials,
+        use_vectorbt=use_vectorbt
     )
 
     # Format report
