@@ -277,10 +277,11 @@ async def websocket_status(websocket: WebSocket):
 
                         elite_data = {
                             "status": {
-                                "elite_count": cached_counts.get('elite', 0),
-                                "partial_count": cached_counts.get('partial', 0),
-                                "failed_count": cached_counts.get('failed', 0),
-                                "pending_count": cached_counts.get('pending', 0),
+                                # New simplified status model
+                                "validated": cached_counts.get('validated', 0),
+                                "pending": cached_counts.get('pending', 0),
+                                "untestable": cached_counts.get('untestable', 0),
+                                "skipped": cached_counts.get('skipped', 0),
                                 **app_state.get_elite_status()
                             },
                             "strategies": cached_strategies
