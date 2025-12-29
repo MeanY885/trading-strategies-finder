@@ -523,9 +523,7 @@
 
                 <!-- Status Bar -->
                 <div class="elite-status-bar">
-                    <span class="elite-badge elite-status">Elite: <span id="eliteCount">0</span></span>
-                    <span class="elite-badge partial-status">Partial: <span id="partialCount">0</span></span>
-                    <span class="elite-badge failed-status">Failed: <span id="failedCount">0</span></span>
+                    <span class="elite-badge validated-status">Validated: <span id="validatedCount">0</span></span>
                     <span class="elite-badge pending-status">Pending: <span id="pendingCount">0</span></span>
                     <span id="eliteProgress" class="elite-progress"></span>
                 </div>
@@ -897,6 +895,25 @@
                             </div>
                             <button class="btn btn-secondary" onclick="refreshDbStats()" style="margin-top: 1rem;">
                                 🔄 Refresh Stats
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Elite Validation Tools -->
+                    <div style="margin-bottom: 2rem;">
+                        <h3 style="font-size: 1.1rem; margin-bottom: 1rem; color: var(--text-secondary);">Elite Validation</h3>
+
+                        <div style="background: var(--bg-secondary); padding: 1.5rem; border-radius: 8px;">
+                            <h4 style="margin-bottom: 0.5rem; color: var(--text-primary);">Reset Elite Validation</h4>
+                            <p style="font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 1rem;">
+                                Reset all elite validation data. All strategies will be set to 'pending' and re-validated
+                                with the current scoring system. Use this after updating the scoring algorithm.
+                            </p>
+                            <p style="font-size: 0.85rem; color: var(--warning); margin-bottom: 1rem;">
+                                ⚠️ This will clear all existing elite scores and validation data.
+                            </p>
+                            <button class="btn btn-warning" onclick="resetEliteValidation()" style="background: var(--warning); color: #000;">
+                                🔄 Reset Elite Validation
                             </button>
                         </div>
                     </div>

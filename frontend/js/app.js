@@ -727,17 +727,38 @@
             }
         }
 
+        async function resetEliteValidation() {
+            if (!confirm('Reset all elite validation data?\n\nThis will:\n- Set all strategies to "pending"\n- Clear all elite scores\n- Clear all validation data\n\nStrategies will be re-validated with the current scoring system.')) {
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/elite/reset-all', { method: 'POST' });
+                const result = await response.json();
+
+                if (response.ok) {
+                    alert(`Elite validation reset!\n\n${result.reset_count || 0} strategies will be re-validated.`);
+                    refreshDbStats();
+                    if (eliteInitialized) loadEliteStrategies();
+                } else {
+                    alert('Error resetting elite validation: ' + (result.detail || 'Unknown error'));
+                }
+            } catch (e) {
+                alert('Error resetting elite validation: ' + e.message);
+            }
+        }
+
         async function refreshDbStats() {
             try {
                 const response = await fetch('/api/db/strategies');
                 const strategies = await response.json();
 
                 const total = strategies.length;
-                const elite = strategies.filter(s => s.elite_status === 'elite').length;
+                const validated = strategies.filter(s => s.elite_status && s.elite_status !== 'pending' && s.elite_status !== 'untestable').length;
                 const pending = strategies.filter(s => !s.elite_status || s.elite_status === 'pending').length;
 
                 document.getElementById('dbTotalStrategies').textContent = total;
-                document.getElementById('dbEliteStrategies').textContent = elite;
+                document.getElementById('dbEliteStrategies').textContent = validated;
                 document.getElementById('dbPendingValidation').textContent = pending;
             } catch (e) {
                 console.error('Error fetching db stats:', e);
@@ -1519,7 +1540,8 @@
         function applyEliteFilters() {
             eliteFilters.search = document.getElementById('elite-filter-search').value.toLowerCase();
             eliteFilters.symbol = document.getElementById('elite-filter-symbol').value;
-            eliteFilters.status = document.getElementById('elite-filter-status').value;
+            const statusEl = document.getElementById('elite-filter-status');
+            eliteFilters.status = statusEl ? statusEl.value : '';
             eliteFilters.direction = document.getElementById('elite-filter-direction').value;
 
             applyEliteSortAndFilter();
@@ -1529,7 +1551,8 @@
         function resetEliteFilters() {
             document.getElementById('elite-filter-search').value = '';
             document.getElementById('elite-filter-symbol').value = '';
-            document.getElementById('elite-filter-status').value = '';
+            const statusEl = document.getElementById('elite-filter-status');
+            if (statusEl) statusEl.value = '';
             document.getElementById('elite-filter-direction').value = '';
 
             eliteFilters = { search: '', symbol: '', status: '', direction: '' };
@@ -4183,11 +4206,9 @@
                 const status = response.status;
                 const strategies = response.strategies;
 
-                // Update status counts
-                document.getElementById('eliteCount').textContent = status.elite;
-                document.getElementById('partialCount').textContent = status.partial;
-                document.getElementById('failedCount').textContent = status.failed;
-                document.getElementById('pendingCount').textContent = status.pending;
+                // Update status counts (simplified model: validated + pending)
+                document.getElementById('validatedCount').textContent = status.validated || 0;
+                document.getElementById('pendingCount').textContent = status.pending || 0;
 
                 // Update progress indicator
                 updateEliteProgress(status);
@@ -4358,9 +4379,9 @@
                         bVal = bestB.strategy_name.toLowerCase();
                         break;
                     case 'status':
-                        const statusOrder = { 'elite': 3, 'partial': 2, 'failed': 1 };
-                        aVal = statusOrder[bestA.elite_status] || 0;
-                        bVal = statusOrder[bestB.elite_status] || 0;
+                        // Status sorting no longer needed - sort by score instead
+                        aVal = bestA.elite_score || 0;
+                        bVal = bestB.elite_score || 0;
                         break;
                     case '1w':
                     case '2w':

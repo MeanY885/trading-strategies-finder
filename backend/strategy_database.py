@@ -3,8 +3,11 @@ STRATEGY DATABASE
 ==================
 PostgreSQL persistence layer for storing winning strategies across sessions.
 Allows loading historical results and comparing performance over time.
+
+Now uses connection pooling to reduce overhead and support concurrent operations.
 """
 import psycopg2
+from psycopg2 import pool
 from psycopg2.extras import RealDictCursor
 from psycopg2.extensions import register_adapter, AsIs
 import json
@@ -12,6 +15,7 @@ from datetime import datetime
 from typing import Dict, List, Any, Optional
 import os
 import numpy as np
+import threading
 
 # Register numpy type adapters for psycopg2
 # Without this, numpy.float64 gets serialized as "np.float64(...)" which crashes PostgreSQL
@@ -45,12 +49,21 @@ class StrategyDatabase:
     - strategies: Core strategy results with metrics
     - strategy_trades: Individual trade records
     - optimization_runs: Track optimization sessions
+
+    Uses ThreadedConnectionPool for efficient connection reuse.
     """
+
+    # Class-level connection pool (shared across instances)
+    _pool: Optional[pool.ThreadedConnectionPool] = None
+    _pool_lock = threading.Lock()
 
     def __init__(self, database_url: str = None):
         self.database_url = database_url or os.environ.get('DATABASE_URL')
         if not self.database_url:
             raise ValueError("DATABASE_URL environment variable is required")
+
+        # Initialize connection pool if not already done
+        self._init_pool()
 
         self._init_database()
         self._init_priority_table()
@@ -58,12 +71,35 @@ class StrategyDatabase:
         # Auto-clean duplicates on startup
         self._auto_deduplicate()
 
+    def _init_pool(self):
+        """Initialize the connection pool (thread-safe)."""
+        if StrategyDatabase._pool is None:
+            with StrategyDatabase._pool_lock:
+                if StrategyDatabase._pool is None:
+                    try:
+                        StrategyDatabase._pool = pool.ThreadedConnectionPool(
+                            minconn=2,
+                            maxconn=10,
+                            dsn=self.database_url,
+                            options="-c statement_timeout=30000"  # 30s query timeout
+                        )
+                    except Exception as e:
+                        print(f"[DB Pool] Failed to create pool: {e}")
+                        raise
+
     def _get_connection(self):
         """
-        Get a database connection.
+        Get a database connection from the pool.
+        Returns a connection that should be returned via _return_connection().
         """
-        conn = psycopg2.connect(self.database_url)
-        return conn
+        if StrategyDatabase._pool is None:
+            self._init_pool()
+        return StrategyDatabase._pool.getconn()
+
+    def _return_connection(self, conn):
+        """Return a connection to the pool."""
+        if StrategyDatabase._pool is not None and conn is not None:
+            StrategyDatabase._pool.putconn(conn)
 
     def _init_database(self):
         """Create database tables if they don't exist."""
@@ -211,7 +247,7 @@ class StrategyDatabase:
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_pending_validation ON strategies(elite_status, composite_score DESC)')
 
         conn.commit()
-        conn.close()
+        self._return_connection(conn)
 
         print(f"Strategy database initialized (PostgreSQL)")
 
@@ -237,7 +273,7 @@ class StrategyDatabase:
 
         run_id = cursor.fetchone()[0]
         conn.commit()
-        conn.close()
+        self._return_connection(conn)
 
         print(f"Started optimization run #{run_id}")
         return run_id
@@ -255,7 +291,7 @@ class StrategyDatabase:
         ''', (datetime.now().isoformat(), strategies_tested, profitable_found, run_id))
 
         conn.commit()
-        conn.close()
+        self._return_connection(conn)
 
         print(f"Completed optimization run #{run_id}: {profitable_found} profitable strategies")
 
@@ -300,7 +336,7 @@ class StrategyDatabase:
 
         existing = cursor.fetchone()
         if existing:
-            conn.close()
+            self._return_connection(conn)
             print(f"Skipping duplicate strategy: {strategy_name} (TP={tp_percent}%, SL={sl_percent}%)")
             return None
 
@@ -382,7 +418,7 @@ class StrategyDatabase:
 
         strategy_id = cursor.fetchone()[0]
         conn.commit()
-        conn.close()
+        self._return_connection(conn)
 
         return strategy_id
 
@@ -427,7 +463,7 @@ class StrategyDatabase:
 
         cursor.execute(query, params)
         rows = cursor.fetchall()
-        conn.close()
+        self._return_connection(conn)
 
         return [self._row_to_dict(row) for row in rows]
 
@@ -444,7 +480,7 @@ class StrategyDatabase:
         ''', (min_trades, limit))
 
         rows = cursor.fetchall()
-        conn.close()
+        self._return_connection(conn)
 
         return [self._row_to_dict(row) for row in rows]
 
@@ -461,7 +497,7 @@ class StrategyDatabase:
         ''', (min_trades, limit))
 
         rows = cursor.fetchall()
-        conn.close()
+        self._return_connection(conn)
 
         return [self._row_to_dict(row) for row in rows]
 
@@ -503,7 +539,7 @@ class StrategyDatabase:
 
         cursor.execute(query, params)
         rows = cursor.fetchall()
-        conn.close()
+        self._return_connection(conn)
 
         return [self._row_to_dict(row) for row in rows]
 
@@ -514,7 +550,7 @@ class StrategyDatabase:
 
         cursor.execute('SELECT * FROM strategies WHERE id = %s', (strategy_id,))
         row = cursor.fetchone()
-        conn.close()
+        self._return_connection(conn)
 
         return self._row_to_dict(row) if row else None
 
@@ -524,7 +560,7 @@ class StrategyDatabase:
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         cursor.execute('SELECT * FROM optimization_runs WHERE id = %s', (run_id,))
         row = cursor.fetchone()
-        conn.close()
+        self._return_connection(conn)
         return dict(row) if row else None
 
     def get_optimization_runs(self, limit: int = 20) -> List[Dict]:
@@ -539,7 +575,7 @@ class StrategyDatabase:
         ''', (limit,))
 
         rows = cursor.fetchall()
-        conn.close()
+        self._return_connection(conn)
 
         return [dict(row) for row in rows]
 
@@ -569,7 +605,7 @@ class StrategyDatabase:
         cursor.execute('SELECT DISTINCT timeframe FROM strategies WHERE timeframe IS NOT NULL')
         timeframes = [row[0] for row in cursor.fetchall()]
 
-        conn.close()
+        self._return_connection(conn)
 
         return {
             'total_strategies': total_strategies,
@@ -599,7 +635,7 @@ class StrategyDatabase:
             "max": str(date_row[1]) if date_row[1] else None
         }
 
-        conn.close()
+        self._return_connection(conn)
         return {
             "symbols": symbols,
             "timeframes": timeframes,
@@ -659,7 +695,7 @@ class StrategyDatabase:
 
         updated = cursor.rowcount > 0
         conn.commit()
-        conn.close()
+        self._return_connection(conn)
 
         return updated
 
@@ -686,7 +722,7 @@ class StrategyDatabase:
         ''', (top_n_per_market,))
 
         rows = cursor.fetchall()
-        conn.close()
+        self._return_connection(conn)
 
         return [self._row_to_dict(row) for row in rows]
 
@@ -703,7 +739,7 @@ class StrategyDatabase:
         ''', (limit,))
 
         rows = cursor.fetchall()
-        conn.close()
+        self._return_connection(conn)
 
         return [self._row_to_dict(row) for row in rows]
 
@@ -732,7 +768,7 @@ class StrategyDatabase:
         ''', (top_n,))
 
         rows = cursor.fetchall()
-        conn.close()
+        self._return_connection(conn)
 
         return [self._row_to_dict(row) for row in rows]
 
@@ -743,7 +779,7 @@ class StrategyDatabase:
 
         cursor.execute('SELECT * FROM strategies ORDER BY id DESC')
         rows = cursor.fetchall()
-        conn.close()
+        self._return_connection(conn)
 
         return [self._row_to_dict(row) for row in rows]
 
@@ -756,7 +792,7 @@ class StrategyDatabase:
         deleted = cursor.rowcount > 0
 
         conn.commit()
-        conn.close()
+        self._return_connection(conn)
 
         return deleted
 
@@ -779,7 +815,7 @@ class StrategyDatabase:
 
         deleted = cursor.rowcount
         conn.commit()
-        conn.close()
+        self._return_connection(conn)
 
         print(f"Removed {deleted} duplicate strategies from database")
         return deleted
@@ -803,7 +839,7 @@ class StrategyDatabase:
         cursor.execute('DELETE FROM priority_settings')
 
         conn.commit()
-        conn.close()
+        self._return_connection(conn)
 
         print(f"Cleared entire database: {count} strategies + all tracking data")
         return count
@@ -831,7 +867,7 @@ class StrategyDatabase:
         ''', (pair, period_label, timeframe_label, granularity_label, strategies_found, source, duration_seconds))
 
         conn.commit()
-        conn.close()
+        self._return_connection(conn)
 
     def get_average_duration(self, pair: str = None, period_label: str = None,
                              timeframe_label: str = None, granularity_label: str = None) -> int:
@@ -855,7 +891,7 @@ class StrategyDatabase:
             ''', (pair, period_label, timeframe_label, granularity_label))
             result = cursor.fetchone()[0]
             if result:
-                conn.close()
+                self._return_connection(conn)
                 return int(result)
 
         # Fallback: same granularity and timeframe (similar workload)
@@ -867,7 +903,7 @@ class StrategyDatabase:
             ''', (granularity_label, timeframe_label))
             result = cursor.fetchone()[0]
             if result:
-                conn.close()
+                self._return_connection(conn)
                 return int(result)
 
         # Fallback: same granularity only (n_trials is main factor)
@@ -878,7 +914,7 @@ class StrategyDatabase:
             ''', (granularity_label,))
             result = cursor.fetchone()[0]
             if result:
-                conn.close()
+                self._return_connection(conn)
                 return int(result)
 
         # Final fallback: global average
@@ -887,7 +923,7 @@ class StrategyDatabase:
             WHERE duration_seconds IS NOT NULL
         ''')
         result = cursor.fetchone()[0]
-        conn.close()
+        self._return_connection(conn)
         return int(result) if result else None
 
     def is_optimization_completed(self, pair: str, period_label: str,
@@ -902,7 +938,7 @@ class StrategyDatabase:
         ''', (pair, period_label, timeframe_label, granularity_label))
 
         result = cursor.fetchone() is not None
-        conn.close()
+        self._return_connection(conn)
         return result
 
     def get_completed_optimizations(self, with_timestamps: bool = False) -> dict:
@@ -923,7 +959,7 @@ class StrategyDatabase:
         else:
             completed = {(row[0], row[1], row[2], row[3]) for row in cursor.fetchall()}
 
-        conn.close()
+        self._return_connection(conn)
         return completed
 
     def get_completed_optimizations_count(self) -> int:
@@ -932,7 +968,7 @@ class StrategyDatabase:
         cursor = conn.cursor()
         cursor.execute('SELECT COUNT(*) FROM completed_optimizations')
         count = cursor.fetchone()[0]
-        conn.close()
+        self._return_connection(conn)
         return count
 
     def clear_completed_optimizations(self, pair: str = None, granularity_label: str = None):
@@ -952,7 +988,7 @@ class StrategyDatabase:
 
         deleted = cursor.rowcount
         conn.commit()
-        conn.close()
+        self._return_connection(conn)
         return deleted
 
     # =========================================================================
@@ -989,7 +1025,7 @@ class StrategyDatabase:
         self._init_priority_lists_tables(cursor)
 
         conn.commit()
-        conn.close()
+        self._return_connection(conn)
 
     def _init_priority_lists_tables(self, cursor):
         """Create separate priority tables for pairs, periods, and timeframes."""
@@ -1064,7 +1100,7 @@ class StrategyDatabase:
         ''')
 
         rows = cursor.fetchall()
-        conn.close()
+        self._return_connection(conn)
 
         return [dict(row) for row in rows]
 
@@ -1097,7 +1133,7 @@ class StrategyDatabase:
             conn.rollback()
             return None
         finally:
-            conn.close()
+            self._return_connection(conn)
 
     def delete_priority_item(self, item_id: int) -> bool:
         """Delete a priority item and reorder remaining items."""
@@ -1120,7 +1156,7 @@ class StrategyDatabase:
             ''')
 
         conn.commit()
-        conn.close()
+        self._return_connection(conn)
         return deleted
 
     def reorder_priority_items(self, id_order: List[int]) -> bool:
@@ -1136,7 +1172,7 @@ class StrategyDatabase:
             ''', (position, datetime.now().isoformat(), item_id))
 
         conn.commit()
-        conn.close()
+        self._return_connection(conn)
         return True
 
     def toggle_priority_item(self, item_id: int) -> Optional[bool]:
@@ -1147,7 +1183,7 @@ class StrategyDatabase:
         cursor.execute('SELECT enabled FROM priority_items WHERE id = %s', (item_id,))
         row = cursor.fetchone()
         if not row:
-            conn.close()
+            self._return_connection(conn)
             return None
 
         new_status = 0 if row[0] else 1
@@ -1155,7 +1191,7 @@ class StrategyDatabase:
                        (new_status, datetime.now().isoformat(), item_id))
 
         conn.commit()
-        conn.close()
+        self._return_connection(conn)
         return bool(new_status)
 
     def clear_priority_items(self) -> int:
@@ -1169,7 +1205,7 @@ class StrategyDatabase:
         cursor.execute('DELETE FROM priority_items')
 
         conn.commit()
-        conn.close()
+        self._return_connection(conn)
         return count
 
     def get_enabled_priority_combinations(self) -> List[Dict]:
@@ -1221,7 +1257,7 @@ class StrategyDatabase:
         cursor.execute('SELECT id, position, value, label, n_trials, enabled FROM priority_granularities ORDER BY position ASC')
         granularities = [dict(row) for row in cursor.fetchall()]
 
-        conn.close()
+        self._return_connection(conn)
 
         return {
             'pairs': pairs,
@@ -1237,7 +1273,7 @@ class StrategyDatabase:
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         cursor.execute('SELECT * FROM priority_pairs ORDER BY position ASC')
         rows = cursor.fetchall()
-        conn.close()
+        self._return_connection(conn)
         return [dict(row) for row in rows]
 
     def get_priority_periods(self) -> List[Dict]:
@@ -1246,7 +1282,7 @@ class StrategyDatabase:
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         cursor.execute('SELECT * FROM priority_periods ORDER BY position ASC')
         rows = cursor.fetchall()
-        conn.close()
+        self._return_connection(conn)
         return [dict(row) for row in rows]
 
     def get_priority_timeframes(self) -> List[Dict]:
@@ -1255,7 +1291,7 @@ class StrategyDatabase:
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         cursor.execute('SELECT * FROM priority_timeframes ORDER BY position ASC')
         rows = cursor.fetchall()
-        conn.close()
+        self._return_connection(conn)
         return [dict(row) for row in rows]
 
     def get_enabled_priority_pairs(self) -> List[Dict]:
@@ -1264,7 +1300,7 @@ class StrategyDatabase:
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         cursor.execute('SELECT * FROM priority_pairs WHERE enabled = 1 ORDER BY position ASC')
         rows = cursor.fetchall()
-        conn.close()
+        self._return_connection(conn)
         return [dict(row) for row in rows]
 
     def get_enabled_priority_periods(self) -> List[Dict]:
@@ -1273,7 +1309,7 @@ class StrategyDatabase:
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         cursor.execute('SELECT * FROM priority_periods WHERE enabled = 1 ORDER BY position ASC')
         rows = cursor.fetchall()
-        conn.close()
+        self._return_connection(conn)
         return [dict(row) for row in rows]
 
     def get_enabled_priority_timeframes(self) -> List[Dict]:
@@ -1282,7 +1318,7 @@ class StrategyDatabase:
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         cursor.execute('SELECT * FROM priority_timeframes WHERE enabled = 1 ORDER BY position ASC')
         rows = cursor.fetchall()
-        conn.close()
+        self._return_connection(conn)
         return [dict(row) for row in rows]
 
     def get_priority_granularities(self) -> List[Dict]:
@@ -1291,7 +1327,7 @@ class StrategyDatabase:
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         cursor.execute('SELECT * FROM priority_granularities ORDER BY position ASC')
         rows = cursor.fetchall()
-        conn.close()
+        self._return_connection(conn)
         return [dict(row) for row in rows]
 
     def get_enabled_priority_granularities(self) -> List[Dict]:
@@ -1300,7 +1336,7 @@ class StrategyDatabase:
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         cursor.execute('SELECT * FROM priority_granularities WHERE enabled = 1 ORDER BY position ASC')
         rows = cursor.fetchall()
-        conn.close()
+        self._return_connection(conn)
         return [dict(row) for row in rows]
 
     def get_priority_setting(self, key: str) -> Optional[str]:
@@ -1309,7 +1345,7 @@ class StrategyDatabase:
         cursor = conn.cursor()
         cursor.execute('SELECT value FROM priority_settings WHERE key = %s', (key,))
         row = cursor.fetchone()
-        conn.close()
+        self._return_connection(conn)
         return row[0] if row else None
 
     def set_priority_setting(self, key: str, value: str):
@@ -1322,7 +1358,7 @@ class StrategyDatabase:
             ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at
         ''', (key, value, datetime.now().isoformat()))
         conn.commit()
-        conn.close()
+        self._return_connection(conn)
 
     def reorder_priority_list_new(self, list_type: str, id_order: List[int]) -> bool:
         """Reorder items in a specific priority list."""
@@ -1343,7 +1379,7 @@ class StrategyDatabase:
             cursor.execute(f'UPDATE {table} SET position = %s WHERE id = %s', (position, item_id))
 
         conn.commit()
-        conn.close()
+        self._return_connection(conn)
         return True
 
     def toggle_priority_list_item(self, list_type: str, item_id: int) -> Optional[bool]:
@@ -1364,14 +1400,14 @@ class StrategyDatabase:
         cursor.execute(f'SELECT enabled FROM {table} WHERE id = %s', (item_id,))
         row = cursor.fetchone()
         if not row:
-            conn.close()
+            self._return_connection(conn)
             return None
 
         new_status = 0 if row[0] else 1
         cursor.execute(f'UPDATE {table} SET enabled = %s WHERE id = %s', (new_status, item_id))
 
         conn.commit()
-        conn.close()
+        self._return_connection(conn)
         return bool(new_status)
 
     def reset_priority_pairs(self, pairs: List[str]):
@@ -1387,7 +1423,7 @@ class StrategyDatabase:
             ''', (pos, pair, pair))
 
         conn.commit()
-        conn.close()
+        self._return_connection(conn)
 
     def reset_priority_periods(self, periods: List[Dict]):
         """Reset historical periods to defaults."""
@@ -1402,7 +1438,7 @@ class StrategyDatabase:
             ''', (pos, period['label'], period['label'], period['months']))
 
         conn.commit()
-        conn.close()
+        self._return_connection(conn)
 
     def reset_priority_timeframes(self, timeframes: List[Dict]):
         """Reset timeframes to defaults."""
@@ -1417,7 +1453,7 @@ class StrategyDatabase:
             ''', (pos, tf['label'], tf['label'], tf['minutes']))
 
         conn.commit()
-        conn.close()
+        self._return_connection(conn)
 
     def reset_priority_granularities(self, granularities: List[Dict]):
         """Reset granularities to defaults."""
@@ -1432,7 +1468,7 @@ class StrategyDatabase:
             ''', (pos, gran['label'], gran['label'], gran['n_trials']))
 
         conn.commit()
-        conn.close()
+        self._return_connection(conn)
 
     def enable_all_priority_items(self):
         """Enable all items in all priority lists."""
@@ -1443,7 +1479,7 @@ class StrategyDatabase:
         cursor.execute('UPDATE priority_timeframes SET enabled = 1')
         cursor.execute('UPDATE priority_granularities SET enabled = 1')
         conn.commit()
-        conn.close()
+        self._return_connection(conn)
 
     def disable_all_priority_items(self):
         """Disable all items in all priority lists."""
@@ -1454,7 +1490,7 @@ class StrategyDatabase:
         cursor.execute('UPDATE priority_timeframes SET enabled = 0')
         cursor.execute('UPDATE priority_granularities SET enabled = 0')
         conn.commit()
-        conn.close()
+        self._return_connection(conn)
 
     def has_priority_lists_populated(self) -> bool:
         """Check if the new priority lists have any data."""
@@ -1462,7 +1498,7 @@ class StrategyDatabase:
         cursor = conn.cursor()
         cursor.execute('SELECT COUNT(*) FROM priority_pairs')
         count = cursor.fetchone()[0]
-        conn.close()
+        self._return_connection(conn)
         return count > 0
 
     # =========================================================================
@@ -1496,7 +1532,7 @@ class StrategyDatabase:
             elif status is None or status == 'pending':
                 counts['pending'] += count
 
-        conn.close()
+        self._return_connection(conn)
         return counts
 
     def get_db_stats_optimized(self) -> Dict[str, Any]:
@@ -1509,12 +1545,12 @@ class StrategyDatabase:
                 COUNT(*) as total_strategies,
                 COUNT(DISTINCT symbol) as unique_symbols,
                 COUNT(DISTINCT timeframe) as unique_timeframes,
-                SUM(CASE WHEN elite_status = 'elite' THEN 1 ELSE 0 END) as elite_count
+                SUM(CASE WHEN elite_status IN ('validated', 'elite', 'partial', 'failed') THEN 1 ELSE 0 END) as validated_count
             FROM strategies
         ''')
 
         row = cursor.fetchone()
-        conn.close()
+        self._return_connection(conn)
 
         return {
             'total_strategies': row[0] or 0,
@@ -1562,7 +1598,7 @@ class StrategyDatabase:
         '''
         cursor.execute(query, params + [limit, offset])
         rows = cursor.fetchall()
-        conn.close()
+        self._return_connection(conn)
 
         strategies = [self._row_to_dict(row) for row in rows]
 
@@ -1580,7 +1616,7 @@ class StrategyDatabase:
         cursor = conn.cursor()
         cursor.execute('SELECT COUNT(*) FROM strategies')
         count = cursor.fetchone()[0]
-        conn.close()
+        self._return_connection(conn)
         return count
 
     def get_elite_strategies_filtered(self, status_filter: str = None,
@@ -1605,31 +1641,36 @@ class StrategyDatabase:
             ''', (limit, offset))
 
         rows = cursor.fetchall()
-        conn.close()
+        self._return_connection(conn)
 
         return [self._row_to_dict(row, parse_equity_curve=False) for row in rows]
 
     def get_elite_leaderboard(self, limit: int = 20) -> Dict:
-        """Get top elite strategies efficiently."""
+        """Get top validated strategies by score."""
         conn = self._get_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
+        # Include both new 'validated' status and legacy 'elite'/'partial'/'failed' statuses
+        # All validated strategies sorted by score - the score does the ranking
         cursor.execute('''
             SELECT * FROM strategies
-            WHERE elite_status = 'elite'
+            WHERE elite_status IN ('validated', 'elite', 'partial', 'failed')
             ORDER BY elite_score DESC
             LIMIT %s
         ''', (limit,))
         rows = cursor.fetchall()
 
-        cursor.execute("SELECT COUNT(*) FROM strategies WHERE elite_status = 'elite'")
-        total_elite = cursor.fetchone()['count']
+        cursor.execute("""
+            SELECT COUNT(*) FROM strategies
+            WHERE elite_status IN ('validated', 'elite', 'partial', 'failed')
+        """)
+        total_validated = cursor.fetchone()['count']
 
-        conn.close()
+        self._return_connection(conn)
 
         return {
             "leaderboard": [self._row_to_dict(row, parse_equity_curve=False) for row in rows],
-            "total_elite": total_elite
+            "total_validated": total_validated
         }
 
     def get_elite_stats_optimized(self) -> Dict:
@@ -1639,23 +1680,27 @@ class StrategyDatabase:
 
         cursor.execute('''
             SELECT
-                COALESCE(elite_status, 'not_validated') as status,
+                COALESCE(elite_status, 'pending') as status,
                 COUNT(*) as count
             FROM strategies
-            GROUP BY COALESCE(elite_status, 'not_validated')
+            GROUP BY COALESCE(elite_status, 'pending')
         ''')
 
+        # Simplified status model: validated, pending, untestable, skipped
         status_counts = {
-            'elite': 0, 'partial': 0, 'failed': 0, 'pending': 0,
-            'untestable': 0, 'skipped': 0, 'not_validated': 0
+            'validated': 0, 'pending': 0, 'untestable': 0, 'skipped': 0
         }
 
         for row in cursor.fetchall():
             status, count = row
             if status in status_counts:
                 status_counts[status] = count
+            elif status in ['elite', 'partial', 'failed']:
+                # Legacy status - count as validated
+                status_counts['validated'] += count
             else:
-                status_counts['not_validated'] += count
+                # NULL or unknown - count as pending
+                status_counts['pending'] += count
 
         cursor.execute('SELECT COUNT(*) FROM strategies')
         total = cursor.fetchone()[0]
@@ -1663,11 +1708,11 @@ class StrategyDatabase:
         cursor.execute('''
             SELECT AVG(COALESCE(elite_score, 0))
             FROM strategies
-            WHERE elite_status = 'elite'
+            WHERE elite_status = 'validated'
         ''')
         avg_score = cursor.fetchone()[0] or 0
 
-        conn.close()
+        self._return_connection(conn)
 
         return {
             "total_strategies": total,
@@ -1714,7 +1759,7 @@ class StrategyDatabase:
         params.extend([top_n, total_limit])
         cursor.execute(query, params)
         rows = cursor.fetchall()
-        conn.close()
+        self._return_connection(conn)
 
         return [self._row_to_dict(row, parse_equity_curve=False) for row in rows]
 
@@ -1727,7 +1772,7 @@ class StrategyDatabase:
             WHERE elite_status IS NULL OR elite_status = 'pending'
         ''')
         count = cursor.fetchone()[0]
-        conn.close()
+        self._return_connection(conn)
         return count
 
 

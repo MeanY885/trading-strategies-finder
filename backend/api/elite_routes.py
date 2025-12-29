@@ -24,7 +24,7 @@ async def get_elite_strategies(status_filter: Optional[str] = None, limit: int =
     Get Elite validated strategies.
 
     Args:
-        status_filter: Filter by status ('elite', 'partial', 'failed', 'pending')
+        status_filter: Filter by status ('validated', 'pending', 'untestable', 'skipped')
         limit: Maximum number of strategies to return
     """
     try:
@@ -156,3 +156,45 @@ async def trigger_validate_all():
     asyncio.create_task(validate_all_strategies())
 
     return {"status": "started", "message": "Validation of all pending strategies started"}
+
+
+@router.post("/reset-all")
+async def reset_all_elite_validation():
+    """
+    Reset all elite validation data.
+    Sets all strategies to 'pending' status so they will be re-validated.
+    """
+    try:
+        from strategy_database import get_strategy_db
+        db = get_strategy_db()
+
+        # Get count before reset
+        conn = db._get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM strategies")
+        total_count = cursor.fetchone()[0]
+
+        # Reset all elite validation data
+        cursor.execute('''
+            UPDATE strategies
+            SET elite_status = 'pending',
+                elite_score = 0,
+                elite_periods_passed = 0,
+                elite_periods_total = 0,
+                elite_validation_data = NULL
+        ''')
+        conn.commit()
+        db._return_connection(conn)
+
+        # Invalidate cache
+        from services.cache import invalidate_counts_cache
+        invalidate_counts_cache()
+
+        return {
+            "success": True,
+            "reset_count": total_count,
+            "message": f"Reset {total_count} strategies to pending validation"
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

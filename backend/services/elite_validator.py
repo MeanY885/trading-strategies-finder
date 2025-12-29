@@ -23,6 +23,7 @@ from state import app_state, concurrency_config
 from logging_config import log
 from services.autonomous_optimizer import has_period_boundary_crossed, get_stale_periods
 from services.cache import invalidate_counts_cache
+from async_database import AsyncDatabase
 
 # =============================================================================
 # PARALLEL VALIDATION SUPPORT (Resource-Aware)
@@ -288,11 +289,8 @@ async def validate_strategy(
         }
     max_days = data_limits.get(tf_minutes, 1825)
 
-    # Original metrics
-    original_metrics = {
-        "win_rate": strategy.get('win_rate', 0),
-        "profit_factor": strategy.get('profit_factor', 0),
-    }
+    # Note: We no longer compare to original metrics
+    # New system: simply check if each period is profitable (PnL > 0)
 
     # Load existing validation data
     existing_validation_data = strategy.get('elite_validation_data')
@@ -322,9 +320,9 @@ async def validate_strategy(
             for er in existing_results:
                 if er.get("period") == vp["period"]:
                     results.append(er)
-                    if er.get("status") not in ["limit_exceeded", "insufficient_data", "error"]:
+                    if er.get("status") not in ["limit_exceeded", "insufficient_data", "error", "no_trades"]:
                         total_testable += 1
-                        if er.get("status") in ['consistent', 'minor_drop']:
+                        if er.get("status") == 'profitable':
                             passed += 1
                     break
             continue
@@ -370,20 +368,20 @@ async def validate_strategy(
                 commission_pct=0.1
             )
 
-            # Determine status
-            status = "consistent"
+            # Simple profitability check - no comparison to original metrics
+            # A period passes if it made any profit (PnL > 0)
             if result.total_trades == 0:
                 status = "no_trades"
-            elif result.win_rate < original_metrics["win_rate"] * 0.8:
-                status = "degraded"
-            elif result.profit_factor < original_metrics["profit_factor"] * 0.8:
-                status = "degraded"
-            elif result.win_rate < original_metrics["win_rate"] * 0.95:
-                status = "minor_drop"
+            elif result.total_pnl > 0:
+                status = "profitable"
+            else:
+                status = "unprofitable"
 
-            total_testable += 1
-            if status in ['consistent', 'minor_drop']:
-                passed += 1
+            # Only count periods with actual trades as testable
+            if status != "no_trades":
+                total_testable += 1
+                if status == 'profitable':
+                    passed += 1
 
             return_pct = round((result.total_pnl / 1000.0) * 100, 1)
 
@@ -394,6 +392,7 @@ async def validate_strategy(
                 "win_rate": round(result.win_rate, 2),
                 "pnl": round(result.total_pnl, 2),
                 "return_pct": return_pct,
+                "max_drawdown": round(result.max_drawdown, 2),
                 "validated_at": datetime.now().isoformat()
             })
 
@@ -405,24 +404,43 @@ async def validate_strategy(
                 "validated_at": datetime.now().isoformat()
             })
 
-    # Calculate elite score
-    consistency_points = passed
-    total_pnl = sum(
-        r.get('pnl', 0) for r in results
-        if r.get('status') in ['consistent', 'minor_drop'] and r.get('pnl', 0) > 0
-    )
-    profit_bonus = total_pnl / 100
-    elite_score = consistency_points + profit_bonus
+    # =================================================================
+    # NEW ELITE SCORING SYSTEM
+    # =================================================================
+    # 1. Profitability points: +1 for each profitable period
+    # 2. Avg return bonus: average return % / 10
+    # 3. Drawdown bonus: +3 (<5%), +2 (<10%), +1 (<15%)
+    # =================================================================
 
-    # Determine final status
+    # 1. Profitability points (1 per profitable period)
+    profitability_points = passed
+
+    # 2. Average return bonus
+    profitable_returns = [r.get('return_pct', 0) for r in results if r.get('status') == 'profitable']
+    avg_return = sum(profitable_returns) / len(profitable_returns) if profitable_returns else 0
+    profit_bonus = avg_return / 10
+
+    # 3. Drawdown bonus (based on worst drawdown across all tested periods)
+    all_drawdowns = [r.get('max_drawdown', 100) for r in results if r.get('status') in ['profitable', 'unprofitable']]
+    worst_drawdown = max(all_drawdowns) if all_drawdowns else 100
+
+    if worst_drawdown < 5:
+        drawdown_bonus = 3
+    elif worst_drawdown < 10:
+        drawdown_bonus = 2
+    elif worst_drawdown < 15:
+        drawdown_bonus = 1
+    else:
+        drawdown_bonus = 0
+
+    elite_score = profitability_points + profit_bonus + drawdown_bonus
+
+    # Simplified status: just 'validated' or 'untestable'
+    # The score does the ranking - no need for elite/partial/failed categories
     if total_testable == 0:
         elite_status = 'untestable'
-    elif passed == total_testable:
-        elite_status = 'elite'
-    elif passed >= total_testable * 0.7:
-        elite_status = 'partial'
     else:
-        elite_status = 'failed'
+        elite_status = 'validated'
 
     return {
         "elite_status": elite_status,
@@ -484,7 +502,8 @@ async def validate_single_strategy_worker(strategy: dict, db, processed_count: l
             result = await validate_strategy(strategy, VALIDATION_PERIODS)
 
             if result:
-                db.update_elite_status(
+                # Use async database to avoid blocking the event loop
+                await AsyncDatabase.update_elite_status(
                     strategy_id=strategy_id,
                     elite_status=result["elite_status"],
                     periods_passed=result["periods_passed"],
@@ -546,7 +565,6 @@ async def validate_all_strategies():
     Dynamically adjusts concurrency based on CPU, memory, and other running services.
     """
     global pending_strategies_list, running_validations
-    from strategy_database import get_strategy_db
     from services.resource_monitor import resource_monitor
 
     # Initialize async primitives if needed
@@ -554,11 +572,9 @@ async def validate_all_strategies():
         init_elite_async_primitives()
 
     try:
-        db = get_strategy_db()
-
-        # Use top N per market to reduce queue size and focus on best candidates
-        # This gets top 3 strategies per (symbol, timeframe) combination
-        pending = db.get_top_pending_per_market(top_n=3)
+        # Use async database to avoid blocking the event loop
+        # Get top 3 strategies per (symbol, timeframe) combination
+        pending = await AsyncDatabase.get_top_pending_per_market(top_n=3)
 
         if not pending:
             app_state.update_elite_status(message="No pending strategies to validate")
@@ -566,11 +582,11 @@ async def validate_all_strategies():
 
         # Sort by priority if available
         try:
-            priority_list = db.get_priority_list()
+            priority_list = await AsyncDatabase.get_priority_list()
             if priority_list:
                 priority_lookup = {}
                 for item in priority_list:
-                    if item['enabled']:
+                    if item.get('enabled'):
                         key = (item['pair'], item['timeframe_label'])
                         if key not in priority_lookup:
                             priority_lookup[key] = item['position']
@@ -683,11 +699,8 @@ async def start_auto_elite_validation():
 
             log("[Elite Validation] Checking for pending strategies...")
 
-            from strategy_database import get_strategy_db
-            db = get_strategy_db()
-
-            # Use optimized query to get pending count first
-            pending_count = db.get_pending_validation_count()
+            # Use async database to avoid blocking the event loop
+            pending_count = await AsyncDatabase.get_pending_validation_count()
 
             if pending_count > 0:
                 log(f"[Elite Validation] Found {pending_count} pending strategies")
@@ -697,8 +710,8 @@ async def start_auto_elite_validation():
                 await validate_all_strategies()
                 await asyncio.sleep(5)
             else:
-                # Check for stale periods - use optimized query for validated strategies only
-                validated = db.get_elite_strategies_filtered(status_filter=None, limit=500)
+                # Check for stale periods - use async query for validated strategies only
+                validated = await AsyncDatabase.get_elite_strategies_filtered(status_filter=None, limit=500)
                 validated = [s for s in validated if s.get('elite_validated_at')]
                 strategies_with_stale = []
 
@@ -725,7 +738,8 @@ async def start_auto_elite_validation():
 
                     log(f"[Elite Validation] Re-validating {strategy['strategy_name']}: {top['stale_count']} stale periods")
 
-                    db.update_elite_status(
+                    # Use async database to avoid blocking the event loop
+                    await AsyncDatabase.update_elite_status(
                         strategy_id=strategy['id'],
                         elite_status='pending',
                         periods_passed=strategy.get('elite_periods_passed', 0),

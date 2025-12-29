@@ -32,6 +32,7 @@ from config import DATA_DIR, OUTPUT_DIR
 from state import app_state, concurrency_config
 from logging_config import log, UVICORN_LOG_CONFIG
 from strategy_database import get_strategy_db
+from async_database import AsyncDatabase
 
 # Services
 from services.websocket_manager import ws_manager, broadcast_full_state, serialize_for_json
@@ -151,6 +152,13 @@ async def lifespan(app: FastAPI):
     """Handle startup and shutdown events."""
     log("[Startup] Application starting...")
 
+    # Initialize async database pool FIRST (critical for non-blocking operations)
+    try:
+        await AsyncDatabase.init_pool()
+        log("[Startup] Async database pool initialized")
+    except Exception as e:
+        log(f"[Startup] Async database pool failed: {e}", level='ERROR')
+
     # Register main event loop for cross-thread WebSocket broadcasts
     from services.websocket_manager import ws_manager
     ws_manager.set_main_loop(asyncio.get_running_loop())
@@ -165,6 +173,8 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     log("[Shutdown] Application shutting down...")
+    await AsyncDatabase.close_pool()
+    log("[Shutdown] Async database pool closed")
     thread_pool.shutdown(wait=False)
 
 
@@ -235,18 +245,15 @@ async def websocket_status(websocket: WebSocket):
                         await websocket.send_json(serialize_for_json({"type": "full_state", **full_state}))
 
                     elif msg_type == "get_strategies":
-                        # Get strategy history - cached with pagination
-                        def fetch_strategies():
-                            cached = strategies_cache.get(CacheKeys.STRATEGIES_ALL)
-                            if cached is not None:
-                                return cached
-                            db = get_strategy_db()
-                            # Use paginated query - much faster than get_all_strategies()
-                            result = db.get_strategies_paginated(limit=1000, offset=0)
-                            strategies_cache.set(CacheKeys.STRATEGIES_ALL, result['strategies'], ttl=300)
-                            return result['strategies']
+                        # Get strategy history - cached with async DB
+                        cached = strategies_cache.get(CacheKeys.STRATEGIES_ALL)
+                        if cached is not None:
+                            strategies = cached
+                        else:
+                            result = await AsyncDatabase.get_strategies_paginated(limit=1000, offset=0)
+                            strategies = result['strategies']
+                            strategies_cache.set(CacheKeys.STRATEGIES_ALL, strategies, ttl=300)
 
-                        strategies = await loop.run_in_executor(thread_pool, fetch_strategies)
                         await websocket.send_json(serialize_for_json({
                             "type": "strategies_data",
                             "id": request_id,
@@ -254,36 +261,31 @@ async def websocket_status(websocket: WebSocket):
                         }))
 
                     elif msg_type == "get_elite":
-                        # Get elite strategies and status - cached and optimized
-                        def fetch_elite_data():
-                            # Check cache first
-                            cached_counts = counts_cache.get(CacheKeys.ELITE_COUNTS)
-                            cached_strategies = strategies_cache.get(CacheKeys.ELITE_STRATEGIES)
+                        # Get elite strategies and status - cached with async DB
+                        cached_counts = counts_cache.get(CacheKeys.ELITE_COUNTS)
+                        cached_strategies = strategies_cache.get(CacheKeys.ELITE_STRATEGIES)
 
-                            db = get_strategy_db()
+                        # Use async SQL aggregation for counts
+                        if cached_counts is None:
+                            cached_counts = await AsyncDatabase.get_elite_counts()
+                            counts_cache.set(CacheKeys.ELITE_COUNTS, cached_counts, ttl=60)
 
-                            # Use SQL aggregation for counts (much faster)
-                            if cached_counts is None:
-                                cached_counts = db.get_elite_counts()
-                                counts_cache.set(CacheKeys.ELITE_COUNTS, cached_counts, ttl=60)
+                        # Get elite strategies (already ranked by score)
+                        if cached_strategies is None:
+                            cached_strategies = await AsyncDatabase.get_elite_strategies_optimized(top_n_per_market=10)
+                            strategies_cache.set(CacheKeys.ELITE_STRATEGIES, cached_strategies, ttl=300)
 
-                            # Get elite strategies (already ranked by score)
-                            if cached_strategies is None:
-                                cached_strategies = db.get_elite_strategies_optimized(top_n_per_market=10)
-                                strategies_cache.set(CacheKeys.ELITE_STRATEGIES, cached_strategies, ttl=300)
+                        elite_data = {
+                            "status": {
+                                "elite_count": cached_counts.get('elite', 0),
+                                "partial_count": cached_counts.get('partial', 0),
+                                "failed_count": cached_counts.get('failed', 0),
+                                "pending_count": cached_counts.get('pending', 0),
+                                **app_state.get_elite_status()
+                            },
+                            "strategies": cached_strategies
+                        }
 
-                            return {
-                                "status": {
-                                    "elite_count": cached_counts.get('elite', 0),
-                                    "partial_count": cached_counts.get('partial', 0),
-                                    "failed_count": cached_counts.get('failed', 0),
-                                    "pending_count": cached_counts.get('pending', 0),
-                                    **app_state.get_elite_status()
-                                },
-                                "strategies": cached_strategies
-                            }
-
-                        elite_data = await loop.run_in_executor(thread_pool, fetch_elite_data)
                         await websocket.send_json(serialize_for_json({
                             "type": "elite_data",
                             "id": request_id,
@@ -291,25 +293,24 @@ async def websocket_status(websocket: WebSocket):
                         }))
 
                     elif msg_type == "get_priority":
-                        # Get priority lists - cached and properly formatted
+                        # Get priority lists - cached with async DB
                         from config import AUTONOMOUS_CONFIG
 
-                        def fetch_priority_data():
-                            cached = priority_cache.get(CacheKeys.PRIORITY_LISTS)
-                            if cached is not None:
-                                return cached
+                        cached = priority_cache.get(CacheKeys.PRIORITY_LISTS)
+                        if cached is not None:
+                            priority_data = cached
+                        else:
+                            data = await AsyncDatabase.get_all_priority_lists()
 
-                            db = get_strategy_db()
-                            data = db.get_all_priority_lists()
-
-                            # Auto-populate if empty
+                            # Auto-populate if empty (rare, use sync fallback)
                             if not data.get('populated'):
+                                db = get_strategy_db()
                                 config = AUTONOMOUS_CONFIG
                                 db.reset_priority_pairs(config["pairs"].get("binance", []))
                                 db.reset_priority_periods(config["periods"])
                                 db.reset_priority_timeframes(config["timeframes"])
                                 db.reset_priority_granularities(config["granularities"])
-                                data = db.get_all_priority_lists()
+                                data = await AsyncDatabase.get_all_priority_lists()
 
                             # Convert enabled to bool for JSON serialization
                             for p in data.get('pairs', []):
@@ -322,9 +323,8 @@ async def websocket_status(websocket: WebSocket):
                                 g['enabled'] = bool(g.get('enabled', 1))
 
                             priority_cache.set(CacheKeys.PRIORITY_LISTS, data, ttl=300)
-                            return data
+                            priority_data = data
 
-                        priority_data = await loop.run_in_executor(thread_pool, fetch_priority_data)
                         await websocket.send_json(serialize_for_json({
                             "type": "priority_data",
                             "id": request_id,
@@ -332,18 +332,14 @@ async def websocket_status(websocket: WebSocket):
                         }))
 
                     elif msg_type == "get_db_stats":
-                        # Get database stats for Tools page - cached and optimized
-                        def fetch_db_stats():
-                            cached = stats_cache.get(CacheKeys.DB_STATS)
-                            if cached is not None:
-                                return cached
-                            db = get_strategy_db()
-                            # Use SQL aggregation - much faster than loading all strategies
-                            data = db.get_db_stats_optimized()
-                            stats_cache.set(CacheKeys.DB_STATS, data, ttl=60)
-                            return data
+                        # Get database stats for Tools page - cached with async DB
+                        cached = stats_cache.get(CacheKeys.DB_STATS)
+                        if cached is not None:
+                            db_stats = cached
+                        else:
+                            db_stats = await AsyncDatabase.get_db_stats_optimized()
+                            stats_cache.set(CacheKeys.DB_STATS, db_stats, ttl=60)
 
-                        db_stats = await loop.run_in_executor(thread_pool, fetch_db_stats)
                         await websocket.send_json(serialize_for_json({
                             "type": "db_stats_data",
                             "id": request_id,
