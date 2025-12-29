@@ -393,7 +393,11 @@
                     const parallelCount = status.parallel_count || 0;
                     const maxParallel = status.max_parallel || 1;
                     const cpuPct = status.cpu_percent ? `CPU: ${Math.round(status.cpu_percent)}%` : '';
-                    const memGb = status.memory_available_gb ? `Mem: ${status.memory_available_gb.toFixed(1)}GB` : '';
+                    // Show memory available for validation (after reserved for DB/Frontend)
+                    const memForVal = status.memory_for_validation_gb;
+                    const memGb = memForVal !== undefined
+                        ? `Avail: ${memForVal.toFixed(1)}GB`
+                        : (status.memory_available_gb ? `Mem: ${status.memory_available_gb.toFixed(1)}GB` : '');
                     const resourceInfo = [cpuPct, memGb].filter(x => x).join(' | ');
                     queueParallelCount.textContent = `${parallelCount}/${maxParallel} parallel${resourceInfo ? ' | ' + resourceInfo : ''}`;
                 }

@@ -36,17 +36,45 @@ running_validations_async_lock: Optional[asyncio.Lock] = None
 # Pending strategies list for queue display
 pending_strategies_list: List[dict] = []
 
-# Resource thresholds for Elite Validation
-ELITE_CPU_THRESHOLD = 75  # Only spawn if CPU < 75%
-ELITE_MEM_THRESHOLD = 2.0  # Only spawn if > 2GB available
-ELITE_BASE_CONCURRENT = 2  # Base concurrent validations
-ELITE_MAX_CONCURRENT = 4   # Maximum concurrent validations
+# =============================================================================
+# RESOURCE THRESHOLDS FOR ELITE VALIDATION
+# =============================================================================
+# These thresholds ensure we reserve resources for critical shared services:
+#
+# RESERVED RESOURCES (always kept free):
+#   - PostgreSQL Database: ~300-500MB RAM, variable CPU for queries
+#   - Nginx Frontend: ~50MB RAM, minimal CPU
+#   - System overhead: ~500MB RAM
+#   - WebSocket connections: ~100MB RAM
+#   Total reserved: ~1.0-1.5GB minimum
+#
+# The thresholds below ensure these services always have resources available.
+# =============================================================================
+
+ELITE_CPU_THRESHOLD = 70      # Only spawn if CPU < 70% (reserve 30% for DB queries, system)
+ELITE_MEM_THRESHOLD = 3.0     # Only spawn if > 3GB available (reserves ~1.5GB for DB/Frontend/System)
+ELITE_MEM_PER_VALIDATION = 0.5  # Each validation task uses ~500MB
+ELITE_BASE_CONCURRENT = 2     # Base concurrent validations
+ELITE_MAX_CONCURRENT = 4      # Maximum concurrent validations
+
+# Reserved memory breakdown (in GB) - used for calculations
+RESERVED_FOR_DATABASE = 0.5   # PostgreSQL shared buffers, work mem, connections
+RESERVED_FOR_FRONTEND = 0.1   # Nginx + static file serving
+RESERVED_FOR_WEBSOCKET = 0.2  # WebSocket connections and message queues
+RESERVED_FOR_SYSTEM = 0.5     # OS, Docker overhead, buffers
+TOTAL_RESERVED_MEMORY = RESERVED_FOR_DATABASE + RESERVED_FOR_FRONTEND + RESERVED_FOR_WEBSOCKET + RESERVED_FOR_SYSTEM
 
 
 def get_max_concurrent_validations() -> int:
     """
     Determine max concurrent validations based on system resources
     AND awareness of other running services (Autonomous Optimizer, etc).
+
+    Memory calculation:
+        available_for_validation = mem_available - TOTAL_RESERVED_MEMORY
+        memory_based_max = available_for_validation / ELITE_MEM_PER_VALIDATION
+
+    This ensures Database, Frontend, WebSocket, and System always have resources.
     """
     from services.resource_monitor import resource_monitor
 
@@ -71,43 +99,71 @@ def get_max_concurrent_validations() -> int:
     # Check if manual optimizer is running
     optimizer_running = app_state.is_running()
 
-    # Base calculation from CPU cores
-    if cpu_cores >= 16:
-        base_max = 4
-    elif cpu_cores >= 8:
-        base_max = 3
-    elif cpu_cores >= 4:
-        base_max = 2
-    else:
-        base_max = 1
+    # =================================================================
+    # MEMORY-BASED CALCULATION (respects reserved resources)
+    # =================================================================
+    # Calculate memory available for validation after reserving for shared services
+    available_for_validation = mem_available_gb - TOTAL_RESERVED_MEMORY
 
-    # Reduce based on other services
+    # If Autonomous Optimizer is running, reserve additional memory for it
+    if autonomous_running and autonomous_parallel > 0:
+        # Assume each autonomous task uses ~0.8GB
+        autonomous_mem_usage = autonomous_parallel * 0.8
+        available_for_validation -= autonomous_mem_usage
+
+    # Calculate max validations based on available memory
+    if available_for_validation > ELITE_MEM_PER_VALIDATION:
+        memory_based_max = int(available_for_validation / ELITE_MEM_PER_VALIDATION)
+    else:
+        memory_based_max = 1  # Always allow at least 1 if any memory available
+
+    # =================================================================
+    # CPU-BASED CALCULATION
+    # =================================================================
+    if cpu_cores >= 16:
+        cpu_based_max = 4
+    elif cpu_cores >= 8:
+        cpu_based_max = 3
+    elif cpu_cores >= 4:
+        cpu_based_max = 2
+    else:
+        cpu_based_max = 1
+
+    # Reduce CPU-based max for other running services
     if autonomous_running:
-        # Reserve resources for autonomous optimizer
-        # Reduce by number of autonomous parallel tasks + 1 for overhead
-        reduction = min(autonomous_parallel + 1, base_max - 1)
-        base_max = max(1, base_max - reduction)
-        log(f"[Elite Validation] Autonomous running ({autonomous_parallel} parallel), reduced max to {base_max}")
+        # Reserve CPU for autonomous optimizer tasks + 1 for overhead
+        reduction = min(autonomous_parallel + 1, cpu_based_max - 1)
+        cpu_based_max = max(1, cpu_based_max - reduction)
+        log(f"[Elite Validation] Autonomous running ({autonomous_parallel} parallel), CPU max reduced to {cpu_based_max}")
 
     if optimizer_running:
         # Manual optimizer running - reduce further
-        base_max = max(1, base_max - 1)
-        log(f"[Elite Validation] Manual optimizer running, reduced max to {base_max}")
+        cpu_based_max = max(1, cpu_based_max - 1)
+        log(f"[Elite Validation] Manual optimizer running, CPU max reduced to {cpu_based_max}")
 
-    # Further reduce if resources are constrained
+    # Further reduce if CPU is already high
     if cpu_percent > ELITE_CPU_THRESHOLD:
-        base_max = max(1, base_max - 1)
+        cpu_based_max = max(1, cpu_based_max - 1)
 
-    if mem_available_gb < ELITE_MEM_THRESHOLD * 2:
-        base_max = max(1, base_max - 1)
+    # =================================================================
+    # FINAL CALCULATION: Use minimum of memory and CPU limits
+    # =================================================================
+    final_max = min(memory_based_max, cpu_based_max, ELITE_MAX_CONCURRENT)
+    final_max = max(1, final_max)  # Always allow at least 1
 
-    return min(base_max, ELITE_MAX_CONCURRENT)
+    log(f"[Elite Validation] Max concurrent: {final_max} (mem_based={memory_based_max}, cpu_based={cpu_based_max}, available_mem={available_for_validation:.1f}GB)")
+
+    return final_max
 
 
 def can_spawn_validation() -> tuple[bool, str]:
     """
     Check if we can spawn a new validation task based on current resources.
     Returns (can_spawn, reason).
+
+    Memory check ensures:
+        available_mem > TOTAL_RESERVED_MEMORY + ELITE_MEM_PER_VALIDATION
+    This guarantees Database, Frontend, WebSocket, and System have their resources.
     """
     from services.resource_monitor import resource_monitor
 
@@ -115,16 +171,27 @@ def can_spawn_validation() -> tuple[bool, str]:
     cpu_percent = resources["cpu_percent"]
     mem_available_gb = resources["memory_available_gb"]
 
-    # Check CPU
+    # Check CPU - reserve headroom for DB queries and system
     if cpu_percent > ELITE_CPU_THRESHOLD:
-        return False, f"CPU too high ({cpu_percent:.0f}%)"
+        return False, f"CPU too high ({cpu_percent:.0f}% > {ELITE_CPU_THRESHOLD}%)"
 
-    # Check memory
-    if mem_available_gb < ELITE_MEM_THRESHOLD:
-        return False, f"Memory too low ({mem_available_gb:.1f}GB)"
+    # =================================================================
+    # MEMORY CHECK: Ensure reserved resources are protected
+    # =================================================================
+    # Calculate minimum memory needed = reserved + 1 validation task
+    min_memory_needed = TOTAL_RESERVED_MEMORY + ELITE_MEM_PER_VALIDATION
 
-    # Check current running count
+    if mem_available_gb < min_memory_needed:
+        return False, f"Memory too low ({mem_available_gb:.1f}GB < {min_memory_needed:.1f}GB needed)"
+
+    # Additional check: ensure we have enough for current running + 1 more
     current_running = len(running_validations)
+    memory_for_all_tasks = TOTAL_RESERVED_MEMORY + ((current_running + 1) * ELITE_MEM_PER_VALIDATION)
+
+    if mem_available_gb < memory_for_all_tasks:
+        return False, f"Insufficient memory for additional task ({mem_available_gb:.1f}GB < {memory_for_all_tasks:.1f}GB)"
+
+    # Check current running count vs max
     max_concurrent = get_max_concurrent_validations()
 
     if current_running >= max_concurrent:
@@ -449,6 +516,10 @@ def _update_queue_status():
 
     # Get current resource state
     resources = resource_monitor.get_current_resources()
+    mem_available = resources["memory_available_gb"]
+
+    # Calculate available memory for validation (after reserved)
+    mem_for_validation = max(0, mem_available - TOTAL_RESERVED_MEMORY)
 
     app_state.update_elite_status(
         running_validations=running_list,
@@ -456,7 +527,9 @@ def _update_queue_status():
         parallel_count=len(running_list),
         max_parallel=get_max_concurrent_validations(),
         cpu_percent=resources["cpu_percent"],
-        memory_available_gb=resources["memory_available_gb"]
+        memory_available_gb=mem_available,
+        memory_for_validation_gb=round(mem_for_validation, 1),
+        reserved_memory_gb=TOTAL_RESERVED_MEMORY
     )
 
 
