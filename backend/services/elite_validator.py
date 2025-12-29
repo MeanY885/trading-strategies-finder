@@ -25,11 +25,8 @@ from services.autonomous_optimizer import has_period_boundary_crossed, get_stale
 from services.cache import invalidate_counts_cache
 
 # =============================================================================
-# PARALLEL VALIDATION SUPPORT
+# PARALLEL VALIDATION SUPPORT (Resource-Aware)
 # =============================================================================
-
-# Semaphore for limiting concurrent validations
-elite_validation_semaphore: Optional[asyncio.Semaphore] = None
 
 # Track running validations for queue display
 running_validations: Dict[int, dict] = {}
@@ -39,35 +36,111 @@ running_validations_async_lock: Optional[asyncio.Lock] = None
 # Pending strategies list for queue display
 pending_strategies_list: List[dict] = []
 
+# Resource thresholds for Elite Validation
+ELITE_CPU_THRESHOLD = 75  # Only spawn if CPU < 75%
+ELITE_MEM_THRESHOLD = 2.0  # Only spawn if > 2GB available
+ELITE_BASE_CONCURRENT = 2  # Base concurrent validations
+ELITE_MAX_CONCURRENT = 4   # Maximum concurrent validations
+
 
 def get_max_concurrent_validations() -> int:
-    """Determine max concurrent validations based on system resources."""
-    # Check config first
+    """
+    Determine max concurrent validations based on system resources
+    AND awareness of other running services (Autonomous Optimizer, etc).
+    """
+    from services.resource_monitor import resource_monitor
+
+    # Check config override first
     config_max = concurrency_config.get("elite_max_concurrent", 0)
     if config_max > 0:
         return config_max
 
-    # Auto-detect based on CPU cores
-    cpu_count = psutil.cpu_count(logical=True) or 4
-    if cpu_count >= 16:
-        return 4
-    elif cpu_count >= 8:
-        return 3
-    elif cpu_count >= 4:
-        return 2
+    # Get current resource state
+    resources = resource_monitor.get_current_resources()
+    cpu_percent = resources["cpu_percent"]
+    mem_available_gb = resources["memory_available_gb"]
+    cpu_cores = resources["cpu_cores"]
+
+    # Check if Autonomous Optimizer is running
+    autonomous_running = app_state.is_autonomous_running()
+    autonomous_parallel = 0
+    if autonomous_running:
+        auto_status = app_state.get_autonomous_status()
+        autonomous_parallel = auto_status.get("parallel_count", 0) or len(auto_status.get("parallel_running", []))
+
+    # Check if manual optimizer is running
+    optimizer_running = app_state.is_running()
+
+    # Base calculation from CPU cores
+    if cpu_cores >= 16:
+        base_max = 4
+    elif cpu_cores >= 8:
+        base_max = 3
+    elif cpu_cores >= 4:
+        base_max = 2
     else:
-        return 1
+        base_max = 1
+
+    # Reduce based on other services
+    if autonomous_running:
+        # Reserve resources for autonomous optimizer
+        # Reduce by number of autonomous parallel tasks + 1 for overhead
+        reduction = min(autonomous_parallel + 1, base_max - 1)
+        base_max = max(1, base_max - reduction)
+        log(f"[Elite Validation] Autonomous running ({autonomous_parallel} parallel), reduced max to {base_max}")
+
+    if optimizer_running:
+        # Manual optimizer running - reduce further
+        base_max = max(1, base_max - 1)
+        log(f"[Elite Validation] Manual optimizer running, reduced max to {base_max}")
+
+    # Further reduce if resources are constrained
+    if cpu_percent > ELITE_CPU_THRESHOLD:
+        base_max = max(1, base_max - 1)
+
+    if mem_available_gb < ELITE_MEM_THRESHOLD * 2:
+        base_max = max(1, base_max - 1)
+
+    return min(base_max, ELITE_MAX_CONCURRENT)
+
+
+def can_spawn_validation() -> tuple[bool, str]:
+    """
+    Check if we can spawn a new validation task based on current resources.
+    Returns (can_spawn, reason).
+    """
+    from services.resource_monitor import resource_monitor
+
+    resources = resource_monitor.get_current_resources()
+    cpu_percent = resources["cpu_percent"]
+    mem_available_gb = resources["memory_available_gb"]
+
+    # Check CPU
+    if cpu_percent > ELITE_CPU_THRESHOLD:
+        return False, f"CPU too high ({cpu_percent:.0f}%)"
+
+    # Check memory
+    if mem_available_gb < ELITE_MEM_THRESHOLD:
+        return False, f"Memory too low ({mem_available_gb:.1f}GB)"
+
+    # Check current running count
+    current_running = len(running_validations)
+    max_concurrent = get_max_concurrent_validations()
+
+    if current_running >= max_concurrent:
+        return False, f"Max concurrent reached ({current_running}/{max_concurrent})"
+
+    return True, "OK"
 
 
 def init_elite_async_primitives():
     """Initialize async primitives for parallel validation."""
-    global elite_validation_semaphore, running_validations_async_lock
+    global running_validations_async_lock
 
-    max_concurrent = get_max_concurrent_validations()
-    elite_validation_semaphore = asyncio.Semaphore(max_concurrent)
     running_validations_async_lock = asyncio.Lock()
 
-    log(f"[Elite Validation] Initialized: max_concurrent={max_concurrent}")
+    max_concurrent = get_max_concurrent_validations()
+    log(f"[Elite Validation] Initialized: max_concurrent={max_concurrent} (resource-aware)")
 
 
 # =============================================================================
@@ -293,9 +366,10 @@ async def validate_strategy(
     }
 
 
-async def validate_single_strategy_worker(strategy: dict, db, processed_count: list):
+async def validate_single_strategy_worker(strategy: dict, db, processed_count: list, task_slot: asyncio.Semaphore):
     """
-    Worker function to validate a single strategy with semaphore control.
+    Worker function to validate a single strategy with resource-aware control.
+    Uses a dynamic semaphore that respects other running services.
     """
     global running_validations, pending_strategies_list
     from services.websocket_manager import broadcast_elite_status
@@ -305,7 +379,15 @@ async def validate_single_strategy_worker(strategy: dict, db, processed_count: l
     symbol = strategy.get('symbol', '')
     timeframe = strategy.get('timeframe', '')
 
-    async with elite_validation_semaphore:
+    # Wait for a slot - semaphore is dynamically sized
+    async with task_slot:
+        # Additional resource check before starting
+        can_spawn, reason = can_spawn_validation()
+        while not can_spawn:
+            log(f"[Elite Validation] Waiting for resources: {reason}")
+            await asyncio.sleep(5)
+            can_spawn, reason = can_spawn_validation()
+
         # Add to running validations
         async with running_validations_async_lock:
             running_validations[strategy_id] = {
@@ -358,29 +440,37 @@ async def validate_single_strategy_worker(strategy: dict, db, processed_count: l
 
 
 def _update_queue_status():
-    """Update elite status with current queue information."""
+    """Update elite status with current queue information and resource state."""
     global running_validations, pending_strategies_list
+    from services.resource_monitor import resource_monitor
 
     running_list = list(running_validations.values())
     pending_preview = pending_strategies_list[:5]  # Next 5 pending
+
+    # Get current resource state
+    resources = resource_monitor.get_current_resources()
 
     app_state.update_elite_status(
         running_validations=running_list,
         pending_queue=pending_preview,
         parallel_count=len(running_list),
-        max_parallel=get_max_concurrent_validations()
+        max_parallel=get_max_concurrent_validations(),
+        cpu_percent=resources["cpu_percent"],
+        memory_available_gb=resources["memory_available_gb"]
     )
 
 
 async def validate_all_strategies():
     """
-    Background task: Validate ALL pending strategies with parallel processing.
+    Background task: Validate ALL pending strategies with resource-aware parallel processing.
+    Dynamically adjusts concurrency based on CPU, memory, and other running services.
     """
     global pending_strategies_list, running_validations
     from strategy_database import get_strategy_db
+    from services.resource_monitor import resource_monitor
 
     # Initialize async primitives if needed
-    if elite_validation_semaphore is None:
+    if running_validations_async_lock is None:
         init_elite_async_primitives()
 
     try:
@@ -421,13 +511,18 @@ async def validate_all_strategies():
             "status": "pending"
         } for s in pending]
 
+        # Get resource-aware max concurrent (considers Autonomous Optimizer, etc.)
         max_concurrent = get_max_concurrent_validations()
+        resources = resource_monitor.get_current_resources()
+
         app_state.update_elite_status(
             running=True,
             total=len(pending),
             processed=0,
             max_parallel=max_concurrent,
-            message=f"Validating {len(pending)} strategies ({max_concurrent} parallel)..."
+            cpu_percent=resources["cpu_percent"],
+            memory_available_gb=resources["memory_available_gb"],
+            message=f"Validating {len(pending)} strategies ({max_concurrent} parallel, resource-aware)..."
         )
 
         from services.websocket_manager import broadcast_elite_status
@@ -437,9 +532,12 @@ async def validate_all_strategies():
         # Use shared counter for processed count
         processed_count = [0]
 
-        # Create tasks for all strategies
+        # Create dynamic semaphore - will be checked against current resources
+        task_slot = asyncio.Semaphore(max_concurrent)
+
+        # Create tasks for all strategies (pass semaphore for resource control)
         tasks = [
-            validate_single_strategy_worker(strategy, db, processed_count)
+            validate_single_strategy_worker(strategy, db, processed_count, task_slot)
             for strategy in pending
         ]
 

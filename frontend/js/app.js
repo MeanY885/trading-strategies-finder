@@ -388,11 +388,14 @@
                 if (progressFill) progressFill.style.width = `${pct}%`;
                 if (progressCount) progressCount.textContent = `${status.processed} / ${status.total}`;
 
-                // Update parallel count display
+                // Update parallel count display with resource info
                 if (queueParallelCount) {
                     const parallelCount = status.parallel_count || 0;
                     const maxParallel = status.max_parallel || 1;
-                    queueParallelCount.textContent = `${parallelCount}/${maxParallel} parallel`;
+                    const cpuPct = status.cpu_percent ? `CPU: ${Math.round(status.cpu_percent)}%` : '';
+                    const memGb = status.memory_available_gb ? `Mem: ${status.memory_available_gb.toFixed(1)}GB` : '';
+                    const resourceInfo = [cpuPct, memGb].filter(x => x).join(' | ');
+                    queueParallelCount.textContent = `${parallelCount}/${maxParallel} parallel${resourceInfo ? ' | ' + resourceInfo : ''}`;
                 }
 
                 // Render validation queue
