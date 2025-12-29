@@ -350,10 +350,6 @@
 
             // Update progress indicator (text badge)
             const progressEl = document.getElementById('eliteProgress');
-            // Update progress bar elements
-            const progressContainer = document.getElementById('eliteProgressContainer');
-            const progressFill = document.getElementById('eliteProgressFill');
-            const progressText = document.getElementById('eliteProgressText');
             const progressCount = document.getElementById('eliteProgressCount');
             // Update queue elements
             const queueContainer = document.getElementById('eliteValidationQueue');
@@ -361,14 +357,13 @@
             const queueParallelCount = document.getElementById('eliteQueueParallelCount');
 
             if (status.running && status.total > 0) {
-                // Show progress bar when validating
-                if (progressContainer) progressContainer.style.display = 'block';
+                // Show queue when validating
                 if (queueContainer) queueContainer.style.display = 'block';
 
-                // Calculate and update progress bar
-                const pct = Math.round((status.processed / status.total) * 100);
-                if (progressFill) progressFill.style.width = `${pct}%`;
-                if (progressCount) progressCount.textContent = `${status.processed} / ${status.total}`;
+                // Update progress count in status bar
+                if (progressCount) {
+                    progressCount.textContent = `${status.processed} / ${status.total}`;
+                }
 
                 // Update parallel count display with resource info
                 if (queueParallelCount) {
@@ -395,19 +390,17 @@
                         progressEl.textContent = `⏸ Paused`;
                         progressEl.className = 'elite-progress paused';
                     }
-                    if (progressText) progressText.textContent = 'Paused (optimizer running)';
                 } else {
                     // Active validation
                     if (progressEl) {
                         progressEl.textContent = `⚡ Validating`;
                         progressEl.className = 'elite-progress running';
                     }
-                    if (progressText) progressText.textContent = status.message || 'Validating...';
                 }
             } else {
-                // Hide progress bar and queue when not running
-                if (progressContainer) progressContainer.style.display = 'none';
+                // Hide queue when not running
                 if (queueContainer) queueContainer.style.display = 'none';
+                if (progressCount) progressCount.textContent = '';
 
                 if (progressEl) {
                     if (status.message) {
@@ -446,8 +439,8 @@
                 const progress = item.progress || 0;
                 const currentPeriod = item.current_period || '...';
                 const periodIndex = item.period_index !== undefined ? item.period_index + 1 : 0;
-                const totalPeriods = item.total_periods || 12;
-                const message = `${currentPeriod} - ${periodIndex}/${totalPeriods}`;
+                const totalPeriods = item.total_periods || 10;
+                const periodProgress = `${currentPeriod} - ${periodIndex}/${totalPeriods} (${progress}%)`;
 
                 return `
                     <div class="task-queue-item in-progress">
@@ -460,7 +453,7 @@
                             <div class="task-progress-bar">
                                 <div class="task-progress-fill" style="width: ${progress}%"></div>
                             </div>
-                            <span class="task-progress-text">${message}</span>
+                            <span class="task-progress-text">${periodProgress}</span>
                         </div>
                     </div>
                 `;
