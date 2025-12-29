@@ -22,8 +22,11 @@ import os
 import psutil
 import threading
 import concurrent.futures
+from concurrent.futures import wait, FIRST_COMPLETED
 import multiprocessing
 from itertools import product
+import time
+import logging
 
 # Import database
 try:
@@ -4607,9 +4610,106 @@ class StrategyEngine:
         ]
 
         # === EXECUTE IN PARALLEL WITH ProcessPoolExecutor ===
-        # This bypasses Python's GIL for true multi-core parallelism
+        # Uses submit + wait pattern with stall detection instead of map()
+        # This prevents infinite blocking when workers hang
         tested_count = 0
         profitable_count = 0
+        skipped_count = 0
+        stalled_batches = []  # Track stalled work for history
+
+        # Stall detection settings
+        STALL_TIMEOUT = 15 * 60  # 15 minutes
+        CHECK_INTERVAL = 60  # Check every 1 minute
+
+        def process_work_batch(work_items, worker_fn, work_type, executor):
+            """Process a batch of work with stall detection and retry logic."""
+            nonlocal tested_count, profitable_count, skipped_count, stalled_batches
+
+            # Track retry attempts per work item index
+            retry_counts = {}
+            pending_work = list(enumerate(work_items))  # [(index, work_item), ...]
+
+            while pending_work and not abort_flag[0]:
+                # Submit all pending work
+                futures = {}
+                for idx, work in pending_work:
+                    future = executor.submit(worker_fn, work)
+                    futures[future] = (idx, work)
+
+                pending_work = []  # Clear - will be repopulated with retries
+                last_progress_time = time.time()
+
+                while futures and not abort_flag[0]:
+                    # Check abort flag
+                    if self.status and self.status.get("abort"):
+                        abort_flag[0] = True
+                        for f in futures:
+                            f.cancel()
+                        break
+
+                    # Wait for any future to complete (check every 1 minute)
+                    done, not_done = wait(futures, timeout=CHECK_INTERVAL, return_when=FIRST_COMPLETED)
+
+                    if done:
+                        # Progress made - reset stall timer
+                        last_progress_time = time.time()
+
+                        for future in done:
+                            idx, work = futures.pop(future)
+                            tested_count += 1
+
+                            try:
+                                result = future.result(timeout=1)
+                                if result is not None:
+                                    if result.total_trades >= min_trades and (result.win_rate or 0) >= min_win_rate:
+                                        results.append(result)
+                                        if result.total_pnl is not None and result.total_pnl > 0:
+                                            profitable_count += 1
+                                            self._publish_result(result)
+                            except Exception as e:
+                                logging.warning(f"[Parallel] Worker error for {work_type} item {idx}: {e}")
+
+                            # Progress update
+                            if tested_count % update_interval == 0:
+                                progress = int(2 + (tested_count / total) * 88)
+                                overall_pct = self.progress_min + ((progress / 100) * (self.progress_max - self.progress_min))
+                                self._update_status(
+                                    f"[Parallel] {tested_count:,}/{total:,} ({overall_pct:.1f}%) | Found: {profitable_count}",
+                                    progress
+                                )
+                    else:
+                        # No completions - check for stall
+                        elapsed = time.time() - last_progress_time
+
+                        if elapsed >= STALL_TIMEOUT:
+                            # Stall detected - identify stuck futures
+                            stuck_items = []
+                            for future, (idx, work) in list(futures.items()):
+                                future.cancel()
+                                retry_count = retry_counts.get(idx, 0)
+
+                                if retry_count == 0:
+                                    # First stall - retry once
+                                    retry_counts[idx] = 1
+                                    pending_work.append((idx, work))
+                                    logging.warning(f"[Parallel] {work_type} item {idx} stalled, will retry once")
+                                else:
+                                    # Second stall - skip permanently
+                                    skipped_count += 1
+                                    stuck_items.append(idx)
+                                    logging.error(f"[Parallel] {work_type} item {idx} stalled twice, skipping permanently")
+
+                            if stuck_items:
+                                stalled_batches.append({
+                                    "type": work_type,
+                                    "items_skipped": len(stuck_items),
+                                    "item_indices": stuck_items[:10],  # First 10 for logging
+                                    "timestamp": datetime.now().isoformat()
+                                })
+
+                            # Clear futures to exit inner loop and process retries
+                            futures.clear()
+                            break
 
         with concurrent.futures.ProcessPoolExecutor(
             max_workers=num_workers,
@@ -4618,61 +4718,22 @@ class StrategyEngine:
         ) as executor:
             # Process separate direction combinations
             if separate_work:
-                for result in executor.map(_backtest_worker_separate, separate_work):
-                    tested_count += 1
-
-                    # Check abort
-                    if abort_flag[0] or (self.status and self.status.get("abort")):
-                        abort_flag[0] = True
-                        break
-
-                    if result is None:
-                        continue
-                    if result.total_trades >= min_trades and (result.win_rate or 0) >= min_win_rate:
-                        results.append(result)
-                        if result.total_pnl is not None and result.total_pnl > 0:
-                            profitable_count += 1
-                            self._publish_result(result)
-
-                    # Progress update (every update_interval)
-                    if tested_count % update_interval == 0:
-                        progress = int(2 + (tested_count / total) * 88)
-                        overall_pct = self.progress_min + ((progress / 100) * (self.progress_max - self.progress_min))
-                        self._update_status(
-                            f"[Parallel] {tested_count:,}/{total:,} ({overall_pct:.1f}%) | Found: {profitable_count}",
-                            progress
-                        )
+                process_work_batch(separate_work, _backtest_worker_separate, "separate", executor)
 
             # Process bidirectional combinations
             if bidir_work and not abort_flag[0]:
-                for result in executor.map(_backtest_worker_bidir, bidir_work):
-                    tested_count += 1
-
-                    # Check abort
-                    if abort_flag[0] or (self.status and self.status.get("abort")):
-                        abort_flag[0] = True
-                        break
-
-                    if result is None:
-                        continue
-                    if result.total_trades >= min_trades and (result.win_rate or 0) >= min_win_rate:
-                        results.append(result)
-                        if result.total_pnl is not None and result.total_pnl > 0:
-                            profitable_count += 1
-                            self._publish_result(result)
-
-                    # Progress update (every update_interval)
-                    if tested_count % update_interval == 0:
-                        progress = int(2 + (tested_count / total) * 88)
-                        overall_pct = self.progress_min + ((progress / 100) * (self.progress_max - self.progress_min))
-                        self._update_status(
-                            f"[Parallel] {tested_count:,}/{total:,} ({overall_pct:.1f}%) | Found: {profitable_count}",
-                            progress
-                        )
+                process_work_batch(bidir_work, _backtest_worker_bidir, "bidirectional", executor)
 
         # Update counters for later use
         tested_counter[0] = tested_count
         profitable_counter[0] = profitable_count
+
+        # Store stall info in status for history recording
+        if stalled_batches:
+            if self.status:
+                self.status["stalled_batches"] = stalled_batches
+                self.status["skipped_combinations"] = skipped_count
+            logging.warning(f"[Parallel] Optimization completed with {skipped_count} skipped combinations due to stalls")
 
         # Check if aborted
         if abort_flag[0]:

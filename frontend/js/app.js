@@ -366,22 +366,48 @@
             const eliteTab = document.getElementById('elite-tab');
             if (!eliteTab || eliteTab.style.display === 'none') return;
 
-            // Update progress indicator
+            // Update progress indicator (text badge)
             const progressEl = document.getElementById('eliteProgress');
-            if (progressEl) {
-                if (status.running) {
-                    if (status.paused) {
-                        progressEl.textContent = `⏸ Paused - ${status.processed}/${status.total}`;
+            // Update progress bar elements
+            const progressContainer = document.getElementById('eliteProgressContainer');
+            const progressFill = document.getElementById('eliteProgressFill');
+            const progressText = document.getElementById('eliteProgressText');
+            const progressCount = document.getElementById('eliteProgressCount');
+
+            if (status.running && status.total > 0) {
+                // Show progress bar when validating
+                if (progressContainer) progressContainer.style.display = 'block';
+
+                // Calculate and update progress bar
+                const pct = Math.round((status.processed / status.total) * 100);
+                if (progressFill) progressFill.style.width = `${pct}%`;
+                if (progressCount) progressCount.textContent = `${status.processed} / ${status.total}`;
+
+                if (status.paused) {
+                    // Paused state
+                    if (progressEl) {
+                        progressEl.textContent = `⏸ Paused`;
                         progressEl.className = 'elite-progress paused';
-                    } else {
-                        progressEl.textContent = `⚡ ${status.message || 'Validating...'} (${status.processed}/${status.total})`;
+                    }
+                    if (progressText) progressText.textContent = 'Paused (optimizer running)';
+                } else {
+                    // Active validation
+                    if (progressEl) {
+                        progressEl.textContent = `⚡ Validating`;
                         progressEl.className = 'elite-progress running';
                     }
-                } else if (status.message) {
-                    progressEl.textContent = `✓ ${status.message}`;
-                    progressEl.className = 'elite-progress';
-                } else {
-                    progressEl.textContent = '✓ Auto-validation active';
+                    if (progressText) progressText.textContent = status.message || 'Validating...';
+                }
+            } else {
+                // Hide progress bar when not running
+                if (progressContainer) progressContainer.style.display = 'none';
+
+                if (progressEl) {
+                    if (status.message) {
+                        progressEl.textContent = `✓ ${status.message}`;
+                    } else {
+                        progressEl.textContent = '✓ Auto-validation active';
+                    }
                     progressEl.className = 'elite-progress';
                 }
             }
@@ -910,20 +936,20 @@
                 // Filter by backtest data DURATION if specified (client-side)
                 // Shows only strategies tested on at least X amount of data
                 if (historyFilters.period) {
-                    // Required duration in days (with tolerance for filtering)
+                    // Filter ranges must match calculatePeriodLabel() display thresholds exactly
                     let minDays = 0;
                     let maxDays = 0;
                     switch (historyFilters.period) {
-                        case '1w': minDays = 5; maxDays = 10; break;
-                        case '2w': minDays = 11; maxDays = 20; break;
-                        case '1m': minDays = 21; maxDays = 45; break;
-                        case '3m': minDays = 46; maxDays = 100; break;
-                        case '6m': minDays = 101; maxDays = 200; break;
-                        case '9m': minDays = 201; maxDays = 300; break;
-                        case '1y': minDays = 301; maxDays = 400; break;
-                        case '2y': minDays = 401; maxDays = 800; break;
-                        case '3y': minDays = 801; maxDays = 1200; break;
-                        case '5y': minDays = 1201; maxDays = 3650; break;
+                        case '1w': minDays = 0; maxDays = 10; break;      // Display: <= 10
+                        case '2w': minDays = 11; maxDays = 20; break;     // Display: <= 20
+                        case '1m': minDays = 21; maxDays = 45; break;     // Display: <= 45
+                        case '3m': minDays = 46; maxDays = 100; break;    // Display: <= 100
+                        case '6m': minDays = 101; maxDays = 200; break;   // Display: <= 200
+                        case '9m': minDays = 201; maxDays = 300; break;   // Display: <= 300
+                        case '1y': minDays = 301; maxDays = 400; break;   // Display: <= 400
+                        case '2y': minDays = 401; maxDays = 800; break;   // Display: <= 800
+                        case '3y': minDays = 801; maxDays = 1200; break;  // Display: <= 1200
+                        case '5y': minDays = 1201; maxDays = 3650; break; // Display: > 1200
                     }
 
                     historyStrategies = historyStrategies.filter(s => {
@@ -1060,10 +1086,12 @@
                 const dd = bestStrategy.max_drawdown || 0;
                 const ddClass = dd <= 5 ? 'dd-low' : dd <= 15 ? 'dd-medium' : 'dd-high';
 
-                // Format date
+                // Format date with time
                 const createdDate = bestStrategy.created_at ? new Date(bestStrategy.created_at) : null;
                 const dateStr = createdDate ? createdDate.toLocaleDateString('en-GB', {
-                    day: '2-digit', month: 'short', year: 'numeric'
+                    day: '2-digit', month: 'short'
+                }) + ' ' + createdDate.toLocaleTimeString('en-GB', {
+                    hour: '2-digit', minute: '2-digit'
                 }) : '-';
 
                 // TP/SL values
@@ -4045,23 +4073,9 @@
         }
 
         function updateEliteProgress(status) {
-            const progressEl = document.getElementById('eliteProgress');
-
-            if (status.validation_running) {
-                if (status.validation_paused) {
-                    progressEl.textContent = `⏸ Paused (optimizer running) - ${status.validation_processed}/${status.validation_total}`;
-                    progressEl.className = 'elite-progress paused';
-                } else {
-                    progressEl.textContent = `⚡ ${status.validation_message || 'Validating...'} (${status.validation_processed}/${status.validation_total})`;
-                    progressEl.className = 'elite-progress running';
-                }
-            } else if (status.validation_message) {
-                progressEl.textContent = `✓ ${status.validation_message}`;
-                progressEl.className = 'elite-progress';
-            } else {
-                progressEl.textContent = '✓ Auto-validation active';
-                progressEl.className = 'elite-progress';
-            }
+            // Delegate to updateEliteUI which handles both the badge and progress bar
+            // Note: status fields are: running, processed, total, message, paused (not validation_* prefixed)
+            updateEliteUI(status);
         }
 
         function startElitePolling() {
@@ -4114,14 +4128,15 @@
 
             // Helper to format P&L cell with validated date
             function formatPnL(periodData) {
-                // Format the validated_at date compactly
+                // Format the validated_at date compactly with time
                 function formatDate(timestamp) {
                     if (!timestamp) return '';
                     try {
                         const date = new Date(timestamp);
                         const day = date.getDate();
                         const month = date.toLocaleString('en-GB', { month: 'short' });
-                        return `${day} ${month}`;
+                        const time = date.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+                        return `${day} ${month} ${time}`;
                     } catch (e) {
                         return '';
                     }
@@ -4914,7 +4929,31 @@
 
                 tableBody.innerHTML = data.history.map(run => {
                     const pnlColor = (run.best_pnl || 0) >= 0 ? 'var(--success)' : 'var(--danger)';
-                    const statusColor = run.status === 'success' ? 'var(--success)' : 'var(--text-muted)';
+
+                    // Status-based coloring
+                    let statusColor, statusIcon, statusTitle;
+                    switch (run.status) {
+                        case 'success':
+                            statusColor = 'var(--success)';
+                            statusIcon = '';
+                            statusTitle = 'Completed successfully';
+                            break;
+                        case 'partial':
+                            statusColor = 'var(--warning)';
+                            statusIcon = '⚠️ ';
+                            statusTitle = `Partial: ${run.skipped_combinations || 0} combinations skipped due to stalls`;
+                            break;
+                        case 'stalled':
+                            statusColor = 'var(--danger)';
+                            statusIcon = '❌ ';
+                            statusTitle = `Stalled: ${run.skipped_combinations || 0} combinations skipped`;
+                            break;
+                        default:
+                            statusColor = 'var(--text-muted)';
+                            statusIcon = '';
+                            statusTitle = 'No results';
+                    }
+
                     const completedAt = new Date(run.completed_at);
                     const timeStr = completedAt.toLocaleString('en-GB', {
                         day: '2-digit',
@@ -4923,15 +4962,20 @@
                         minute: '2-digit'
                     });
 
+                    // Show skipped count if any
+                    const skippedInfo = run.skipped_combinations > 0
+                        ? ` <small style="color: var(--danger);">(${run.skipped_combinations} skipped)</small>`
+                        : '';
+
                     return `
-                        <tr>
+                        <tr title="${statusTitle}">
                             <td style="white-space: nowrap;">${timeStr}</td>
                             <td>${(run.source || '-').toUpperCase()}</td>
                             <td><strong>${run.pair || '-'}</strong></td>
                             <td>${run.period || '-'}</td>
                             <td>${run.timeframe || '-'}</td>
                             <td>${run.granularity || '-'}</td>
-                            <td style="color: ${statusColor};">${run.strategies_found || 0}</td>
+                            <td style="color: ${statusColor};">${statusIcon}${run.strategies_found || 0}${skippedInfo}</td>
                             <td style="color: ${pnlColor}; font-weight: 600;">£${(run.best_pnl || 0).toFixed(2)}</td>
                         </tr>
                     `;

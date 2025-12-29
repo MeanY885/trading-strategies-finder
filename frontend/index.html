@@ -529,7 +529,19 @@
                     <span class="elite-badge pending-status">Pending: <span id="pendingCount">0</span></span>
                     <span id="eliteProgress" class="elite-progress"></span>
                 </div>
-                <p style="color: var(--text-muted); font-size: 0.85rem; margin-top: -0.5rem;">
+
+                <!-- Progress Bar (shown during validation) -->
+                <div id="eliteProgressContainer" style="display: none; margin-top: 0.75rem;">
+                    <div class="progress-bar" style="height: 8px; background: var(--bg-hover); border-radius: 4px; overflow: hidden;">
+                        <div id="eliteProgressFill" style="width: 0%; height: 100%; background: linear-gradient(90deg, #22c55e, #eab308); transition: width 0.3s;"></div>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; margin-top: 0.5rem; font-size: 0.85rem;">
+                        <span id="eliteProgressText" style="color: var(--text-secondary);">Validating...</span>
+                        <span id="eliteProgressCount" style="color: var(--text-muted);">0 / 0</span>
+                    </div>
+                </div>
+
+                <p style="color: var(--text-muted); font-size: 0.85rem; margin-top: 0.5rem;">
                     Validation runs automatically in the background. Pauses when optimizer is active.
                 </p>
 

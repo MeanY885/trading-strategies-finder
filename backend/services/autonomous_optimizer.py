@@ -641,6 +641,21 @@ async def run_single_optimization(
     global autonomous_runs_history
     strategies_found = len(temp_status.get("report", {}).get("top_10", [])) if temp_status.get("report") else 0
 
+    # Check for stalled/skipped combinations
+    stalled_batches = temp_status.get("stalled_batches", [])
+    skipped_combinations = temp_status.get("skipped_combinations", 0)
+
+    # Determine status based on results and stalls
+    if skipped_combinations > 0:
+        if strategies_found > 0:
+            status = "partial"  # Completed with some skipped
+        else:
+            status = "stalled"  # No results and had stalls
+    elif strategies_found > 0:
+        status = "success"
+    else:
+        status = "no_results"
+
     history_entry = {
         "completed_at": datetime.now().isoformat(),
         "source": source,
@@ -649,8 +664,15 @@ async def run_single_optimization(
         "timeframe": timeframe["label"],
         "granularity": granularity["label"],
         "strategies_found": strategies_found,
-        "status": "success" if strategies_found > 0 else "no_results"
+        "status": status,
     }
+
+    # Add stall info if any combinations were skipped
+    if skipped_combinations > 0:
+        history_entry["skipped_combinations"] = skipped_combinations
+        history_entry["stalled_batches"] = stalled_batches
+        log(f"[Autonomous Optimizer] {pair} - {skipped_combinations} combinations skipped due to stalls", level='WARNING')
+
     autonomous_runs_history.insert(0, history_entry)
     if len(autonomous_runs_history) > MAX_HISTORY_SIZE:
         autonomous_runs_history = autonomous_runs_history[:MAX_HISTORY_SIZE]
@@ -658,7 +680,7 @@ async def run_single_optimization(
     # Also add to app_state so the API endpoint can access it
     app_state.add_to_history(history_entry)
 
-    log(f"[Autonomous Optimizer] Completed {pair} - {strategies_found} strategies found")
+    log(f"[Autonomous Optimizer] Completed {pair} - {strategies_found} strategies found (status: {status})")
     return "completed", strategies_found
 
 
