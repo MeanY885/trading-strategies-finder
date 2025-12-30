@@ -22,6 +22,7 @@ from state import app_state, concurrency_config
 from logging_config import log
 from services.autonomous_optimizer import has_period_boundary_crossed, get_stale_periods
 from services.task_watchdog import TimeoutCalculator
+from services.progress_watchdog import ProgressBasedWatchdog, notify_task_completed
 from services.cache import invalidate_counts_cache
 from async_database import AsyncDatabase
 from services.vectorbt_engine import VectorBTEngine, is_vectorbt_available
@@ -320,163 +321,193 @@ async def validate_strategy(
     total_testable = 0
     results = []
 
-    # Process each period
+    # =================================================================
+    # PROGRESS-BASED WATCHDOG SETUP (like Auto Strat)
+    # NO time-based timeouts - uses measurement-count stall detection
+    # =================================================================
     total_periods = len(validation_periods)
-    for period_idx, vp in enumerate(validation_periods):
-        # Report progress
-        if progress_callback:
-            try:
-                await progress_callback(period_idx, vp["period"], total_periods)
-            except Exception:
-                pass
+    watchdog_status = {
+        "progress": 0,
+        "running": True,
+        "abort": False,
+        "current_period": "",
+        "periods_completed": 0,
+        "total_periods": total_periods
+    }
 
-        # Keep fresh results
-        if vp["period"] not in stale_period_names and existing_results:
-            for er in existing_results:
-                if er.get("period") == vp["period"]:
-                    results.append(er)
-                    if er.get("status") not in ["limit_exceeded", "insufficient_data", "error", "no_trades"]:
-                        total_testable += 1
-                        if er.get("status") == 'profitable':
-                            passed += 1
+    # Create progress-based watchdog for this validation
+    watchdog_task_id = f"elite_{strategy_id}_{symbol}"
+    watchdog = ProgressBasedWatchdog(
+        task_id=watchdog_task_id,
+        status_dict=watchdog_status,
+        total_combinations=total_periods,  # Each period is a "combination"
+        progress_key="progress",
+        abort_key="abort",
+        running_key="running"
+    )
+
+    # Start watchdog in background
+    watchdog_task = asyncio.create_task(watchdog.start())
+
+    try:
+        # Process each period
+        for period_idx, vp in enumerate(validation_periods):
+            # Check if watchdog triggered abort
+            if watchdog_status.get("abort"):
+                log(f"[Elite Validation] Watchdog aborted validation for {strategy_name}", level='WARNING')
+                break
+
+            # Update progress for watchdog (0-100 scale)
+            progress_pct = (period_idx / total_periods) * 100
+            watchdog_status["progress"] = progress_pct
+            watchdog_status["current_period"] = vp["period"]
+            watchdog_status["periods_completed"] = period_idx
+
+            # Report progress via callback
+            if progress_callback:
+                try:
+                    await progress_callback(period_idx, vp["period"], total_periods)
+                except Exception:
+                    pass
+
+            # Keep fresh results
+            if vp["period"] not in stale_period_names and existing_results:
+                for er in existing_results:
+                    if er.get("period") == vp["period"]:
+                        results.append(er)
+                        if er.get("status") not in ["limit_exceeded", "insufficient_data", "error", "no_trades"]:
+                            total_testable += 1
+                            if er.get("status") == 'profitable':
+                                passed += 1
+                        break
+                continue
+
+            app_state.update_elite_status(
+                message=f"Validating: {strategy_name} ({vp['period']})"
+            )
+
+            if vp["days"] > max_days:
+                results.append({
+                    "period": vp["period"],
+                    "status": "limit_exceeded",
+                    "validated_at": datetime.now().isoformat()
+                })
+                continue
+
+            try:
+                # Fetch data - NO timeout wrapper (progress-based watchdog handles stalls)
+                fetcher = BinanceDataFetcher()
+
+                # NO asyncio.wait_for() - progress-based watchdog monitors stalls
+                df = await fetcher.fetch_ohlcv(pair=symbol, interval=tf_minutes, months=vp["months"])
+
+                if len(df) < 50:
+                    results.append({
+                        "period": vp["period"],
+                        "status": "insufficient_data",
+                        "validated_at": datetime.now().isoformat()
+                    })
+                    continue
+
+                # Check abort again after data fetch
+                if watchdog_status.get("abort"):
+                    log(f"[Elite Validation] Watchdog aborted after data fetch for {strategy_name}", level='WARNING')
                     break
-            continue
 
-        app_state.update_elite_status(
-            message=f"Validating: {strategy_name} ({vp['period']})"
-        )
+                # Run backtest - NO timeout wrapper (progress-based watchdog handles stalls)
+                def run_backtest():
+                    # Try VectorBT first for 100x faster backtesting
+                    if is_vectorbt_available():
+                        try:
+                            vbt_engine = VectorBTEngine(
+                                df,
+                                initial_capital=1000.0,
+                                position_size_pct=100.0,
+                                commission_pct=0.1
+                            )
+                            vbt_result = vbt_engine.run_single_backtest(
+                                strategy=entry_rule,
+                                direction=direction,
+                                tp_percent=tp_percent,
+                                sl_percent=sl_percent
+                            )
+                            return vbt_result
+                        except Exception as e:
+                            log(f"[Elite Validation] VectorBT failed, falling back to StrategyEngine: {e}", level='WARNING')
 
-        if vp["days"] > max_days:
-            results.append({
-                "period": vp["period"],
-                "status": "limit_exceeded",
-                "validated_at": datetime.now().isoformat()
-            })
-            continue
+                    # Fallback to standard StrategyEngine
+                    engine = StrategyEngine(df)
+                    return engine.backtest(
+                        strategy=entry_rule,
+                        direction=direction,
+                        tp_percent=tp_percent,
+                        sl_percent=sl_percent,
+                        initial_capital=1000.0,
+                        position_size_pct=100.0,
+                        commission_pct=0.1
+                    )
 
+                loop = asyncio.get_running_loop()
+                # NO asyncio.wait_for() - progress-based watchdog monitors stalls
+                result = await loop.run_in_executor(None, run_backtest)
+
+                # Simple profitability check - no comparison to original metrics
+                # A period passes if it made any profit (PnL > 0)
+                if result.total_trades == 0:
+                    status = "no_trades"
+                elif result.total_pnl > 0:
+                    status = "profitable"
+                else:
+                    status = "unprofitable"
+
+                # Only count periods with actual trades as testable
+                if status != "no_trades":
+                    total_testable += 1
+                    if status == 'profitable':
+                        passed += 1
+
+                return_pct = round((result.total_pnl / 1000.0) * 100, 1)
+
+                results.append({
+                    "period": vp["period"],
+                    "status": status,
+                    "trades": result.total_trades,
+                    "win_rate": round(result.win_rate, 2),
+                    "pnl": round(result.total_pnl, 2),
+                    "return_pct": return_pct,
+                    "max_drawdown": round(result.max_drawdown, 2),
+                    "validated_at": datetime.now().isoformat()
+                })
+
+                # MEMORY CLEANUP: Explicitly free DataFrame and result after each period
+                # This prevents memory accumulation when validating 8 periods sequentially
+                del df
+                del result
+                import gc
+                gc.collect()
+
+            except Exception as e:
+                results.append({
+                    "period": vp["period"],
+                    "status": "error",
+                    "message": str(e),
+                    "validated_at": datetime.now().isoformat()
+                })
+
+        # Mark progress as complete
+        watchdog_status["progress"] = 100
+        watchdog_status["periods_completed"] = total_periods
+
+    finally:
+        # Stop watchdog and notify coordinator
+        watchdog_status["running"] = False
+        await watchdog.stop()
+        watchdog_task.cancel()
         try:
-            # Fetch data with timeout - always use Binance
-            fetcher = BinanceDataFetcher()
-
-            # Calculate dynamic timeout based on period
-            data_fetch_timeout = TimeoutCalculator.get_data_fetch_timeout(vp["months"])
-
-            try:
-                df = await asyncio.wait_for(
-                    fetcher.fetch_ohlcv(pair=symbol, interval=tf_minutes, months=vp["months"]),
-                    timeout=data_fetch_timeout
-                )
-            except asyncio.TimeoutError:
-                log(f"[Elite Validation] Data fetch TIMEOUT for {symbol} ({vp['period']})", level='ERROR')
-                results.append({
-                    "period": vp["period"],
-                    "status": "timeout",
-                    "message": f"Data fetch timeout ({data_fetch_timeout}s)",
-                    "validated_at": datetime.now().isoformat()
-                })
-                continue
-
-            if len(df) < 50:
-                results.append({
-                    "period": vp["period"],
-                    "status": "insufficient_data",
-                    "validated_at": datetime.now().isoformat()
-                })
-                continue
-
-            # Run backtest with timeout (in executor to not block event loop)
-            backtest_timeout = TimeoutCalculator.get_backtest_timeout(vp["months"])
-
-            def run_backtest():
-                # Try VectorBT first for 100x faster backtesting
-                if is_vectorbt_available():
-                    try:
-                        vbt_engine = VectorBTEngine(
-                            df,
-                            initial_capital=1000.0,
-                            position_size_pct=100.0,
-                            commission_pct=0.1
-                        )
-                        vbt_result = vbt_engine.run_single_backtest(
-                            strategy=entry_rule,
-                            direction=direction,
-                            tp_percent=tp_percent,
-                            sl_percent=sl_percent
-                        )
-                        return vbt_result
-                    except Exception as e:
-                        log(f"[Elite Validation] VectorBT failed, falling back to StrategyEngine: {e}", level='WARNING')
-
-                # Fallback to standard StrategyEngine
-                engine = StrategyEngine(df)
-                return engine.backtest(
-                    strategy=entry_rule,
-                    direction=direction,
-                    tp_percent=tp_percent,
-                    sl_percent=sl_percent,
-                    initial_capital=1000.0,
-                    position_size_pct=100.0,
-                    commission_pct=0.1
-                )
-
-            loop = asyncio.get_running_loop()
-            try:
-                result = await asyncio.wait_for(
-                    loop.run_in_executor(None, run_backtest),
-                    timeout=backtest_timeout
-                )
-            except asyncio.TimeoutError:
-                log(f"[Elite Validation] Backtest TIMEOUT for {symbol} ({vp['period']})", level='ERROR')
-                results.append({
-                    "period": vp["period"],
-                    "status": "timeout",
-                    "message": f"Backtest timeout ({backtest_timeout}s)",
-                    "validated_at": datetime.now().isoformat()
-                })
-                continue
-
-            # Simple profitability check - no comparison to original metrics
-            # A period passes if it made any profit (PnL > 0)
-            if result.total_trades == 0:
-                status = "no_trades"
-            elif result.total_pnl > 0:
-                status = "profitable"
-            else:
-                status = "unprofitable"
-
-            # Only count periods with actual trades as testable
-            if status != "no_trades":
-                total_testable += 1
-                if status == 'profitable':
-                    passed += 1
-
-            return_pct = round((result.total_pnl / 1000.0) * 100, 1)
-
-            results.append({
-                "period": vp["period"],
-                "status": status,
-                "trades": result.total_trades,
-                "win_rate": round(result.win_rate, 2),
-                "pnl": round(result.total_pnl, 2),
-                "return_pct": return_pct,
-                "max_drawdown": round(result.max_drawdown, 2),
-                "validated_at": datetime.now().isoformat()
-            })
-
-            # MEMORY CLEANUP: Explicitly free DataFrame and result after each period
-            # This prevents memory accumulation when validating 8 periods sequentially
-            del df
-            del result
-            import gc
-            gc.collect()
-
-        except Exception as e:
-            results.append({
-                "period": vp["period"],
-                "status": "error",
-                "message": str(e),
-                "validated_at": datetime.now().isoformat()
-            })
+            await watchdog_task
+        except asyncio.CancelledError:
+            pass
+        await notify_task_completed(watchdog_task_id)
 
     # =================================================================
     # NEW ELITE SCORING SYSTEM
