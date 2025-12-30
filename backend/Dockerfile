@@ -38,8 +38,8 @@ COPY . ./backend/
 # Create data and output directories
 RUN mkdir -p /app/data /app/output
 
-# Make entrypoint executable
-RUN chmod +x /app/backend/entrypoint.sh
+# Fix line endings (in case of Windows) and make entrypoint executable
+RUN sed -i 's/\r$//' /app/backend/entrypoint.sh && chmod +x /app/backend/entrypoint.sh
 
 # Expose port
 EXPOSE 8080
