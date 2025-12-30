@@ -1437,22 +1437,114 @@ class VectorBTEngine:
                         freq=self.data_freq,
                     )
 
-                    # Extract metrics for each combination
-                    for tp, sl in col_tuples:
-                        try:
-                            sub_pf = pf[(tp, sl)]
-                            result = self._extract_metrics(sub_pf, strategy, direction, tp, sl)
-                            if result.total_trades > 0:
-                                results.append(result)
-                        except Exception as e:
-                            log(f"[VectorBT] Error extracting metrics for TP={tp} SL={sl}: {e}", level='DEBUG')
+                    # VECTORIZED METRIC EXTRACTION - get ALL metrics at once (massive speedup)
+                    # Instead of 52,800 individual calls, we make ~10 vectorized calls
+                    try:
+                        all_returns = pf.total_return() * 100  # Series indexed by (tp, sl)
+                        all_final_values = pf.final_value()
+                        all_max_dd = pf.max_drawdown() * 100
 
-                        completed += 1
+                        # Trade stats - more complex but still vectorized
+                        trades = pf.trades
+                        trade_counts = trades.count()
 
-                        # Progress callback every 10 combinations (was 100)
-                        # More frequent updates prevent watchdog from thinking task is stalled
-                        if progress_callback and completed % 10 == 0:
-                            progress_callback(completed, total_combos)
+                        # Get win/loss counts per column
+                        if hasattr(trades, 'pnl') and len(trades.pnl) > 0:
+                            # Group PnL by column and count wins/losses
+                            trade_pnl = trades.pnl.values
+                            trade_cols = trades.col.values
+
+                            # Pre-compute wins/losses/profits per column
+                            n_cols = len(col_tuples)
+                            wins_arr = np.zeros(n_cols)
+                            gross_profit_arr = np.zeros(n_cols)
+                            gross_loss_arr = np.zeros(n_cols)
+
+                            for i in range(len(trade_pnl)):
+                                col_idx = trade_cols[i]
+                                pnl = trade_pnl[i]
+                                if pnl > 0:
+                                    wins_arr[col_idx] += 1
+                                    gross_profit_arr[col_idx] += pnl
+                                else:
+                                    gross_loss_arr[col_idx] += abs(pnl)
+                        else:
+                            wins_arr = np.zeros(len(col_tuples))
+                            gross_profit_arr = np.zeros(len(col_tuples))
+                            gross_loss_arr = np.zeros(len(col_tuples))
+
+                        # Buy & hold (same for all combinations)
+                        buy_hold = float((self.df['close'].iloc[-1] / self.df['close'].iloc[0] - 1) * 100)
+
+                        # Build results from vectorized data
+                        for idx, (tp, sl) in enumerate(col_tuples):
+                            total_trades = int(trade_counts.iloc[idx]) if idx < len(trade_counts) else 0
+
+                            if total_trades > 0:
+                                total_return = float(all_returns.iloc[idx])
+                                total_pnl = float(all_final_values.iloc[idx]) - self.initial_capital
+                                max_dd_pct = float(all_max_dd.iloc[idx])
+                                wins = int(wins_arr[idx])
+                                losses = total_trades - wins
+                                win_rate = (wins / total_trades * 100)
+                                gross_profit = gross_profit_arr[idx]
+                                gross_loss = gross_loss_arr[idx]
+                                profit_factor = gross_profit / gross_loss if gross_loss > 0 else (999.0 if gross_profit > 0 else 0)
+
+                                avg_trade = total_pnl / total_trades
+                                avg_trade_pct = total_return / total_trades
+                                vs_buy_hold = total_return - buy_hold
+
+                                composite = self._calculate_composite_score(
+                                    win_rate, profit_factor, total_return, max_dd_pct, total_trades
+                                )
+
+                                results.append(VectorBTResult(
+                                    strategy_name=strategy,
+                                    strategy_category=self.ENTRY_STRATEGIES.get(strategy, {}).get('category', 'Unknown'),
+                                    direction=direction,
+                                    tp_percent=tp,
+                                    sl_percent=sl,
+                                    entry_rule=self.ENTRY_STRATEGIES.get(strategy, {}).get('description', ''),
+                                    total_trades=total_trades,
+                                    wins=wins,
+                                    losses=losses,
+                                    win_rate=win_rate,
+                                    total_pnl=total_pnl,
+                                    total_pnl_percent=total_return,
+                                    profit_factor=min(profit_factor, 999.0),
+                                    max_drawdown=max_dd_pct * self.initial_capital / 100,
+                                    max_drawdown_percent=max_dd_pct,
+                                    avg_trade=avg_trade,
+                                    avg_trade_percent=avg_trade_pct,
+                                    buy_hold_return=buy_hold,
+                                    vs_buy_hold=vs_buy_hold,
+                                    beats_buy_hold=vs_buy_hold > 0,
+                                    composite_score=composite,
+                                    equity_curve=[],  # Skip for performance
+                                    params={'tp_percent': tp, 'sl_percent': sl, 'direction': direction}
+                                ))
+
+                            completed += 1
+
+                            # Progress callback every 100 combinations (reduced from 10)
+                            if progress_callback and completed % 100 == 0:
+                                progress_callback(completed, total_combos)
+
+                    except Exception as extract_err:
+                        log(f"[VectorBT] Vectorized extraction failed: {extract_err}, falling back", level='WARNING')
+                        # Fallback to individual extraction
+                        for tp, sl in col_tuples:
+                            try:
+                                sub_pf = pf[(tp, sl)]
+                                result = self._extract_metrics(sub_pf, strategy, direction, tp, sl)
+                                if result.total_trades > 0:
+                                    results.append(result)
+                            except:
+                                pass
+                            completed += 1
+                            if progress_callback and completed % 100 == 0:
+                                progress_callback(completed, total_combos)
 
                     # CRITICAL: Explicitly free large objects to prevent memory leak
                     del pf
