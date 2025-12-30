@@ -1339,7 +1339,6 @@ class VectorBTEngine:
                 fees=self.total_fees,
                 init_cash=self.initial_capital,
                 freq=self.data_freq,
-                save_returns=True,  # Performance: pre-compute returns for faster metrics
             )
 
             # Extract metrics
@@ -1461,7 +1460,6 @@ class VectorBTEngine:
                         fees=self.total_fees,
                         init_cash=self.initial_capital,
                         freq=self.data_freq,
-                        save_returns=True,  # Performance: pre-compute returns for faster metrics
                     )
 
                     # VECTORIZED METRIC EXTRACTION - get ALL metrics at once (massive speedup)
