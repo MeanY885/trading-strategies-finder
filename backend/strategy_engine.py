@@ -4587,16 +4587,23 @@ class StrategyEngine:
         mode_desc = "bidirectional" if mode == "bidirectional" else ("separate + bidirectional" if mode == "all" else "separate (long/short)")
 
         # Determine number of workers based on CPU cores
-        # Dynamic scaling: leaves headroom for multiple concurrent optimizations
+        # AUTO-SCALING: Uses centralized config for consistent resource allocation
+        # Each task gets CORES_PER_TASK workers (default 8, configurable via env)
+        from config import (
+            CORES_PER_TASK, RESERVED_CORES,
+            calculate_max_concurrent
+        )
+
         cpu_count = psutil.cpu_count(logical=True) or 4
-        if cpu_count >= 32:
-            num_workers = min(16, cpu_count // 2)  # 16 for 32+ cores
-        elif cpu_count >= 16:
-            num_workers = min(10, cpu_count // 2)  # 8-10 for 16+ cores
-        elif cpu_count >= 8:
-            num_workers = max(4, cpu_count // 2)  # 4-6 for 8+ cores
-        else:
-            num_workers = max(2, cpu_count - 1)   # Leave 1 core free
+        available_memory_gb = psutil.virtual_memory().available / (1024**3)
+
+        # Get max concurrent tasks (for logging/awareness)
+        max_concurrent_tasks = calculate_max_concurrent(cpu_count, available_memory_gb)
+
+        # Each task gets its allocated cores (from centralized config)
+        # This ensures tasks × workers ≤ total cores (no contention)
+        usable_cores = max(2, cpu_count - RESERVED_CORES)
+        num_workers = min(CORES_PER_TASK, usable_cores)
         self._update_status(f"Testing {total:,} combinations with {num_workers} parallel workers ({num_strategies} strategies, {mode_desc}, {num_tp}×{num_sl} TP/SL @ {increment:.2f}% steps)...", 2)
 
         # Start database run if available

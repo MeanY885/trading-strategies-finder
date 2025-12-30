@@ -1112,13 +1112,23 @@ async def start_autonomous_optimizer(thread_pool):
             cpu_percent = resources["cpu_percent"]
             mem_available_gb = resources["memory_available_gb"]
 
-            # Resource thresholds for spawning (tuned for high-spec systems)
+            # Resource thresholds for spawning - AUTO-SCALING
             CPU_SPAWN_THRESHOLD = 85  # Only spawn if CPU < 85%
             MEM_SPAWN_THRESHOLD = 2.0  # Only spawn if > 2GB available
-            SPAWN_COOLDOWN = 5  # Seconds between spawns (was 15)
+
+            # Spawn cooldown scales with system size
+            # Larger systems can handle faster spawning, smaller systems need more time
+            # Base: 120s for small systems, scales down to 60s for large systems
+            if cpu_percent < 50 and mem_available_gb > 8:
+                SPAWN_COOLDOWN = 60  # Fast spawning when resources plentiful
+            elif cpu_percent < 70 and mem_available_gb > 4:
+                SPAWN_COOLDOWN = 90  # Medium spawning
+            else:
+                SPAWN_COOLDOWN = 120  # Conservative spawning when resources tight
 
             # Use centralized MAX_CONCURRENT calculation from config.py
-            # Formula: min(cpu_count // 4, 16) - consistent with init_async_primitives()
+            # AUTO-SCALING: Based on available CPU cores and memory
+            # Formula: min(cores/8, memory/2GB) - ensures no resource contention
             MAX_CONCURRENT = MAX_CONCURRENT_CALCULATED
 
             # Check if we can spawn based on resources

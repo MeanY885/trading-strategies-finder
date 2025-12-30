@@ -153,6 +153,20 @@ async def lifespan(app: FastAPI):
     """Handle startup and shutdown events."""
     log("[Startup] Application starting...")
 
+    # Log optimizer configuration (from auto-tune or defaults)
+    from config import (
+        CORES_PER_TASK, MEMORY_PER_TASK_GB, RESERVED_CORES,
+        MAX_CONCURRENT_CALCULATED, CPU_CORES, MEMORY_AVAILABLE_GB
+    )
+    log("[Startup] " + "=" * 50)
+    log("[Startup] OPTIMIZER CONFIGURATION")
+    log("[Startup] " + "=" * 50)
+    log(f"[Startup]   System: {CPU_CORES} cores, {MEMORY_AVAILABLE_GB:.1f}GB available")
+    log(f"[Startup]   CORES_PER_TASK: {CORES_PER_TASK}")
+    log(f"[Startup]   MAX_CONCURRENT: {MAX_CONCURRENT_CALCULATED}")
+    log(f"[Startup]   Total threads: {MAX_CONCURRENT_CALCULATED * CORES_PER_TASK}")
+    log("[Startup] " + "=" * 50)
+
     # Initialize async database pool FIRST (critical for non-blocking operations)
     try:
         await AsyncDatabase.init_pool()

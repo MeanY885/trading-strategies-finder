@@ -1449,7 +1449,9 @@ class VectorBTEngine:
 
                         completed += 1
 
-                        if progress_callback and completed % 100 == 0:
+                        # Progress callback every 10 combinations (was 100)
+                        # More frequent updates prevent watchdog from thinking task is stalled
+                        if progress_callback and completed % 10 == 0:
                             progress_callback(completed, total_combos)
 
                     # CRITICAL: Explicitly free large objects to prevent memory leak

@@ -158,19 +158,107 @@ MAX_CONCURRENT_OPTIMIZATIONS = int(os.getenv("MAX_CONCURRENT", "0"))
 # Max concurrent data fetches - Binance rate limit is ~10/sec, so 5 is safe
 MAX_CONCURRENT_FETCHES = int(os.getenv("MAX_FETCH_CONCURRENT", "5"))
 
-# Centralized MAX_CONCURRENT calculation for parallel optimizer tasks
-# Formula: min(cpu_count // 2, 24) - optimized for high-performance machines
-# This is used by both init_async_primitives() and _run_parallel_optimizer()
-def calculate_max_concurrent(cpu_count: int = None) -> int:
+# =============================================================================
+# AUTO-SCALING CONFIGURATION
+# =============================================================================
+# These can be overridden via environment variables for different deployments
+# Or auto-detected by running: python backend/tools/auto_tune.py on startup
+
+def _load_auto_tuned_config() -> dict:
+    """Load auto-tuned config if available."""
+    auto_tuned_path = Path(__file__).parent / ".auto_tuned"
+    config = {}
+    comments = []
+    if auto_tuned_path.exists():
+        try:
+            with open(auto_tuned_path) as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith("#"):
+                        comments.append(line[1:].strip())
+                    elif line and "=" in line:
+                        key, value = line.split("=", 1)
+                        config[key.strip()] = value.strip()
+
+            # Log the loaded config prominently
+            log("INFO", "Config", "=" * 50)
+            log("INFO", "Config", "AUTO-TUNED SETTINGS LOADED")
+            log("INFO", "Config", "=" * 50)
+            log("INFO", "Config", f"  CORES_PER_TASK: {config.get('CORES_PER_TASK', 'N/A')}")
+            for comment in comments:
+                log("INFO", "Config", f"  {comment}")
+            log("INFO", "Config", "=" * 50)
+        except Exception as e:
+            log("WARNING", "Config", f"Failed to load auto-tuned config: {e}")
+    return config
+
+_AUTO_TUNED = _load_auto_tuned_config()
+
+# Cores allocated per optimization task
+# Priority: 1) Environment variable, 2) Auto-tuned, 3) Default (4)
+# Run: python backend/tools/auto_tune.py --quick  (runs on container startup)
+CORES_PER_TASK = int(os.getenv("CORES_PER_TASK", _AUTO_TUNED.get("CORES_PER_TASK", "4")))
+
+# Memory allocated per optimization task in GB (default: 2.0)
+MEMORY_PER_TASK_GB = float(os.getenv("MEMORY_PER_TASK_GB", "2.0"))
+
+# Reserved cores for OS/async operations (default: 2)
+RESERVED_CORES = int(os.getenv("RESERVED_CORES", "2"))
+
+# Reserved memory for OS in GB (default: 2.0)
+RESERVED_MEMORY_GB = float(os.getenv("RESERVED_MEMORY_GB", "2.0"))
+
+
+def calculate_max_concurrent(cpu_count: int = None, memory_gb: float = None) -> int:
     """
-    Calculate the maximum concurrent tasks based on CPU cores.
-    Optimized for high-performance machines.
+    Calculate the maximum concurrent tasks based on available resources.
+
+    AUTO-SCALING FORMULA:
+    - Each task needs CORES_PER_TASK cores (default 8)
+    - Each task needs MEMORY_PER_TASK_GB memory (default 2GB)
+    - Final limit = min(cpu_limit, memory_limit)
+
+    Environment variable overrides for different deployments:
+    - CORES_PER_TASK: Cores per optimization (default 8)
+    - MEMORY_PER_TASK_GB: Memory per optimization (default 2.0)
+    - RESERVED_CORES: Cores reserved for OS (default 2)
+    - RESERVED_MEMORY_GB: Memory reserved for OS (default 2.0)
+    - MAX_CONCURRENT: Hard override (0 = auto-detect)
+
+    Examples:
+    - 4 cores, 8GB RAM → 1 concurrent task
+    - 16 cores, 16GB RAM → 2 concurrent tasks
+    - 32 cores, 32GB RAM → 3-4 concurrent tasks
+    - 64 cores, 64GB RAM → 7-8 concurrent tasks
     """
+    # Check for hard override first
+    if MAX_CONCURRENT_OPTIMIZATIONS > 0:
+        return MAX_CONCURRENT_OPTIMIZATIONS
+
     if cpu_count is None:
         cpu_count = psutil.cpu_count(logical=True) or 4
-    # Use cpu_count // 2 for better utilization on high-core systems
-    # Cap at 24 to prevent resource exhaustion
-    return min(cpu_count // 2, 24) if cpu_count >= 4 else max(2, cpu_count)
+    if memory_gb is None:
+        memory_gb = psutil.virtual_memory().available / (1024**3)
+
+    # Calculate usable resources (subtract reserved)
+    usable_cores = max(1, cpu_count - RESERVED_CORES)
+    usable_memory = max(1.0, memory_gb - RESERVED_MEMORY_GB)
+
+    # Calculate limits based on each resource
+    cpu_based_limit = max(1, usable_cores // CORES_PER_TASK)
+    memory_based_limit = max(1, int(usable_memory // MEMORY_PER_TASK_GB))
+
+    # Take the minimum of both constraints
+    max_concurrent = min(cpu_based_limit, memory_based_limit)
+
+    # Log the calculation for visibility
+    log("INFO", "Config",
+        f"Auto-scaling: {cpu_count} cores, {memory_gb:.1f}GB RAM → "
+        f"{max_concurrent} concurrent tasks "
+        f"(cpu_limit={cpu_based_limit}, mem_limit={memory_based_limit}, "
+        f"cores_per_task={CORES_PER_TASK}, mem_per_task={MEMORY_PER_TASK_GB}GB)")
+
+    return max_concurrent
 
 # Pre-calculated value for convenience
 MAX_CONCURRENT_CALCULATED = calculate_max_concurrent()
@@ -255,8 +343,10 @@ WATCHDOG_CONFIG = {
     "max_timeout": 3600,                 # 1 hour maximum timeout
 
     # Progress monitoring thresholds
-    "no_progress_warning_seconds": 300,  # 5 minutes without progress = warning
-    "no_progress_abort_seconds": 600,    # 10 minutes without progress = abort
+    # Increased from 600s to 1200s to handle VectorBT's sparse progress updates
+    # VectorBT processes thousands of combinations between progress callbacks
+    "no_progress_warning_seconds": 600,  # 10 minutes without progress = warning
+    "no_progress_abort_seconds": 1200,   # 20 minutes without progress = abort
 
     # Orphan cleanup settings
     "orphan_cleanup_interval": 60,       # Check for orphans every minute

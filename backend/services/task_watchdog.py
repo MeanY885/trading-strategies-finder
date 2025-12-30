@@ -268,8 +268,10 @@ class TaskWatchdog:
 
     # Default thresholds - THIS IS THE PRIMARY ABORT MECHANISM
     # Tasks are aborted when progress stalls, not based on total time
-    DEFAULT_WARNING_SECONDS = 300    # 5 minutes without progress = warning
-    DEFAULT_ABORT_SECONDS = 600      # 10 minutes without progress = abort (PRIMARY)
+    # Increased to handle VectorBT's sparse progress updates (processes thousands
+    # of combinations between callbacks, causing false "stall" detection)
+    DEFAULT_WARNING_SECONDS = 600    # 10 minutes without progress = warning (was 300)
+    DEFAULT_ABORT_SECONDS = 1200     # 20 minutes without progress = abort (was 600)
     CHECK_INTERVAL = 10              # Check every 10 seconds
 
     def __init__(self,
