@@ -8,9 +8,12 @@ access the same data simultaneously without refetching.
 import threading
 import time
 import hashlib
+from pathlib import Path
 from typing import Dict, Optional, Tuple
 from dataclasses import dataclass
 import pandas as pd
+import pyarrow.parquet as pq
+import pyarrow as pa
 
 from logging_config import log
 
@@ -69,6 +72,8 @@ class OHLCVCache:
             "evictions": 0,
             "invalidations": 0,
         }
+        self._cache_dir = Path("/app/data/ohlcv_cache")
+        self._cache_dir.mkdir(parents=True, exist_ok=True)
 
     def _make_key(self, pair: str, interval: int, months: float) -> str:
         """Generate cache key from parameters."""
@@ -76,11 +81,34 @@ class OHLCVCache:
         pair_clean = pair.upper().replace("/", "").replace("-", "")
         return f"{pair_clean}_{interval}_{months}"
 
+    def _get_cache_path(self, pair: str, interval: int, months: float) -> Path:
+        """Get the file path for disk cache."""
+        key = self._make_key(pair, interval, months)
+        return self._cache_dir / f"{key}.parquet"
+
     def _get_ttl_for_use_case(self, use_case: str) -> float:
         """Get the appropriate TTL based on use case."""
         if use_case == USE_CASE_VALIDATION:
             return self._validation_ttl
         return self._default_ttl
+
+    def save_to_disk(self, pair: str, interval: int, months: float, df: pd.DataFrame):
+        """Save DataFrame to Parquet for persistence."""
+        try:
+            path = self._get_cache_path(pair, interval, months)
+            df.to_parquet(path, engine='pyarrow', compression='snappy')
+        except Exception as e:
+            log(f"[OHLCV Cache] Failed to save to disk: {e}", level='WARNING')
+
+    def load_from_disk(self, pair: str, interval: int, months: float) -> pd.DataFrame:
+        """Load DataFrame from Parquet if exists."""
+        try:
+            path = self._get_cache_path(pair, interval, months)
+            if path.exists():
+                return pd.read_parquet(path, engine='pyarrow')
+        except Exception as e:
+            log(f"[OHLCV Cache] Failed to load from disk: {e}", level='WARNING')
+        return None
 
     def get(
         self,
@@ -121,6 +149,14 @@ class OHLCVCache:
             entry = self._cache.get(key)
 
             if entry is None:
+                # Check disk cache
+                df = self.load_from_disk(pair, interval, months)
+                if df is not None:
+                    # Populate memory cache from disk
+                    self.set(pair, interval, months, df)
+                    self._stats["hits"] += 1
+                    log(f"[OHLCV Cache] DISK HIT: {key} ({len(df):,} rows)")
+                    return df
                 self._stats["misses"] += 1
                 return None
 
@@ -166,6 +202,9 @@ class OHLCVCache:
             )
 
             log(f"[OHLCV Cache] SET: {key} ({len(df):,} rows)")
+
+            # Persist to disk
+            self.save_to_disk(pair, interval, months, df)
 
     def _evict_lru(self) -> None:
         """Evict least recently used entry based on last_accessed time."""

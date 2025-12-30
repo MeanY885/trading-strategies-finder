@@ -26,3 +26,6 @@ psutil>=5.9.0
 # Database
 psycopg2-binary>=2.9.9
 asyncpg>=0.29.0
+
+# Parquet Support
+pyarrow>=14.0.0

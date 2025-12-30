@@ -275,6 +275,16 @@ class StrategyDatabase:
         for stmt in vectorbt_columns:
             cursor.execute(stmt)
 
+        # Optimization checkpoints table for crash recovery
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS optimization_checkpoints (
+                run_id VARCHAR(255) PRIMARY KEY,
+                checkpoint_data JSONB,
+                created_at TIMESTAMP DEFAULT NOW(),
+                updated_at TIMESTAMP DEFAULT NOW()
+            )
+        ''')
+
         # Create indexes for fast querying
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_completed_combo ON completed_optimizations(pair, period_label, timeframe_label, granularity_label)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_win_rate ON strategies(win_rate)')
@@ -338,6 +348,49 @@ class StrategyDatabase:
         self._return_connection(conn)
 
         log(f"Completed optimization run #{run_id}: {profitable_found} profitable strategies")
+
+    def checkpoint_optimization_progress(self, run_id: str, checkpoint_data: dict) -> bool:
+        """
+        Save optimization checkpoint for crash recovery.
+
+        Args:
+            run_id: Unique identifier for this optimization run
+            checkpoint_data: Dict with keys: strategies_tested, results_so_far, last_strategy, last_direction
+
+        Returns:
+            True if checkpoint saved successfully
+        """
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        INSERT INTO optimization_checkpoints (run_id, checkpoint_data, created_at)
+                        VALUES (%s, %s, NOW())
+                        ON CONFLICT (run_id) DO UPDATE SET
+                            checkpoint_data = EXCLUDED.checkpoint_data,
+                            updated_at = NOW()
+                    """, (run_id, json.dumps(checkpoint_data)))
+                    conn.commit()
+            return True
+        except Exception as e:
+            log(f"[DB] Checkpoint save failed: {e}", level='WARNING')
+            return False
+
+    def load_optimization_checkpoint(self, run_id: str) -> Optional[dict]:
+        """Load checkpoint data for resuming optimization."""
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT checkpoint_data FROM optimization_checkpoints
+                        WHERE run_id = %s
+                    """, (run_id,))
+                    row = cur.fetchone()
+                    if row:
+                        return json.loads(row[0])
+        except Exception as e:
+            log(f"[DB] Checkpoint load failed: {e}", level='WARNING')
+        return None
 
     def save_strategy(self, result: Any, run_id: int = None,
                       symbol: str = None, timeframe: str = None,

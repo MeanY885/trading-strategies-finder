@@ -12,7 +12,9 @@ Usage:
 """
 import numpy as np
 import pandas as pd
+import threading
 from typing import Dict, List, Optional, Tuple, Any, Callable
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime
 import warnings
@@ -43,8 +45,29 @@ except ImportError:
     vbt = None
     njit = lambda f: f  # No-op decorator if numba not available
 
+import os
+import psutil
 from logging_config import log
 from config import DEFAULT_TRADING_COSTS
+
+# VectorBT logging configuration
+VBT_LOG_LEVEL = os.getenv('VBT_LOG_LEVEL', 'INFO')  # DEBUG, INFO, WARNING
+VBT_VERBOSE = VBT_LOG_LEVEL == 'DEBUG'
+
+def vbt_log(message: str, level: str = 'INFO'):
+    """Log VectorBT messages based on configured level."""
+    levels = {'DEBUG': 0, 'INFO': 1, 'WARNING': 2, 'ERROR': 3}
+    msg_level = levels.get(level, 1)
+    config_level = levels.get(VBT_LOG_LEVEL, 1)
+
+    if msg_level >= config_level:
+        log(message, level=level)
+
+
+def get_memory_mb() -> float:
+    """Get current process memory usage in MB."""
+    process = psutil.Process()
+    return process.memory_info().rss / (1024 * 1024)
 
 
 @dataclass
@@ -247,14 +270,16 @@ class VectorBTEngine:
         # Pre-calculate indicators
         self._calculate_indicators()
 
-        # Cache for signals
-        self._signal_cache: Dict[str, pd.DataFrame] = {}
+        # LRU signal cache with thread safety for concurrent access
+        self._signal_cache: OrderedDict[str, pd.Series] = OrderedDict()
+        self._signal_cache_max_size = 50  # Keep last 50 strategy/direction combinations
+        self._signal_cache_lock = threading.RLock()
 
         # Detect data frequency for accurate annualized metrics
         self.data_freq = self._detect_frequency()
 
-        log(f"[VectorBT] ✅ Engine initialized: {len(df)} bars, capital=${initial_capital:,.0f}, position_size={position_size_pct}%")
-        log(f"[VectorBT] Data frequency: {self.data_freq}, Trading costs: commission={self.commission_pct}%, spread={self.spread_pct}%, slippage={self.slippage_pct}%")
+        vbt_log(f"[VectorBT] Engine initialized: {len(df)} bars, capital=${initial_capital:,.0f}, position_size={position_size_pct}%", level='DEBUG')
+        vbt_log(f"[VectorBT] Data frequency: {self.data_freq}, Trading costs: commission={self.commission_pct}%, spread={self.spread_pct}%, slippage={self.slippage_pct}%", level='DEBUG')
 
     def _detect_frequency(self) -> str:
         """Detect data frequency from DataFrame index for accurate annualized metrics."""
@@ -278,11 +303,35 @@ class VectorBTEngine:
             return '1W'
 
     def _prepare_dataframe(self):
-        """Ensure DataFrame has required columns and format."""
+        """Prepare and validate DataFrame for VectorBT backtesting."""
+
+        # Validate required columns
         required = ['open', 'high', 'low', 'close', 'volume']
-        for col in required:
-            if col not in self.df.columns:
-                raise ValueError(f"Missing required column: {col}")
+        missing = [col for col in required if col not in self.df.columns]
+        if missing:
+            raise ValueError(f"Missing required columns: {missing}")
+
+        # Validate data types
+        for col in ['open', 'high', 'low', 'close', 'volume']:
+            if not pd.api.types.is_numeric_dtype(self.df[col]):
+                log(f"[VectorBT] Converting {col} to numeric", level='WARNING')
+                self.df[col] = pd.to_numeric(self.df[col], errors='coerce')
+
+        # Check for NaN values
+        nan_counts = self.df[required].isna().sum()
+        if nan_counts.any():
+            log(f"[VectorBT] NaN values detected: {nan_counts[nan_counts > 0].to_dict()}", level='WARNING')
+            # Forward fill NaN values
+            self.df[required] = self.df[required].ffill()
+
+        # Validate data integrity
+        if len(self.df) < 50:
+            raise ValueError(f"Insufficient data: {len(self.df)} rows (minimum 50 required)")
+
+        # Check for price anomalies
+        price_range = self.df['close'].max() / self.df['close'].min()
+        if price_range > 100:
+            log(f"[VectorBT] Large price range detected ({price_range:.1f}x) - verify data quality", level='WARNING')
 
         # Ensure time index for VectorBT
         if 'time' in self.df.columns:
@@ -649,18 +698,21 @@ class VectorBTEngine:
         typical_price_vwap = (high + low + close) / 3
         df['vwap'] = (typical_price_vwap * df['volume']).cumsum() / df['volume'].cumsum()
 
-        log(f"[VectorBT] Calculated {len([c for c in df.columns if c not in ['open','high','low','close','volume']])} indicators")
+        vbt_log(f"[VectorBT] Calculated {len([c for c in df.columns if c not in ['open','high','low','close','volume']])} indicators", level='DEBUG')
 
     def _get_signals(self, strategy: str, direction: str) -> pd.Series:
         """
         Generate entry signals for a strategy.
         Mirrors StrategyEngine._get_signals() for compatibility.
-        Uses caching to avoid recalculating signals for the same strategy/direction.
+        Uses thread-safe caching to avoid recalculating signals for the same strategy/direction.
         """
-        # Check cache first - signals don't depend on TP/SL so can be reused
         cache_key = f"{strategy}_{direction}"
-        if cache_key in self._signal_cache:
-            return self._signal_cache[cache_key]
+
+        # Thread-safe cache check
+        with self._signal_cache_lock:
+            if cache_key in self._signal_cache:
+                self._signal_cache.move_to_end(cache_key)  # Mark as recently used
+                return self._signal_cache[cache_key]
 
         df = self.df
 
@@ -668,8 +720,13 @@ class VectorBTEngine:
             return series.fillna(False).astype(bool)
 
         def cache_and_return(result: pd.Series) -> pd.Series:
-            """Cache the signal and return it."""
-            self._signal_cache[cache_key] = result
+            """Thread-safe cache storage with LRU eviction."""
+            with self._signal_cache_lock:
+                # LRU eviction if at capacity
+                while len(self._signal_cache) >= self._signal_cache_max_size:
+                    self._signal_cache.popitem(last=False)  # Remove oldest
+                self._signal_cache[cache_key] = result
+                self._signal_cache.move_to_end(cache_key)
             return result
 
         if strategy == 'always':
@@ -1360,6 +1417,7 @@ class VectorBTEngine:
         mode: str = 'all',
         progress_callback: Callable = None,
         max_results: int = None,
+        checkpoint_callback: Callable = None,
     ) -> List[VectorBTResult]:
         """
         Run optimization across all parameter combinations using VectorBT broadcasting.
@@ -1374,6 +1432,7 @@ class VectorBTEngine:
             mode: 'separate', 'bidirectional', or 'all'
             progress_callback: Function to call with progress updates
             max_results: Maximum results to return (default: MAX_RESULTS=10000)
+            checkpoint_callback: Function to call with checkpoint data for crash recovery
 
         Returns:
             List of VectorBTResult sorted by composite score (limited to max_results)
@@ -1400,9 +1459,12 @@ class VectorBTEngine:
         import time
         start_time = time.time()
 
-        log(f"[VectorBT] 🚀 Starting VECTORIZED optimization")
-        log(f"[VectorBT] Parameters: {len(strategies)} strategies × {len(directions)} directions × {len(tp_range)} TPs × {len(sl_range)} SLs")
-        log(f"[VectorBT] Total combinations: {total_combos:,} (using NumPy broadcasting for speed)")
+        start_memory = get_memory_mb()
+        vbt_log(f"[VectorBT] Starting optimization - Memory: {start_memory:.0f} MB", level='DEBUG')
+
+        vbt_log(f"[VectorBT] Starting VECTORIZED optimization", level='DEBUG')
+        vbt_log(f"[VectorBT] Parameters: {len(strategies)} strategies x {len(directions)} directions x {len(tp_range)} TPs x {len(sl_range)} SLs", level='DEBUG')
+        vbt_log(f"[VectorBT] Total combinations: {total_combos:,} (using NumPy broadcasting for speed)", level='DEBUG')
 
         # Use VectorBT broadcasting for massive speedup
         for strategy in strategies:
@@ -1556,6 +1618,20 @@ class VectorBTEngine:
                             if progress_callback and completed % 50 == 0:
                                 progress_callback(completed, total_combos)
 
+                            # Checkpoint every 1000 combinations for crash recovery
+                            if checkpoint_callback and completed % 1000 == 0:
+                                checkpoint_data = {
+                                    'completed': completed,
+                                    'total': total_combos,
+                                    'current_strategy': strategy,
+                                    'current_direction': direction,
+                                    'results_count': len(results),
+                                }
+                                try:
+                                    checkpoint_callback(checkpoint_data)
+                                except Exception as e:
+                                    log(f"[VectorBT] Checkpoint save failed: {e}", level='DEBUG')
+
                     except Exception as extract_err:
                         log(f"[VectorBT] Vectorized extraction failed: {extract_err}, falling back", level='WARNING')
                         # Fallback to individual extraction
@@ -1580,6 +1656,10 @@ class VectorBTEngine:
                     import gc
                     gc.collect()
 
+                    current_memory = get_memory_mb()
+                    if current_memory > start_memory * 1.5:  # Memory grew by 50%+
+                        log(f"[VectorBT] Memory warning: {current_memory:.0f} MB (started at {start_memory:.0f} MB)", level='WARNING')
+
                 except Exception as e:
                     log(f"[VectorBT] Broadcast error for {strategy}/{direction}: {e}", level='WARNING')
                     # Fall back to iterative approach
@@ -1603,27 +1683,44 @@ class VectorBTEngine:
         # Apply max_results limit
         result_limit = max_results if max_results is not None else self.MAX_RESULTS
         if len(results) > result_limit:
-            log(f"[VectorBT] Limiting results from {len(results)} to {result_limit} (max_results)")
+            vbt_log(f"[VectorBT] Limiting results from {len(results)} to {result_limit} (max_results)", level='DEBUG')
             results = results[:result_limit]
 
         elapsed = time.time() - start_time
         combos_per_sec = total_combos / elapsed if elapsed > 0 else 0
 
-        log(f"[VectorBT] ✅ Optimization COMPLETE")
-        log(f"[VectorBT] Results: {len(results)} valid strategies from {total_combos:,} combinations")
-        log(f"[VectorBT] Time: {elapsed:.1f}s ({combos_per_sec:,.0f} combinations/sec)")
+        log(f"[VectorBT] Optimization complete: {len(results)} results from {total_combos:,} combinations in {elapsed:.1f}s ({combos_per_sec:,.0f}/sec)")
 
         # Compare to estimated iterative time
         estimated_iterative = total_combos * 0.1  # ~100ms per combo in iterative mode
         speedup = estimated_iterative / elapsed if elapsed > 0 else 0
         if speedup > 1:
-            log(f"[VectorBT] ⚡ Speedup: ~{speedup:.0f}x faster than iterative engine (est. {estimated_iterative/60:.1f} min iterative)")
+            vbt_log(f"[VectorBT] Speedup: ~{speedup:.0f}x faster than iterative engine (est. {estimated_iterative/60:.1f} min iterative)", level='DEBUG')
 
         # MEMORY CLEANUP: Clear signal cache and force garbage collection at end of optimization
         self._signal_cache.clear()
         import gc
         gc.collect()
-        log(f"[VectorBT] Memory cleanup completed - signal cache cleared")
+        vbt_log(f"[VectorBT] Memory cleanup completed - signal cache cleared", level='DEBUG')
+
+        # Log result statistics summary
+        if results:
+            returns = [r.total_pnl_percent for r in results if r.total_pnl_percent is not None]
+            win_rates = [r.win_rate for r in results if r.win_rate is not None]
+            scores = [r.composite_score for r in results if r.composite_score is not None]
+
+            stats = {
+                'total_results': len(results),
+                'profitable': sum(1 for r in returns if r > 0),
+                'avg_return': f"{sum(returns)/len(returns):.2f}%" if returns else 'N/A',
+                'max_return': f"{max(returns):.2f}%" if returns else 'N/A',
+                'avg_win_rate': f"{sum(win_rates)/len(win_rates):.1f}%" if win_rates else 'N/A',
+                'top_score': f"{max(scores):.1f}" if scores else 'N/A',
+            }
+            vbt_log(f"[VectorBT] Results summary: {stats}", level='DEBUG')
+
+        end_memory = get_memory_mb()
+        vbt_log(f"[VectorBT] Optimization complete - Memory: {end_memory:.0f} MB (delta: {end_memory - start_memory:+.0f} MB)", level='DEBUG')
 
         return results
 

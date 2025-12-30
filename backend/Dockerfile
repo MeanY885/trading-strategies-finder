@@ -38,6 +38,9 @@ COPY . ./backend/
 # Create data and output directories
 RUN mkdir -p /app/data /app/output
 
+# Create Numba cache directory for persistent JIT caching
+RUN mkdir -p /app/.numba_cache && chmod 777 /app/.numba_cache
+
 # Expose port
 EXPOSE 8080
 

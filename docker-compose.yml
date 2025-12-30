@@ -13,19 +13,44 @@ services:
     build: ./backend
     expose:
       - "8080"
+    # Shared memory for NumPy multiprocessing (default 64MB is too small)
+    shm_size: "8gb"
     volumes:
       - ./data:/app/data
       - ./output:/app/output
       - ./backend:/app/backend  # Hot reload backend changes (requires restart)
+      - ./cache/ohlcv:/app/data/ohlcv_cache
     environment:
       - PYTHONUNBUFFERED=1
       - DATABASE_URL=postgresql://trading:trading_dev@db:5432/trading_optimizer
-      # Performance tuning - adjust based on your machine
+
+      # ============================================
+      # THREADING CONFIGURATION (CRITICAL FOR SPEED)
+      # ============================================
+      # Disable internal BLAS threading - prevents thread oversubscription
+      # Parallelism comes from ProcessPoolExecutor, not BLAS threads
+      - OMP_NUM_THREADS=1
+      - OPENBLAS_NUM_THREADS=1
+      - MKL_NUM_THREADS=1
+      - NUMEXPR_NUM_THREADS=1
+
+      # Numba threading for VectorBT JIT operations
+      - NUMBA_NUM_THREADS=4
+      - NUMBA_THREADING_LAYER=workqueue
+      - NUMBA_CACHE_DIR=/app/.numba_cache
+      - NUMBA_OPT=3
+
+      # ============================================
+      # CONCURRENCY CONFIGURATION
+      # ============================================
       # Set MAX_CONCURRENT=0 for auto-detect, or specify a number
       - MAX_CONCURRENT=0
       # Max parallel Binance API fetches (rate limit is ~10/sec)
       - MAX_FETCH_CONCURRENT=5
-      # Resource thresholds
+
+      # ============================================
+      # RESOURCE THRESHOLDS
+      # ============================================
       - CPU_TARGET_USAGE=75
       - CPU_MAX_USAGE=90
       - MEM_MIN_AVAILABLE_GB=2
