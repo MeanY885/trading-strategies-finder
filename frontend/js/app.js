@@ -7,6 +7,7 @@
             timeframe: '',
             period: ''
         };
+        let historyGroupsCache = {};  // Cache groups for click handler
         let historyInitialized = false;
         let validationInitialized = false;
         let eliteInitialized = false;
@@ -1218,15 +1219,21 @@
                 const groupKey = row.dataset.groupKey;
 
                 if (hasVariants && groupKey) {
-                    // Find the group from historyStrategies
-                    const groups = {};
-                    historyStrategies.forEach(strategy => {
-                        const key = `${strategy.strategy_name}|${strategy.symbol}|${strategy.timeframe}`;
-                        if (!groups[key]) groups[key] = [];
-                        groups[key].push(strategy);
-                    });
-                    const group = groups[groupKey];
-                    if (group) toggleVariants(row, group);
+                    // Use cached groups instead of rebuilding on every click
+                    const group = historyGroupsCache[groupKey];
+                    if (group) {
+                        toggleVariants(row, group);
+                    } else {
+                        console.warn('[History] Group not found for key:', groupKey, '- trying to rebuild cache');
+                        // Fallback: rebuild cache if group not found (defensive)
+                        rebuildHistoryGroupsCache();
+                        const retryGroup = historyGroupsCache[groupKey];
+                        if (retryGroup) {
+                            toggleVariants(row, retryGroup);
+                        } else {
+                            console.error('[History] Group still not found after cache rebuild:', groupKey);
+                        }
+                    }
                 } else if (strategyId) {
                     toggleStrategyDetails(strategyId, row);
                 }
@@ -1236,6 +1243,12 @@
         // Initialize History Tab
         async function initHistoryTab() {
             try {
+                // CRITICAL: Reset all filters on init to prevent browser autofill issues
+                // This ensures a clean state on every tab initialization
+                historyFilters = { symbol: '', timeframe: '', period: '' };
+                const periodSelect = document.getElementById('filter-period');
+                if (periodSelect) periodSelect.value = '';
+
                 // Show loading state
                 const loading = document.getElementById('history-loading');
                 if (loading) {
@@ -1263,41 +1276,49 @@
 
                 // Populate symbol dropdown
                 const symbolSelect = document.getElementById('filter-symbol');
-                symbolSelect.innerHTML = '<option value="">All Pairs</option>';
-                symbols.forEach(symbol => {
-                    symbolSelect.innerHTML += `<option value="${symbol}">${symbol}</option>`;
-                });
+                if (symbolSelect) {
+                    symbolSelect.innerHTML = '<option value="">All Pairs</option>';
+                    symbols.forEach(symbol => {
+                        symbolSelect.innerHTML += `<option value="${symbol}">${symbol}</option>`;
+                    });
+                }
 
                 // Populate timeframe dropdown
                 const timeframeSelect = document.getElementById('filter-timeframe');
-                timeframeSelect.innerHTML = '<option value="">All Timeframes</option>';
-                timeframes.forEach(tf => {
-                    timeframeSelect.innerHTML += `<option value="${tf}">${tf}</option>`;
-                });
+                if (timeframeSelect) {
+                    timeframeSelect.innerHTML = '<option value="">All Timeframes</option>';
+                    timeframes.forEach(tf => {
+                        timeframeSelect.innerHTML += `<option value="${tf}">${tf}</option>`;
+                    });
+                }
 
                 // Sort and render (strategies already loaded)
                 sortStrategiesArray();
-                document.getElementById('history-count').textContent = `${historyStrategies.length} strategies`;
-                document.getElementById('history-count').className = 'status-badge ' + (historyStrategies.length > 0 ? 'success' : 'neutral');
+                const countEl = document.getElementById('history-count');
+                if (countEl) {
+                    countEl.textContent = `${historyStrategies.length} strategies`;
+                    countEl.className = 'status-badge ' + (historyStrategies.length > 0 ? 'success' : 'neutral');
+                }
 
                 const empty = document.getElementById('history-empty');
                 const table = document.getElementById('history-table');
 
                 if (historyStrategies.length > 0) {
                     if (loading) loading.style.display = 'none';
-                    table.style.display = 'table';
+                    if (table) table.style.display = 'table';
                     // Set up event delegation before rendering
                     setupHistoryTableDelegation();
                     renderHistoryTable();
                 } else {
                     if (loading) loading.style.display = 'none';
-                    empty.style.display = 'block';
+                    if (empty) empty.style.display = 'block';
                 }
             } catch (error) {
                 console.error('Failed to initialize history tab:', error);
                 // Reset flag so user can retry by switching tabs
                 historyInitialized = false;
-                document.getElementById('history-loading').textContent = 'Failed to load. Please try again.';
+                const loadingEl = document.getElementById('history-loading');
+                if (loadingEl) loadingEl.textContent = 'Failed to load. Please try again.';
             }
         }
 
@@ -1307,6 +1328,12 @@
             const loading = document.getElementById('history-loading');
             const empty = document.getElementById('history-empty');
             const table = document.getElementById('history-table');
+
+            // Null safety for DOM elements
+            if (!tbody || !loading || !empty || !table) {
+                console.warn('[History] DOM elements not ready for loadHistoryStrategies');
+                return;
+            }
 
             // Show loading
             loading.style.display = 'block';
@@ -1375,8 +1402,11 @@
                 sortStrategiesArray();
 
                 // Update count
-                document.getElementById('history-count').textContent = `${historyStrategies.length} strategies`;
-                document.getElementById('history-count').className = 'status-badge ' + (historyStrategies.length > 0 ? 'success' : 'neutral');
+                const countEl = document.getElementById('history-count');
+                if (countEl) {
+                    countEl.textContent = `${historyStrategies.length} strategies`;
+                    countEl.className = 'status-badge ' + (historyStrategies.length > 0 ? 'success' : 'neutral');
+                }
 
                 // Render table or show empty state
                 if (historyStrategies.length > 0) {
@@ -1389,7 +1419,7 @@
                 }
             } catch (error) {
                 console.error('Failed to load strategies:', error);
-                loading.textContent = 'Failed to load strategies.';
+                if (loading) loading.textContent = 'Failed to load strategies.';
             }
         }
 
@@ -1426,22 +1456,32 @@
         }
 
         // Render History Table - Groups strategies by name, shows best (lowest SL) first
+        // Helper function to rebuild the groups cache
+        function rebuildHistoryGroupsCache() {
+            historyGroupsCache = {};
+            historyStrategies.forEach(strategy => {
+                const key = `${strategy.strategy_name}|${strategy.symbol}|${strategy.timeframe}`;
+                if (!historyGroupsCache[key]) {
+                    historyGroupsCache[key] = [];
+                }
+                historyGroupsCache[key].push(strategy);
+            });
+        }
+
         function renderHistoryTable() {
             const tbody = document.getElementById('history-tbody');
+            if (!tbody) {
+                console.warn('[History] tbody not found - DOM not ready');
+                return;
+            }
             tbody.innerHTML = '';
             // Reset expanded state since DOM is being rebuilt
             currentExpandedHistoryRow = null;
             currentExpandedHistoryId = null;
 
-            // Group strategies by name+symbol+timeframe
-            const groups = {};
-            historyStrategies.forEach(strategy => {
-                const key = `${strategy.strategy_name}|${strategy.symbol}|${strategy.timeframe}`;
-                if (!groups[key]) {
-                    groups[key] = [];
-                }
-                groups[key].push(strategy);
-            });
+            // Group strategies by name+symbol+timeframe and cache for click handler
+            rebuildHistoryGroupsCache();
+            const groups = historyGroupsCache;
 
             // Sort each group by SL (ascending - lowest first)
             Object.values(groups).forEach(group => {
@@ -4115,7 +4155,7 @@
             initWebSocket();
 
             // Initialize source-specific options (pairs, intervals, periods)
-            // Yahoo Finance is the default source
+            // Binance USDT pairs via CCXT
             updatePairOptions();
 
             // Check VectorBT availability

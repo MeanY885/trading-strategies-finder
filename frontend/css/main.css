@@ -16,6 +16,7 @@
             --warning: #f59e0b;
             --border: #27272a;
             --border-subtle: #1f1f23;
+            --bg-tertiary: #1e1e28;
         }
         
         * {
@@ -613,6 +614,11 @@
             width: 1em;
             transition: transform 0.2s ease;
             color: var(--text-muted);
+            cursor: pointer;
+            user-select: none;
+        }
+        .strategy-row {
+            cursor: pointer;
         }
         .strategy-row:hover {
             background: var(--bg-tertiary);
