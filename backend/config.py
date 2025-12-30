@@ -152,10 +152,8 @@ VALIDATION_PERIODS = [
 # DATA SOURCE LIMITS (days of data available per timeframe)
 # =============================================================================
 
-# Yahoo Finance limits
-YAHOO_DATA_LIMITS = {1: 7, 5: 60, 15: 60, 30: 60, 60: 730, 1440: 9999}
-
 # Binance limits: 1m=1yr (slow fetch), 5m+=5-7yrs (fast pagination)
+# Only Binance USDT/USDC/BUSD pairs are supported
 BINANCE_DATA_LIMITS = {
     1: 365,      # 1m: 1 year (525k candles, slow)
     5: 1825,     # 5m: 5 years (525k candles)

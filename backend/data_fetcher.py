@@ -533,4 +533,4 @@ class BinanceDataFetcher:
 CCXTDataFetcher = BinanceDataFetcher
 KrakenDataFetcher = BinanceDataFetcher
 CryptoCompareDataFetcher = BinanceDataFetcher
-YFinanceDataFetcher = BinanceDataFetcher
+# YFinanceDataFetcher removed - only Binance USDT pairs are supported

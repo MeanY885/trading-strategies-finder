@@ -250,7 +250,7 @@ async def validate_strategy(
     Returns:
         dict with validation results including elite_status, score, periods passed
     """
-    from data_fetcher import BinanceDataFetcher, YFinanceDataFetcher
+    from data_fetcher import BinanceDataFetcher
     from strategy_engine import StrategyEngine
 
     strategy_id = strategy.get('id')
@@ -280,14 +280,8 @@ async def validate_strategy(
             })
         }
 
-    # Detect data source
-    if not data_source:
-        if '-' in symbol:
-            data_source = 'yahoo'
-        elif symbol.endswith('USDT') or symbol.endswith('BUSD'):
-            data_source = 'binance'
-        else:
-            data_source = 'binance'
+    # Always use Binance as data source (only USDT/USDC/BUSD pairs are supported)
+    data_source = 'binance'
 
     # Convert timeframe to minutes
     if 'h' in timeframe:
@@ -295,14 +289,11 @@ async def validate_strategy(
     else:
         tf_minutes = int(timeframe.replace('m', ''))
 
-    # Data source limits
-    if data_source and 'yahoo' in data_source.lower():
-        data_limits = {1: 7, 5: 60, 15: 60, 30: 60, 60: 730, 1440: 9999}
-    else:
-        data_limits = {
-            1: 365, 5: 1825, 15: 2555, 30: 2555,
-            60: 2555, 240: 2555, 1440: 3650,
-        }
+    # Binance data limits by timeframe (in days)
+    data_limits = {
+        1: 365, 5: 1825, 15: 2555, 30: 2555,
+        60: 2555, 240: 2555, 1440: 3650,
+    }
     max_days = data_limits.get(tf_minutes, 1825)
 
     # Note: We no longer compare to original metrics
@@ -364,11 +355,8 @@ async def validate_strategy(
             continue
 
         try:
-            # Fetch data with timeout
-            if data_source and 'binance' in data_source.lower():
-                fetcher = BinanceDataFetcher()
-            else:
-                fetcher = YFinanceDataFetcher()
+            # Fetch data with timeout - always use Binance
+            fetcher = BinanceDataFetcher()
 
             # Calculate dynamic timeout based on period
             data_fetch_timeout = TimeoutCalculator.get_data_fetch_timeout(vp["months"])

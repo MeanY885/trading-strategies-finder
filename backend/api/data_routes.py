@@ -28,8 +28,8 @@ router = APIRouter(prefix="/api", tags=["data"])
 # =============================================================================
 
 class DataFetchRequest(BaseModel):
-    source: str = "binance"  # "binance" or "yfinance"
-    pair: str = "BTCUSDT"    # e.g., BTCUSDT (Binance) or BTC-GBP (yfinance)
+    source: str = "binance"  # Only Binance is supported
+    pair: str = "BTCUSDT"    # e.g., BTCUSDT, ETHUSDT, SOLUSDT (USDT/USDC/BUSD pairs only)
     interval: int = 15       # Candle interval in minutes
     months: float = 3        # Historical period
 
@@ -123,24 +123,20 @@ async def fetch_data(request: DataFetchRequest):
     Fetch historical OHLCV data from exchange.
 
     Supports:
-    - Binance (via CCXT) - USDT pairs
-    - Yahoo Finance - Traditional pairs like BTC-GBP
+    - Binance (via CCXT) - USDT/USDC/BUSD pairs only
     """
-    from data_fetcher import BinanceDataFetcher, YFinanceDataFetcher
+    from data_fetcher import BinanceDataFetcher
 
     app_state.update_data_status(
         fetching=True,
         progress=0,
-        message=f"Fetching {request.pair} from {request.source}..."
+        message=f"Fetching {request.pair} from Binance..."
     )
     broadcast_data_status(app_state.get_data_status())
 
     try:
-        # Select fetcher based on source
-        if request.source.lower() == "binance":
-            fetcher = BinanceDataFetcher()
-        else:
-            fetcher = YFinanceDataFetcher()
+        # Always use Binance - only supported data source
+        fetcher = BinanceDataFetcher()
 
         # Fetch data
         app_state.update_data_status(progress=20, message="Connecting to exchange...")

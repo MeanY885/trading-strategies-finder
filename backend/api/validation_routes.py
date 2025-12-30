@@ -40,7 +40,7 @@ async def validate_strategy(request: ValidateStrategyRequest):
     """
     Validate a strategy by testing it against different time periods.
     Uses EXACT SAME configuration from original:
-    - Same data source (Binance/Yahoo)
+    - Binance data source
     - Same symbol & timeframe
     - Same TP% and SL%
     - Same entry_rule and direction
@@ -50,7 +50,7 @@ async def validate_strategy(request: ValidateStrategyRequest):
         raise HTTPException(status_code=503, detail="Database not available")
 
     try:
-        from data_fetcher import BinanceDataFetcher, YFinanceDataFetcher
+        from data_fetcher import BinanceDataFetcher
         from strategy_engine import StrategyEngine
 
         db = get_strategy_db()
@@ -71,15 +71,8 @@ async def validate_strategy(request: ValidateStrategyRequest):
                 detail=f"Symbol {symbol} not supported. Only Binance USDT pairs are available."
             )
 
-        # Detect data source from symbol format if not stored
-        data_source = strategy.get('data_source')
-        if not data_source:
-            if '-' in symbol:
-                data_source = 'yahoo'
-            elif symbol.endswith('USDT') or symbol.endswith('BUSD') or symbol.endswith('BTC'):
-                data_source = 'binance'
-            else:
-                data_source = 'binance'
+        # Always use Binance (only USDT/USDC/BUSD pairs are supported)
+        data_source = 'binance'
 
         timeframe = strategy.get('timeframe', '15m')
         tp_percent = strategy.get('tp_percent', 2.0)
@@ -119,19 +112,16 @@ async def validate_strategy(request: ValidateStrategyRequest):
         # Convert timeframe to minutes for data limit check
         tf_minutes = int(timeframe.replace('m', '').replace('h', '')) if 'm' in timeframe else int(timeframe.replace('h', '')) * 60
 
-        # Data source limits (days)
-        if data_source and 'yahoo' in data_source.lower():
-            data_limits = {1: 7, 5: 60, 15: 60, 30: 60, 60: 730, 1440: 9999}
-        else:
-            data_limits = {
-                1: 365,
-                5: 1825,
-                15: 2555,
-                30: 2555,
-                60: 2555,
-                240: 2555,
-                1440: 3650,
-            }
+        # Binance data limits by timeframe (in days)
+        data_limits = {
+            1: 365,
+            5: 1825,
+            15: 2555,
+            30: 2555,
+            60: 2555,
+            240: 2555,
+            1440: 3650,
+        }
         max_days = data_limits.get(tf_minutes, 1825)
 
         # Validation periods (3-year and 5-year removed - cause timeouts)
@@ -169,11 +159,8 @@ async def validate_strategy(request: ValidateStrategyRequest):
                 continue
 
             try:
-                # Fetch fresh data for this period
-                if data_source and 'binance' in data_source.lower():
-                    fetcher = BinanceDataFetcher()
-                else:
-                    fetcher = YFinanceDataFetcher()
+                # Fetch fresh data for this period - always use Binance
+                fetcher = BinanceDataFetcher()
 
                 df = await fetcher.fetch_ohlcv(pair=symbol, interval=tf_minutes, months=vp["months"])
 
