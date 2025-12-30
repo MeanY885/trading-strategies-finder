@@ -117,6 +117,10 @@ class VectorBTResult:
     # GBP conversion
     total_pnl_gbp: float = 0.0
     max_drawdown_gbp: float = 0.0
+
+    # Data range (for period display in Strategy History)
+    data_start: str = None
+    data_end: str = None
     avg_trade_gbp: float = 0.0
     equity_curve_gbp: List[float] = field(default_factory=list)
     source_currency: str = "USD"
@@ -1462,6 +1466,11 @@ class VectorBTEngine:
         start_memory = get_memory_mb()
         vbt_log(f"[VectorBT] Starting optimization - Memory: {start_memory:.0f} MB", level='DEBUG')
 
+        # Extract data range for period display in Strategy History
+        data_start_str = str(self.df.index[0]) if len(self.df) > 0 else None
+        data_end_str = str(self.df.index[-1]) if len(self.df) > 0 else None
+        vbt_log(f"[VectorBT] Data range: {data_start_str} to {data_end_str}", level='DEBUG')
+
         vbt_log(f"[VectorBT] Starting VECTORIZED optimization", level='DEBUG')
         vbt_log(f"[VectorBT] Parameters: {len(strategies)} strategies x {len(directions)} directions x {len(tp_range)} TPs x {len(sl_range)} SLs", level='DEBUG')
         vbt_log(f"[VectorBT] Total combinations: {total_combos:,} (using NumPy broadcasting for speed)", level='DEBUG')
@@ -1609,7 +1618,9 @@ class VectorBTEngine:
                                     beats_buy_hold=vs_buy_hold > 0,
                                     composite_score=composite,
                                     equity_curve=[],  # Skip for performance
-                                    params={'tp_percent': tp, 'sl_percent': sl, 'direction': direction}
+                                    params={'tp_percent': tp, 'sl_percent': sl, 'direction': direction},
+                                    data_start=data_start_str,
+                                    data_end=data_end_str,
                                 ))
 
                             completed += 1

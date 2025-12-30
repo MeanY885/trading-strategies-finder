@@ -4943,12 +4943,18 @@ class StrategyEngine:
                 self._update_status("VectorBT: Saving to database...", 95)
                 to_save = profitable[:50]
 
+                # Get data range from first result (all results share same OHLCV data range)
+                data_start = getattr(to_save[0], 'data_start', None) if to_save else None
+                data_end = getattr(to_save[0], 'data_end', None) if to_save else None
+
                 # Use batch insert for much better performance (1 commit instead of 50)
                 try:
                     batch_result = self.db.save_strategies_batch(
                         to_save,
                         symbol=symbol or "UNKNOWN",
-                        timeframe=timeframe or "15m"
+                        timeframe=timeframe or "15m",
+                        data_start=data_start,
+                        data_end=data_end,
                     )
                     log(f"[VectorBT] Batch saved {batch_result['saved']} strategies ({batch_result['skipped']} duplicates skipped)")
                 except Exception as e:
