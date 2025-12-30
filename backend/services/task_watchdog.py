@@ -86,8 +86,8 @@ class TimeoutCalculator:
     # Base timeouts in seconds
     # PHILOSOPHY: Progress-based detection is PRIMARY, absolute timeout is SAFETY NET
     # If task is making progress, let it run. Only abort if truly stuck or hits max.
-    # VectorBT optimizations can take 40+ minutes for some combinations.
-    BASE_OPTIMIZATION_TIMEOUT = 7200  # 2 hours base (generous, relies on progress detection)
+    # VectorBT optimizations with 52,800 combinations need 60+ minutes.
+    BASE_OPTIMIZATION_TIMEOUT = 14400  # 4 hours base (increased from 2h - VectorBT needs more time)
     BASE_DATA_FETCH_TIMEOUT = 300     # 5 minutes (network can be slow)
     BASE_BACKTEST_TIMEOUT = 120       # 2 minutes
 

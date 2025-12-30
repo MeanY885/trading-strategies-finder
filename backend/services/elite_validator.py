@@ -475,6 +475,13 @@ async def validate_strategy(
                 "validated_at": datetime.now().isoformat()
             })
 
+            # MEMORY CLEANUP: Explicitly free DataFrame and result after each period
+            # This prevents memory accumulation when validating 8 periods sequentially
+            del df
+            del result
+            import gc
+            gc.collect()
+
         except Exception as e:
             results.append({
                 "period": vp["period"],

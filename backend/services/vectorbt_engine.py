@@ -1452,6 +1452,15 @@ class VectorBTEngine:
                         if progress_callback and completed % 100 == 0:
                             progress_callback(completed, total_combos)
 
+                    # CRITICAL: Explicitly free large objects to prevent memory leak
+                    del pf
+                    del close_tiled
+                    del entries_tiled
+                    del tp_arr
+                    del sl_arr
+                    import gc
+                    gc.collect()
+
                 except Exception as e:
                     log(f"[VectorBT] Broadcast error for {strategy}/{direction}: {e}", level='WARNING')
                     # Fall back to iterative approach
@@ -1490,6 +1499,12 @@ class VectorBTEngine:
         speedup = estimated_iterative / elapsed if elapsed > 0 else 0
         if speedup > 1:
             log(f"[VectorBT] ⚡ Speedup: ~{speedup:.0f}x faster than iterative engine (est. {estimated_iterative/60:.1f} min iterative)")
+
+        # MEMORY CLEANUP: Clear signal cache and force garbage collection at end of optimization
+        self._signal_cache.clear()
+        import gc
+        gc.collect()
+        log(f"[VectorBT] Memory cleanup completed - signal cache cleared")
 
         return results
 

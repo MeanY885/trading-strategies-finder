@@ -1033,7 +1033,17 @@ async def start_autonomous_optimizer(thread_pool):
             # Check cycle completion
             if current_index >= len(combinations):
                 if active_tasks:
-                    done, active_tasks = await asyncio.wait(active_tasks, timeout=1)
+                    done, pending = await asyncio.wait(active_tasks, timeout=1)
+                    # CRITICAL: Await completed tasks to free memory and collect results
+                    for task in done:
+                        try:
+                            await task  # Collect result or exception
+                        except Exception as e:
+                            log(f"[Parallel Optimizer] Task exception during completion: {e}", level='WARNING')
+                    active_tasks = pending
+                    # Trigger garbage collection after completing tasks
+                    import gc
+                    gc.collect()
                     continue
 
                 # Re-check which items need processing (period boundaries may have crossed)
@@ -1078,11 +1088,22 @@ async def start_autonomous_optimizer(thread_pool):
                 log(f"[Parallel Optimizer] Resuming from {next_index + 1}/{len(combinations)}")
                 continue
 
-            # Clean up completed tasks
+            # Clean up completed tasks - CRITICAL: properly await done tasks to free memory
             if active_tasks:
-                done, active_tasks = await asyncio.wait(
+                done, pending = await asyncio.wait(
                     active_tasks, timeout=0.1, return_when=asyncio.FIRST_COMPLETED
                 )
+                # Await completed tasks to collect results and free memory
+                for task in done:
+                    try:
+                        await task  # Collect result or exception
+                    except Exception as e:
+                        log(f"[Parallel Optimizer] Task exception: {e}", level='WARNING')
+                active_tasks = pending
+                # Garbage collect if we completed tasks
+                if done:
+                    import gc
+                    gc.collect()
 
             # Dynamic resource-based spawning
             from services.resource_monitor import resource_monitor
@@ -1128,24 +1149,40 @@ async def start_autonomous_optimizer(thread_pool):
             elif time_since_spawn < SPAWN_COOLDOWN and current_index < len(combinations):
                 status_msg += f" | Next spawn in {SPAWN_COOLDOWN - int(time_since_spawn)}s"
 
-            app_state.update_autonomous_status(
-                running=len(active_tasks) > 0,
-                max_parallel=len(active_tasks),  # Dynamic - no fixed max
-                message=status_msg,
-                cpu_percent=cpu_percent,
-                memory_available_gb=mem_available_gb
+            # Track state changes to avoid unnecessary broadcasts
+            new_state = {
+                "running": len(active_tasks) > 0,
+                "active_count": len(active_tasks),
+                "index": current_index,
+                "message": status_msg
+            }
+
+            # Only update and broadcast if state changed (reduces CPU overhead)
+            state_changed = (
+                not hasattr(start_autonomous_optimizer, '_last_state') or
+                start_autonomous_optimizer._last_state != new_state
             )
 
-            log(f"[Parallel Optimizer] Broadcasting... active={len(active_tasks)}, index={current_index}")
-            # Use async broadcast directly since we're in async context
-            from services.websocket_manager import ws_manager, _get_queue_data_from_status
-            status = app_state.get_autonomous_status()
-            await ws_manager.broadcast("autonomous_status", {
-                "autonomous": status,
-                "queue": _get_queue_data_from_status(status)
-            })
+            if state_changed:
+                start_autonomous_optimizer._last_state = new_state
+                app_state.update_autonomous_status(
+                    running=len(active_tasks) > 0,
+                    max_parallel=len(active_tasks),  # Dynamic - no fixed max
+                    message=status_msg,
+                    cpu_percent=cpu_percent,
+                    memory_available_gb=mem_available_gb
+                )
 
-            await asyncio.sleep(0.2)
+                # Use async broadcast directly since we're in async context
+                from services.websocket_manager import ws_manager, _get_queue_data_from_status
+                status = app_state.get_autonomous_status()
+                await ws_manager.broadcast("autonomous_status", {
+                    "autonomous": status,
+                    "queue": _get_queue_data_from_status(status)
+                })
+
+            # Increased sleep from 0.2s to 1.0s to reduce CPU overhead (5x reduction in loop iterations)
+            await asyncio.sleep(1.0)
 
         except Exception as e:
             import traceback
