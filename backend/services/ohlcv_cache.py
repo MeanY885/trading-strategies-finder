@@ -25,6 +25,7 @@ class CacheEntry:
     """Single OHLCV cache entry."""
     df: pd.DataFrame
     created_at: float
+    last_accessed: float = 0.0  # Track last access time for proper LRU
     hits: int = 0
 
 
@@ -133,6 +134,7 @@ class OHLCVCache:
                 return None
 
             entry.hits += 1
+            entry.last_accessed = time.time()  # Update last access time for LRU
             self._stats["hits"] += 1
             log(f"[OHLCV Cache] HIT: {key} ({len(entry.df):,} rows, {entry.hits} hits, use_case={use_case})")
 
@@ -155,24 +157,26 @@ class OHLCVCache:
             if len(self._cache) >= self._max_entries and key not in self._cache:
                 self._evict_lru()
 
+            now = time.time()
             self._cache[key] = CacheEntry(
                 df=df.copy(),
-                created_at=time.time(),
+                created_at=now,
+                last_accessed=now,  # Initialize last_accessed to creation time
                 hits=0
             )
 
             log(f"[OHLCV Cache] SET: {key} ({len(df):,} rows)")
 
     def _evict_lru(self) -> None:
-        """Evict least recently used entry."""
+        """Evict least recently used entry based on last_accessed time."""
         if not self._cache:
             return
 
-        # Find entry with oldest access (created_at + hits as proxy)
-        # Lower score = older/less used
+        # Find entry with oldest last_accessed time (proper LRU)
+        # The entry with the smallest last_accessed is the least recently used
         oldest_key = min(
             self._cache.keys(),
-            key=lambda k: self._cache[k].created_at + (self._cache[k].hits * 60)
+            key=lambda k: self._cache[k].last_accessed
         )
 
         del self._cache[oldest_key]

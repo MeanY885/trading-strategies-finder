@@ -8,7 +8,7 @@ import asyncio
 import json
 import time
 from datetime import datetime, date
-from typing import List, Dict, Any, Optional
+from typing import Set, Dict, Any, Optional
 from fastapi import WebSocket
 
 from logging_config import log
@@ -43,7 +43,7 @@ class WebSocketManager:
     """
 
     def __init__(self):
-        self.active_connections: List[WebSocket] = []
+        self.active_connections: Set[WebSocket] = set()  # Use Set for O(1) lookup/removal
         self._lock = asyncio.Lock()
         self._throttle_lock = asyncio.Lock()  # Separate lock for atomic throttle check
         self._broadcast_queue: asyncio.Queue = None
@@ -62,14 +62,13 @@ class WebSocketManager:
         """Accept a new WebSocket connection."""
         await websocket.accept()
         async with self._lock:
-            self.active_connections.append(websocket)
+            self.active_connections.add(websocket)  # O(1) set add
         log(f"[WebSocket] Client connected. Total: {len(self.active_connections)}")
 
     async def disconnect(self, websocket: WebSocket) -> None:
         """Remove a disconnected WebSocket."""
         async with self._lock:
-            if websocket in self.active_connections:
-                self.active_connections.remove(websocket)
+            self.active_connections.discard(websocket)  # O(1) set discard, no error if missing
         log(f"[WebSocket] Client disconnected. Total: {len(self.active_connections)}")
 
     async def send_to_client(self, websocket: WebSocket, message: Dict) -> bool:
@@ -125,8 +124,7 @@ class WebSocketManager:
         if disconnected:
             async with self._lock:
                 for conn in disconnected:
-                    if conn in self.active_connections:
-                        self.active_connections.remove(conn)
+                    self.active_connections.discard(conn)  # O(1) set discard
 
     def broadcast_sync(self, message_type: str, data: Dict) -> None:
         """

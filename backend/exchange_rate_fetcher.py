@@ -24,6 +24,7 @@ class ExchangeRateFetcher:
 
     BASE_URL = "https://api.frankfurter.dev/v1"
     DEFAULT_RATE = 0.79  # Fallback rate if API fails
+    REQUEST_TIMEOUT = 30  # Timeout in seconds to prevent indefinite hangs
 
     def __init__(self, status_callback=None):
         self.session = None
@@ -37,9 +38,10 @@ class ExchangeRateFetcher:
             self.status_callback(message, progress)
 
     async def _get_session(self):
-        """Reuse aiohttp session"""
+        """Reuse aiohttp session with timeout configuration"""
         if self.session is None:
-            self.session = aiohttp.ClientSession()
+            timeout = aiohttp.ClientTimeout(total=self.REQUEST_TIMEOUT)
+            self.session = aiohttp.ClientSession(timeout=timeout)
         return self.session
 
     async def close(self):
@@ -97,6 +99,9 @@ class ExchangeRateFetcher:
                     df = df.sort_values('date').reset_index(drop=True)
                 return df
 
+        except asyncio.TimeoutError:
+            self._update_status(f"[ExchangeRate] Request timeout after {self.REQUEST_TIMEOUT}s")
+            return pd.DataFrame(columns=['date', 'usd_gbp_rate'])
         except aiohttp.ClientError as e:
             self._update_status(f"[ExchangeRate] Connection error: {e}")
             return pd.DataFrame(columns=['date', 'usd_gbp_rate'])

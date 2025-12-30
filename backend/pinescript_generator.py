@@ -2140,7 +2140,7 @@ alertcondition(shortCondition, title="MACD Sell", message="MACD: SELL signal - b
         for k, v in params.items():
             if not k.startswith('sl_') and not k.startswith('tp_') and k != 'use_atr_stops':
                 params_display.append(f"// {k}: {v}")
-        params_str = "\\n".join(params_display)
+        params_str = "\n".join(params_display)
 
         return f'''// {strategy_name.replace("_", " ").title()} Strategy
 // Generated: {gen_date}

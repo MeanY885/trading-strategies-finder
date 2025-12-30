@@ -13,6 +13,7 @@ from psycopg2.extensions import register_adapter, AsIs
 import json
 from datetime import datetime
 from typing import Dict, List, Any, Optional
+from contextlib import contextmanager
 import os
 import numpy as np
 import threading
@@ -101,6 +102,30 @@ class StrategyDatabase:
         """Return a connection to the pool."""
         if StrategyDatabase._pool is not None and conn is not None:
             StrategyDatabase._pool.putconn(conn)
+
+    @contextmanager
+    def get_connection(self):
+        """
+        Context manager for safe database connection handling.
+        Automatically returns connection to pool and handles rollback on error.
+
+        Usage:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(...)
+                conn.commit()
+        """
+        conn = None
+        try:
+            conn = self._get_connection()
+            yield conn
+        except Exception:
+            if conn:
+                conn.rollback()
+            raise
+        finally:
+            if conn:
+                self._return_connection(conn)
 
     def _init_database(self):
         """Create database tables if they don't exist."""

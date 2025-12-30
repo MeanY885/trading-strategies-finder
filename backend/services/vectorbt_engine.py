@@ -1323,6 +1323,9 @@ class VectorBTEngine:
             log(f"[VectorBT] Backtest error for {strategy}/{direction}: {e}", level='WARNING')
             return self._empty_result(strategy, direction, tp_percent, sl_percent)
 
+    # Maximum results to keep to prevent OOM on large optimizations
+    MAX_RESULTS = 10000
+
     def run_optimization(
         self,
         strategies: List[str] = None,
@@ -1331,6 +1334,7 @@ class VectorBTEngine:
         sl_range: np.ndarray = None,
         mode: str = 'all',
         progress_callback: Callable = None,
+        max_results: int = None,
     ) -> List[VectorBTResult]:
         """
         Run optimization across all parameter combinations using VectorBT broadcasting.
@@ -1344,9 +1348,10 @@ class VectorBTEngine:
             sl_range: Array of SL percentages
             mode: 'separate', 'bidirectional', or 'all'
             progress_callback: Function to call with progress updates
+            max_results: Maximum results to return (default: MAX_RESULTS=10000)
 
         Returns:
-            List of VectorBTResult sorted by composite score
+            List of VectorBTResult sorted by composite score (limited to max_results)
         """
         if strategies is None:
             strategies = list(self.ENTRY_STRATEGIES.keys())
@@ -1359,6 +1364,9 @@ class VectorBTEngine:
 
         if sl_range is None:
             sl_range = np.arange(0.5, 5.1, 0.5)
+
+        # Clear signal cache at start of optimization to prevent memory leak
+        self._signal_cache.clear()
 
         results = []
         total_combos = len(strategies) * len(directions) * len(tp_range) * len(sl_range)
@@ -1461,8 +1469,14 @@ class VectorBTEngine:
                             if progress_callback and completed % 100 == 0:
                                 progress_callback(completed, total_combos)
 
-        # Sort by composite score
+        # Sort by composite score and limit results to prevent OOM
         results.sort(key=lambda r: r.composite_score, reverse=True)
+
+        # Apply max_results limit
+        result_limit = max_results if max_results is not None else self.MAX_RESULTS
+        if len(results) > result_limit:
+            log(f"[VectorBT] Limiting results from {len(results)} to {result_limit} (max_results)")
+            results = results[:result_limit]
 
         elapsed = time.time() - start_time
         combos_per_sec = total_combos / elapsed if elapsed > 0 else 0
