@@ -7,6 +7,7 @@ import asyncio
 import pandas as pd
 from datetime import datetime, timedelta
 from typing import Optional, Dict
+from logging_config import log
 
 
 class ExchangeRateFetcher:
@@ -31,7 +32,7 @@ class ExchangeRateFetcher:
         self._rates_loaded = False
 
     def _update_status(self, message: str, progress: int = None):
-        print(message)
+        log(message)
         if self.status_callback:
             self.status_callback(message, progress)
 

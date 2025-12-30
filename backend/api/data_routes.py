@@ -16,6 +16,7 @@ from pydantic import BaseModel
 import pandas as pd
 
 from config import DATA_DIR
+from logging_config import log
 from state import app_state
 from services.websocket_manager import broadcast_data_status
 
@@ -391,5 +392,5 @@ async def get_exchange_rate():
                 else:
                     return {"usd_to_gbp": 0.79, "source": "fallback"}
     except Exception as e:
-        print(f"Exchange rate fetch error: {e}")
-        return {"usd_to_gbp": 0.79, "source": "fallback"}
+        log(f"[Data] Exchange rate fetch error: {e}", level='ERROR')
+        return {"usd_to_gbp": 0.79, "source": "fallback", "error": str(e)}

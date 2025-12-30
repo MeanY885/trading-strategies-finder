@@ -743,65 +743,91 @@
             return false;
         }
 
+        // =============================================================================
+        // RETRY MECHANISM - Retry failed requests with exponential backoff
+        // =============================================================================
+
+        async function withRetry(fn, maxRetries = 3, baseDelay = 1000) {
+            for (let attempt = 1; attempt <= maxRetries; attempt++) {
+                try {
+                    return await fn();
+                } catch (error) {
+                    if (attempt === maxRetries) throw error;
+                    const delay = baseDelay * Math.pow(2, attempt - 1);
+                    console.log(`[Retry] Attempt ${attempt} failed, retrying in ${delay}ms...`);
+                    await new Promise(r => setTimeout(r, delay));
+                }
+            }
+        }
+
         // Cache for data to avoid re-requests
         let cachedStrategies = null;
         let cachedEliteData = null;
         let cachedPriorityData = null;
         let cachedQueueData = null;
 
-        // WebSocket data loading functions
+        // WebSocket data loading functions with retry mechanism
         async function loadStrategiesViaWs() {
-            try {
-                // Use longer timeout (45s) - can be slow with many strategies
-                const response = await wsRequest('get_strategies', 45000);
-                cachedStrategies = response.data;
-                return response.data;
-            } catch (e) {
-                console.error('[WS] Failed to load strategies:', e);
-                throw e;
-            }
+            return withRetry(async () => {
+                try {
+                    // Use longer timeout (45s) - can be slow with many strategies
+                    const response = await wsRequest('get_strategies', 45000);
+                    cachedStrategies = response.data;
+                    return response.data;
+                } catch (e) {
+                    console.error('[WS] Failed to load strategies:', e);
+                    throw e;
+                }
+            }, 3, 1000);
         }
 
         async function loadEliteViaWs() {
-            try {
-                // Use longer timeout (60s) - database aggregation can be slow with many strategies
-                const response = await wsRequest('get_elite', 60000);
-                cachedEliteData = response;
-                return response;
-            } catch (e) {
-                console.error('[WS] Failed to load elite data:', e);
-                throw e;
-            }
+            return withRetry(async () => {
+                try {
+                    // Use longer timeout (60s) - database aggregation can be slow with many strategies
+                    const response = await wsRequest('get_elite', 60000);
+                    cachedEliteData = response;
+                    return response;
+                } catch (e) {
+                    console.error('[WS] Failed to load elite data:', e);
+                    throw e;
+                }
+            }, 3, 1000);
         }
 
         async function loadQueueViaWs() {
-            try {
-                const response = await wsRequest('get_queue', 15000);
-                cachedQueueData = response.data;
-                return response.data;
-            } catch (e) {
-                console.error('[WS] Failed to load queue:', e);
-                throw e;
-            }
+            return withRetry(async () => {
+                try {
+                    const response = await wsRequest('get_queue', 15000);
+                    cachedQueueData = response.data;
+                    return response.data;
+                } catch (e) {
+                    console.error('[WS] Failed to load queue:', e);
+                    throw e;
+                }
+            }, 3, 1000);
         }
 
         async function loadPriorityViaWs() {
-            try {
-                // Use longer timeout - database may be busy during optimization
-                const response = await wsRequest('get_priority', 15000);
-                cachedPriorityData = response.data;
-                return response.data;
-            } catch (e) {
-                console.error('[WS] Failed to load priority:', e);
-                // WebSocket-only - retry rather than HTTP fallback
-                throw e;
-            }
+            return withRetry(async () => {
+                try {
+                    // Use longer timeout - database may be busy during optimization
+                    const response = await wsRequest('get_priority', 15000);
+                    cachedPriorityData = response.data;
+                    return response.data;
+                } catch (e) {
+                    console.error('[WS] Failed to load priority:', e);
+                    throw e;
+                }
+            }, 3, 1000);
         }
 
         async function loadDbStatsViaWs() {
             try {
-                const response = await wsRequest('get_db_stats');
-                return response.data;
+                return await withRetry(async () => {
+                    const response = await wsRequest('get_db_stats');
+                    return response.data;
+                }, 3, 1000);
             } catch (e) {
                 console.error('[WS] Failed to load db stats:', e);
                 return { total_strategies: 0, unique_symbols: 0, unique_timeframes: 0, elite_count: 0 };

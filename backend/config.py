@@ -7,6 +7,7 @@ Extracted from main.py to reduce file size and improve maintainability.
 import os
 from pathlib import Path
 import psutil
+from logging_config import log
 
 # =============================================================================
 # PATH CONFIGURATION
@@ -158,21 +159,18 @@ MAX_CONCURRENT_OPTIMIZATIONS = int(os.getenv("MAX_CONCURRENT", "0"))
 MAX_CONCURRENT_FETCHES = int(os.getenv("MAX_FETCH_CONCURRENT", "5"))
 
 # Centralized MAX_CONCURRENT calculation for parallel optimizer tasks
-# Formula: min(cpu_count // 4, 16) - balances performance and resource usage
+# Formula: min(cpu_count // 2, 24) - optimized for high-performance machines
 # This is used by both init_async_primitives() and _run_parallel_optimizer()
 def calculate_max_concurrent(cpu_count: int = None) -> int:
     """
     Calculate the maximum concurrent tasks based on CPU cores.
-
-    Args:
-        cpu_count: Number of CPU cores. If None, auto-detects using psutil.
-
-    Returns:
-        Maximum concurrent tasks, capped at 16 to prevent resource exhaustion.
+    Optimized for high-performance machines.
     """
     if cpu_count is None:
         cpu_count = psutil.cpu_count(logical=True) or 4
-    return min(cpu_count // 4, 16) if cpu_count >= 4 else max(2, cpu_count)
+    # Use cpu_count // 2 for better utilization on high-core systems
+    # Cap at 24 to prevent resource exhaustion
+    return min(cpu_count // 2, 24) if cpu_count >= 4 else max(2, cpu_count)
 
 # Pre-calculated value for convenience
 MAX_CONCURRENT_CALCULATED = calculate_max_concurrent()
@@ -203,12 +201,12 @@ def _log_vectorbt_status():
     """Log VectorBT configuration status."""
     if USE_VECTORBT:
         if _vectorbt_available:
-            print(f"[Config] VectorBT ENABLED and available (100x faster backtesting)")
+            log("INFO", "Config", "VectorBT ENABLED and available (100x faster backtesting)")
         else:
-            print(f"[Config] VectorBT ENABLED but not installed - will use standard engine")
-            print(f"[Config] To install: pip install vectorbt numba")
+            log("WARNING", "Config", "VectorBT ENABLED but not installed - will use standard engine")
+            log("WARNING", "Config", "To install: pip install vectorbt numba")
     else:
-        print(f"[Config] VectorBT disabled (USE_VECTORBT=false)")
+        log("INFO", "Config", "VectorBT disabled (USE_VECTORBT=false)")
 
 _log_vectorbt_status()
 

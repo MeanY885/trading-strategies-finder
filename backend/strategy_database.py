@@ -16,6 +16,7 @@ from typing import Dict, List, Any, Optional
 import os
 import numpy as np
 import threading
+from logging_config import log
 
 # Register numpy type adapters for psycopg2
 # Without this, numpy.float64 gets serialized as "np.float64(...)" which crashes PostgreSQL
@@ -84,7 +85,7 @@ class StrategyDatabase:
                             options="-c statement_timeout=30000"  # 30s query timeout
                         )
                     except Exception as e:
-                        print(f"[DB Pool] Failed to create pool: {e}")
+                        log(f"[DB Pool] Failed to create pool: {e}", level='ERROR')
                         raise
 
     def _get_connection(self):
@@ -267,13 +268,13 @@ class StrategyDatabase:
         conn.commit()
         self._return_connection(conn)
 
-        print(f"Strategy database initialized (PostgreSQL)")
+        log("Strategy database initialized (PostgreSQL)")
 
     def _auto_deduplicate(self):
         """Automatically remove duplicates on startup."""
         removed = self.remove_duplicates()
         if removed > 0:
-            print(f"Auto-cleaned {removed} duplicate strategies")
+            log(f"Auto-cleaned {removed} duplicate strategies")
 
     def start_optimization_run(self, symbol: str = None, timeframe: str = None,
                                data_source: str = None, data_rows: int = 0,
@@ -293,7 +294,7 @@ class StrategyDatabase:
         conn.commit()
         self._return_connection(conn)
 
-        print(f"Started optimization run #{run_id}")
+        log(f"Started optimization run #{run_id}")
         return run_id
 
     def complete_optimization_run(self, run_id: int, strategies_tested: int,
@@ -311,7 +312,7 @@ class StrategyDatabase:
         conn.commit()
         self._return_connection(conn)
 
-        print(f"Completed optimization run #{run_id}: {profitable_found} profitable strategies")
+        log(f"Completed optimization run #{run_id}: {profitable_found} profitable strategies")
 
     def save_strategy(self, result: Any, run_id: int = None,
                       symbol: str = None, timeframe: str = None,
@@ -355,7 +356,7 @@ class StrategyDatabase:
         existing = cursor.fetchone()
         if existing:
             self._return_connection(conn)
-            print(f"Skipping duplicate strategy: {strategy_name} (TP={tp_percent}%, SL={sl_percent}%)")
+            log(f"Skipping duplicate strategy: {strategy_name} (TP={tp_percent}%, SL={sl_percent}%)", level='WARNING')
             return None
 
         # Convert found_by list to JSON
@@ -458,7 +459,7 @@ class StrategyDatabase:
                                    data_source, data_start, data_end)
                 saved += 1
             except Exception as e:
-                print(f"Error saving strategy {result.strategy_name}: {e}")
+                log(f"Error saving strategy {result.strategy_name}: {e}", level='ERROR')
         return saved
 
     def get_top_strategies(self, limit: int = 10, symbol: str = None,
@@ -841,7 +842,7 @@ class StrategyDatabase:
         conn.commit()
         self._return_connection(conn)
 
-        print(f"Removed {deleted} duplicate strategies from database")
+        log(f"Removed {deleted} duplicate strategies from database")
         return deleted
 
     def clear_all(self) -> int:
@@ -865,7 +866,7 @@ class StrategyDatabase:
         conn.commit()
         self._return_connection(conn)
 
-        print(f"Cleared entire database: {count} strategies + all tracking data")
+        log(f"Cleared entire database: {count} strategies + all tracking data", level='WARNING')
         return count
 
     # =========================================================================

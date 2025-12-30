@@ -30,6 +30,7 @@ import numpy as np
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any
 from dataclasses import dataclass
+from logging_config import log
 
 
 @dataclass
@@ -150,7 +151,7 @@ class BinanceDataFetcher:
 
     def _update_status(self, message: str, progress: int = None):
         """Update status for UI feedback"""
-        print(message)
+        log(message)
         if self.status_callback:
             self.status_callback(message, progress)
 

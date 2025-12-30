@@ -546,7 +546,7 @@ def get_system_resources() -> Dict:
                     pass
 
     except Exception as e:
-        print(f"Warning: Could not detect system resources: {e}")
+        log(f"Warning: Could not detect system resources: {e}", "WARNING")
 
     return resources
 
@@ -597,15 +597,15 @@ def get_optimal_workers() -> Tuple[int, Dict]:
 OPTIMAL_WORKERS, SYSTEM_RESOURCES = get_optimal_workers()
 
 # Log auto-scaling decision
-print(f"=== Auto-Scaling Configuration ===")
-print(f"  CPU Cores: {SYSTEM_RESOURCES['cpu_cores']}")
-print(f"  Memory: {SYSTEM_RESOURCES['memory_gb']:.1f} GB total, {SYSTEM_RESOURCES['memory_available_gb']:.1f} GB available")
+log(f"=== Auto-Scaling Configuration ===", "INFO")
+log(f"  CPU Cores: {SYSTEM_RESOURCES['cpu_cores']}", "INFO")
+log(f"  Memory: {SYSTEM_RESOURCES['memory_gb']:.1f} GB total, {SYSTEM_RESOURCES['memory_available_gb']:.1f} GB available", "INFO")
 if SYSTEM_RESOURCES['container_memory_limit_gb']:
-    print(f"  Container Limit: {SYSTEM_RESOURCES['container_memory_limit_gb']:.1f} GB")
-print(f"  Workers (CPU-based): {SYSTEM_RESOURCES['cpu_based_workers']}")
-print(f"  Workers (Memory-based): {SYSTEM_RESOURCES['memory_based_workers']}")
-print(f"  USING: {OPTIMAL_WORKERS} workers")
-print(f"=================================")
+    log(f"  Container Limit: {SYSTEM_RESOURCES['container_memory_limit_gb']:.1f} GB", "INFO")
+log(f"  Workers (CPU-based): {SYSTEM_RESOURCES['cpu_based_workers']}", "INFO")
+log(f"  Workers (Memory-based): {SYSTEM_RESOURCES['memory_based_workers']}", "INFO")
+log(f"  USING: {OPTIMAL_WORKERS} workers", "INFO")
+log(f"=================================", "INFO")
 
 
 # ============================================
@@ -2345,7 +2345,7 @@ class StrategyEngine:
                     self.data_start = str(pd.to_datetime(df['date'].iloc[0]))
                     self.data_end = str(pd.to_datetime(df['date'].iloc[-1]))
             except Exception as e:
-                print(f"Warning: Could not extract date range: {e}")
+                log(f"Warning: Could not extract date range: {e}", "WARNING")
                 pass
 
         self._calculate_indicators()
@@ -2365,7 +2365,7 @@ class StrategyEngine:
         end_price = df.iloc[-1]['close']
 
         buy_hold_pct = ((end_price - start_price) / start_price) * 100
-        print(f"Buy & Hold benchmark: {buy_hold_pct:.2f}% (from £{start_price:.2f} to £{end_price:.2f})")
+        log(f"Buy & Hold benchmark: {buy_hold_pct:.2f}% (from £{start_price:.2f} to £{end_price:.2f})", "INFO")
         return round(buy_hold_pct, 2)
 
     # =========================================================================
@@ -2516,7 +2516,7 @@ class StrategyEngine:
                     'consistency_score': result.consistency_score,
                 })
             except Exception as e:
-                print(f"Streaming error: {e}")
+                log(f"Streaming error: {e}", "WARNING")
 
     def _calculate_indicators(self):
         """
@@ -2903,7 +2903,7 @@ class StrategyEngine:
         # Sanitize all indicator columns to prevent None comparison errors
         self._sanitize_indicators()
 
-        print(f"Indicators ready (pandas-ta). {len(df)} bars, RSI: {df['rsi'].min():.1f}-{df['rsi'].max():.1f}")
+        log(f"Indicators ready (pandas-ta). {len(df)} bars, RSI: {df['rsi'].min():.1f}-{df['rsi'].max():.1f}", "INFO")
 
     def _sanitize_indicators(self):
         """
@@ -4809,7 +4809,7 @@ class StrategyEngine:
             if HAS_CACHE:
                 invalidate_strategy_caches()
 
-            print(f"Saved {min(50, len(profitable))} strategies to database")
+            log(f"Saved {min(50, len(profitable))} strategies to database", "INFO")
 
         self._update_status(
             f"Complete! Tested {tested:,} | Found {len(profitable)} profitable strategies",
@@ -5505,8 +5505,8 @@ class StrategyEngine:
         tested_count = 0
         improved_combos = []
 
-        print(f"  [Tuning] {entry_rule}_{direction}: Testing {len(combinations)} combinations for params: {param_names}")
-        print(f"  [Tuning] Default params: {default_params}, Baseline score: {baseline_score:.1f}")
+        log(f"  [Tuning] {entry_rule}_{direction}: Testing {len(combinations)} combinations for params: {param_names}", "DEBUG")
+        log(f"  [Tuning] Default params: {default_params}, Baseline score: {baseline_score:.1f}", "DEBUG")
 
         import gc
 
@@ -5537,21 +5537,21 @@ class StrategyEngine:
 
             # Log each combination result
             if result_score != baseline_score or result_trades > 0:
-                print(f"    {param_dict} -> Score: {result_score:.1f}, PnL: {result_pnl:.1f}%, Trades: {result_trades}")
+                log(f"    {param_dict} -> Score: {result_score:.1f}, PnL: {result_pnl:.1f}%, Trades: {result_trades}", "DEBUG")
 
             if result_score > best_score:
                 improved_combos.append((param_dict.copy(), result_score))
                 best_score = result_score
                 best_params = param_dict.copy()
                 best_result = result
-                print(f"    *** NEW BEST: {param_dict} -> Score: {result_score:.1f} (was {baseline_score:.1f})")
+                log(f"    *** NEW BEST: {param_dict} -> Score: {result_score:.1f} (was {baseline_score:.1f})", "INFO")
 
             # Clean up to prevent memory buildup
             del df_copy
             if tested_count % 10 == 0:
                 gc.collect()
 
-        print(f"  [Tuning] Tested {tested_count} combos, {len(improved_combos)} improved. Best score: {best_score:.1f} (baseline: {baseline_score:.1f})")
+        log(f"  [Tuning] Tested {tested_count} combos, {len(improved_combos)} improved. Best score: {best_score:.1f} (baseline: {baseline_score:.1f})", "INFO")
 
         # Create TunedResult (handle None values by defaulting to 0)
         before_wr = strategy_result.win_rate if strategy_result.win_rate is not None else 0
@@ -6100,7 +6100,7 @@ def run_strategy_finder(df: pd.DataFrame,
     # First, check for previous winners
     winners = strategy_engine.get_saved_winners(symbol=symbol, limit=10)
     if winners:
-        print(f"Found {len(winners)} previous winning strategies to build on")
+        log(f"Found {len(winners)} previous winning strategies to build on", "INFO")
 
     # Find new strategies (use VectorBT if enabled for 100x faster backtesting)
     results = strategy_engine.find_strategies(

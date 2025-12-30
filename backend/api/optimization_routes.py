@@ -15,6 +15,7 @@ from fastapi.responses import StreamingResponse, PlainTextResponse
 from pydantic import BaseModel, Field, field_validator, ConfigDict
 
 from config import OUTPUT_DIR
+from logging_config import log
 from state import app_state, concurrency_config
 from services.websocket_manager import broadcast_optimization_status, broadcast_strategy_result
 from utils.converters import dict_to_strategy_result
@@ -209,7 +210,7 @@ def run_optimization_sync(request: UnifiedOptimizationRequest, status: dict, str
                         return
             except Exception as e:
                 # Log but continue with full dataframe if date filtering fails
-                print(f"Date range filtering failed: {e}")
+                log(f"[Data] Date range filtering failed, using full dataset: {e}", level='WARNING')
 
         # If risk_percent is provided, use it as position_size_pct
         position_size = request.risk_percent if request.risk_percent is not None else request.position_size_pct
@@ -236,7 +237,8 @@ def run_optimization_sync(request: UnifiedOptimizationRequest, status: dict, str
 
     except Exception as e:
         import traceback
-        traceback.print_exc()
+        error_traceback = traceback.format_exc()
+        log(f"[Data] Optimization run failed: {e}\n{error_traceback}", level='ERROR')
         status["running"] = False
         status["message"] = f"Error: {str(e)}"
 

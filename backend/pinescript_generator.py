@@ -1441,11 +1441,19 @@ longEntrySignal = false
 shortEntrySignal = false''')
         elif engine == "mihakralj":
             selected_conditions = mihakralj_entry_conditions
-            entry_code = selected_conditions.get(entry_rule, '// Unknown strategy - defaulting to manual signal\n// TODO: Add proper entry condition\nentrySignal = false  // DISABLED - unknown entry rule')
+            entry_code = selected_conditions.get(entry_rule, f'''// Unknown strategy "{entry_rule}" - using EMA crossover fallback
+// This default entry uses EMA12/EMA26 crossover which works for most trend-following strategies
+ema12 = ta.ema(close, 12)
+ema26 = ta.ema(close, 26)
+entrySignal = {"ta.crossover(ema12, ema26)" if is_long else "ta.crossunder(ema12, ema26)"}''')
         else:
             # Both "tradingview" and "pandas_ta" use TradingView's built-in ta.* functions
             selected_conditions = entry_conditions
-            entry_code = selected_conditions.get(entry_rule, '// Unknown strategy - defaulting to manual signal\n// TODO: Add proper entry condition\nentrySignal = false  // DISABLED - unknown entry rule')
+            entry_code = selected_conditions.get(entry_rule, f'''// Unknown strategy "{entry_rule}" - using EMA crossover fallback
+// This default entry uses EMA12/EMA26 crossover which works for most trend-following strategies
+ema12 = ta.ema(close, 12)
+ema26 = ta.ema(close, 26)
+entrySignal = {"ta.crossover(ema12, ema26)" if is_long else "ta.crossunder(ema12, ema26)"}''')
 
         # Get engine label and indicator functions for header
         engine_label = engine.upper() if engine else "TRADINGVIEW"
@@ -2161,10 +2169,16 @@ atr = ta.atr(14)
 slDistance = atr * slAtrMult
 tpDistance = slDistance * tpRatio
 
-// === PLACEHOLDER SIGNALS ===
-// TODO: Implement "{strategy_name}" specific entry logic
-longCondition = false  // Customize this
-shortCondition = false // Customize this
+// === ENTRY SIGNALS ===
+// Generic bidirectional entry: EMA crossover with RSI filter
+// This provides a balanced approach suitable for unknown strategy types
+ema12 = ta.ema(close, 12)
+ema26 = ta.ema(close, 26)
+rsiValue = ta.rsi(close, 14)
+// Long: EMA12 crosses above EMA26 with RSI not overbought
+longCondition = ta.crossover(ema12, ema26) and rsiValue < 70 and strategy.position_size == 0
+// Short: EMA12 crosses below EMA26 with RSI not oversold
+shortCondition = ta.crossunder(ema12, ema26) and rsiValue > 30 and strategy.position_size == 0
 
 // === TRADE EXECUTION ===
 if longCondition

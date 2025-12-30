@@ -654,7 +654,7 @@ async def run_single_optimization(
             )
             await update_parallel_status(status_msg, progress_pct, estimated_remaining, current_trial, total_trials)
 
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(0.2)
 
     loop = asyncio.get_running_loop()
     progress_task = asyncio.create_task(update_progress())
@@ -963,9 +963,9 @@ async def start_autonomous_optimizer(thread_pool):
     from services.websocket_manager import broadcast_autonomous_status
     broadcast_autonomous_status(app_state.get_autonomous_status())
 
-    log("[Parallel Optimizer] Starting (waiting 3s for stability)...")
+    log("[Parallel Optimizer] Starting (waiting 1s for stability)...")
 
-    await asyncio.sleep(3)
+    await asyncio.sleep(1)
 
     # Build combinations in thread pool to avoid blocking event loop
     log("[Parallel Optimizer] Building combinations...")
@@ -1025,7 +1025,7 @@ async def start_autonomous_optimizer(thread_pool):
                     paused=True,
                     message="Paused - waiting for manual optimizer..."
                 )
-                await asyncio.sleep(2)
+                await asyncio.sleep(1)
                 continue
 
             app_state.update_autonomous_status(paused=False)
@@ -1094,7 +1094,7 @@ async def start_autonomous_optimizer(thread_pool):
             # Resource thresholds for spawning (tuned for high-spec systems)
             CPU_SPAWN_THRESHOLD = 85  # Only spawn if CPU < 85%
             MEM_SPAWN_THRESHOLD = 2.0  # Only spawn if > 2GB available
-            SPAWN_COOLDOWN = 15  # Seconds between spawns (was 60)
+            SPAWN_COOLDOWN = 5  # Seconds between spawns (was 15)
 
             # Use centralized MAX_CONCURRENT calculation from config.py
             # Formula: min(cpu_count // 4, 16) - consistent with init_async_primitives()
@@ -1145,9 +1145,7 @@ async def start_autonomous_optimizer(thread_pool):
                 "queue": _get_queue_data_from_status(status)
             })
 
-            log("[Parallel Optimizer] Sleeping 0.5s...")
-            await asyncio.sleep(0.5)
-            log("[Parallel Optimizer] Woke up, continuing loop")
+            await asyncio.sleep(0.2)
 
         except Exception as e:
             import traceback

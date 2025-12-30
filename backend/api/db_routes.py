@@ -9,6 +9,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from logging_config import log
 from strategy_database import get_strategy_db
 from pinescript_generator import PineScriptGenerator
 
@@ -210,7 +211,7 @@ def get_strategy_pinescript_from_db(strategy_id: int):
                     'endTime': end_dt.strftime('%H:%M'),
                 }
             except Exception as e:
-                print(f"Date range parsing error: {e}")
+                log(f"[Data] Date range parsing error for strategy {strategy_id}: {e}", level='WARNING')
 
         generator = PineScriptGenerator()
         pinescript = generator.generate_exact_match(
