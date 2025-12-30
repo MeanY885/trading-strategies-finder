@@ -589,6 +589,9 @@ async def validate_single_strategy_worker(strategy: dict, processed_count: list,
             await asyncio.sleep(5)
             can_spawn, reason = can_spawn_validation()
 
+        # Track start time for ETA calculation
+        validation_start_time = time.time()
+
         # Add to running validations
         async with running_validations_async_lock:
             running_validations[strategy_id] = {
@@ -600,7 +603,9 @@ async def validate_single_strategy_worker(strategy: dict, processed_count: list,
                 "score": round(composite_score, 1),
                 "rank": rank,
                 "status": "validating",
-                "progress": 0
+                "progress": 0,
+                "start_time": validation_start_time,
+                "estimated_remaining": None
             }
             # Remove from pending list if present
             pending_strategies_list[:] = [s for s in pending_strategies_list if s.get('id') != strategy_id]
@@ -610,15 +615,25 @@ async def validate_single_strategy_worker(strategy: dict, processed_count: list,
 
         log(f"[Elite Validation] Validating: {strategy_name} (#{strategy_id})")
 
-        # Progress callback to update running_validations
+        # Progress callback to update running_validations with ETA
         async def on_period_progress(period_idx, period_name, total_periods):
             progress_pct = int((period_idx / total_periods) * 100) if total_periods > 0 else 0
+
+            # Calculate ETA based on elapsed time and periods completed
+            estimated_remaining = None
+            if period_idx > 0:
+                elapsed = time.time() - validation_start_time
+                avg_per_period = elapsed / period_idx
+                remaining_periods = total_periods - period_idx
+                estimated_remaining = int(avg_per_period * remaining_periods)
+
             async with running_validations_async_lock:
                 if strategy_id in running_validations:
                     running_validations[strategy_id]["progress"] = progress_pct
                     running_validations[strategy_id]["current_period"] = period_name
                     running_validations[strategy_id]["period_index"] = period_idx
                     running_validations[strategy_id]["total_periods"] = total_periods
+                    running_validations[strategy_id]["estimated_remaining"] = estimated_remaining
             _update_queue_status()
             broadcast_elite_status(app_state.get_elite_status())
 

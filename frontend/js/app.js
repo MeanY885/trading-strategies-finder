@@ -492,9 +492,9 @@
                 // Show queue when validating
                 if (queueContainer) queueContainer.style.display = 'block';
 
-                // Update progress count in status bar
+                // Update progress count in status bar (current batch progress)
                 if (progressCount) {
-                    progressCount.textContent = `${status.processed} / ${status.total}`;
+                    progressCount.textContent = `Batch: ${status.processed} / ${status.total}`;
                 }
 
                 // Update parallel count display with resource info
@@ -566,13 +566,22 @@
 
             let html = '';
 
-            // Format running item WITH progress bar (full-width grid layout like optimizer queue)
+            // Format running item WITH progress bar (matching Auto Optimizer style)
             const formatRunningItem = (item) => {
                 const progress = item.progress || 0;
                 const currentPeriod = item.current_period || '...';
                 const periodIndex = item.period_index !== undefined ? item.period_index + 1 : 0;
-                const totalPeriods = item.total_periods || 10;
-                const periodProgress = `${currentPeriod} - ${periodIndex}/${totalPeriods} (${progress}%)`;
+                const totalPeriods = item.total_periods || 8;
+
+                // Build progress message matching Auto Optimizer format:
+                // "LTCUSDT - 5/8 periods (1 year)"
+                const progressMsg = `${item.symbol || '?'} - ${periodIndex}/${totalPeriods} periods (${currentPeriod})`;
+
+                // ETA text with percentage (matching Auto Optimizer style)
+                let etaText = `(${progress}%)`;
+                if (item.estimated_remaining !== null && item.estimated_remaining !== undefined && item.estimated_remaining > 0) {
+                    etaText += ` | Est: ${formatETA(item.estimated_remaining)}`;
+                }
 
                 return `
                     <div class="task-queue-item in-progress">
@@ -585,7 +594,10 @@
                             <div class="task-progress-bar">
                                 <div class="task-progress-fill" style="width: ${progress}%"></div>
                             </div>
-                            <span class="task-progress-text">${periodProgress}</span>
+                            <div style="display: flex; justify-content: space-between; align-items: center;">
+                                <span class="task-progress-text">${progressMsg}</span>
+                                <span style="color: var(--text-muted); font-size: 0.75rem; white-space: nowrap;">${etaText}</span>
+                            </div>
                         </div>
                     </div>
                 `;
