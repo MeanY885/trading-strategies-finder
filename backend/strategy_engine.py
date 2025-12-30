@@ -4936,16 +4936,17 @@ class StrategyEngine:
             # Sort by composite score
             results.sort(key=lambda r: r.composite_score, reverse=True)
 
+            # Get data range from original VectorBT results (before conversion to StrategyResult)
+            # All results share the same OHLCV data, so grab from first VectorBTResult
+            data_start = vbt_results[0].data_start if vbt_results else None
+            data_end = vbt_results[0].data_end if vbt_results else None
+
             # Filter profitable and save to DB
             profitable = [r for r in results if r.total_pnl > 0]
 
             if save_to_db and self.db and profitable:
                 self._update_status("VectorBT: Saving to database...", 95)
                 to_save = profitable[:50]
-
-                # Get data range from first result (all results share same OHLCV data range)
-                data_start = getattr(to_save[0], 'data_start', None) if to_save else None
-                data_end = getattr(to_save[0], 'data_end', None) if to_save else None
 
                 # Use batch insert for much better performance (1 commit instead of 50)
                 try:
