@@ -647,9 +647,17 @@ async def run_single_optimization(
             if estimated_remaining is not None and estimated_remaining < 0:
                 estimated_remaining = 0
 
-            # Build status message with combination counts
+            # Calculate throughput (comb/sec)
+            comb_per_sec = 0
+            if elapsed_seconds > 5 and current_trial > 0:
+                comb_per_sec = int(current_trial / elapsed_seconds)
+
+            # Build status message with combination counts and throughput
             if current_trial > 0 and total_trials > 0:
-                status_msg = f"{pair} - {current_trial:,}/{total_trials:,} combinations"
+                if comb_per_sec > 0:
+                    status_msg = f"{pair} - {current_trial:,}/{total_trials:,} ({comb_per_sec:,}/sec)"
+                else:
+                    status_msg = f"{pair} - {current_trial:,}/{total_trials:,} combinations"
             elif progress_pct > 0:
                 status_msg = f"Optimizing {pair} ({progress_pct}%)"
             else:
