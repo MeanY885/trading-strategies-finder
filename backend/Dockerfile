@@ -38,11 +38,8 @@ COPY . ./backend/
 # Create data and output directories
 RUN mkdir -p /app/data /app/output
 
-# Fix line endings (in case of Windows) and make entrypoint executable
-RUN sed -i 's/\r$//' /app/backend/entrypoint.sh && chmod +x /app/backend/entrypoint.sh
-
 # Expose port
 EXPOSE 8080
 
-# Use entrypoint for auto-tuning on startup
-ENTRYPOINT ["/app/backend/entrypoint.sh"]
+# Run the application (auto-tune integrated into Python startup)
+CMD ["python", "backend/main.py"]

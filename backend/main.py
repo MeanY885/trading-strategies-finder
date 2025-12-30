@@ -129,14 +129,19 @@ async def start_background_services():
         from services.autonomous_optimizer import init_async_primitives
         init_async_primitives()
 
+        # Note: Autonomous optimizer is NOT started automatically
+        # User must explicitly enable it via the UI toggle
+        log("[Startup] Autonomous optimizer ready (requires manual start)")
+
+        # Wait 2 minutes before starting Elite validation
+        # This lets the system settle and prevents resource contention on startup
+        log("[Startup] Waiting 2 minutes before starting Elite validation...")
+        await asyncio.sleep(120)
+
         # Start Elite validation in background
         from services.elite_validator import start_auto_elite_validation
         asyncio.create_task(start_auto_elite_validation())
         log("[Startup] Elite validation service started")
-
-        # Note: Autonomous optimizer is NOT started automatically
-        # User must explicitly enable it via the UI toggle
-        log("[Startup] Autonomous optimizer ready (requires manual start)")
 
     except Exception as e:
         log(f"[Startup] Error starting background services: {e}", level='WARNING')
@@ -148,12 +153,45 @@ async def start_background_services():
 # APPLICATION LIFECYCLE
 # =============================================================================
 
+def run_auto_tune_if_needed():
+    """Run auto-tune benchmark if no cached config exists."""
+    from pathlib import Path
+    import os
+
+    auto_tuned_path = Path(__file__).parent / ".auto_tuned"
+    force_tune = os.getenv("FORCE_AUTOTUNE", "0") == "1"
+    has_env_override = os.getenv("CORES_PER_TASK") is not None
+
+    if has_env_override:
+        log("[Auto-Tune] CORES_PER_TASK set via environment, skipping benchmark")
+        return
+
+    if auto_tuned_path.exists() and not force_tune:
+        log("[Auto-Tune] Using cached settings from previous run")
+        return
+
+    log("[Auto-Tune] Running startup benchmark to detect optimal settings...")
+    try:
+        from tools.auto_tune import main as auto_tune_main
+        auto_tune_main()
+    except Exception as e:
+        log(f"[Auto-Tune] Benchmark failed (using defaults): {e}", level='WARNING')
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Handle startup and shutdown events."""
     log("[Startup] Application starting...")
 
-    # Log optimizer configuration (from auto-tune or defaults)
+    # Run auto-tune benchmark if needed (first boot or FORCE_AUTOTUNE=1)
+    run_auto_tune_if_needed()
+
+    # Reload config after potential auto-tune
+    # (reimport to get updated values)
+    import importlib
+    import config as cfg_module
+    importlib.reload(cfg_module)
+
     from config import (
         CORES_PER_TASK, MEMORY_PER_TASK_GB, RESERVED_CORES,
         MAX_CONCURRENT_CALCULATED, CPU_CORES, MEMORY_AVAILABLE_GB
