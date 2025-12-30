@@ -1280,18 +1280,17 @@
                 document.getElementById('history-count').textContent = `${historyStrategies.length} strategies`;
                 document.getElementById('history-count').className = 'status-badge ' + (historyStrategies.length > 0 ? 'success' : 'neutral');
 
-                const loading = document.getElementById('history-loading');
                 const empty = document.getElementById('history-empty');
                 const table = document.getElementById('history-table');
 
                 if (historyStrategies.length > 0) {
-                    loading.style.display = 'none';
+                    if (loading) loading.style.display = 'none';
                     table.style.display = 'table';
                     // Set up event delegation before rendering
                     setupHistoryTableDelegation();
                     renderHistoryTable();
                 } else {
-                    loading.style.display = 'none';
+                    if (loading) loading.style.display = 'none';
                     empty.style.display = 'block';
                 }
             } catch (error) {
