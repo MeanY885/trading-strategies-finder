@@ -181,15 +181,15 @@ def _load_auto_tuned_config() -> dict:
                         config[key.strip()] = value.strip()
 
             # Log the loaded config prominently
-            log("INFO", "Config", "=" * 50)
-            log("INFO", "Config", "AUTO-TUNED SETTINGS LOADED")
-            log("INFO", "Config", "=" * 50)
-            log("INFO", "Config", f"  CORES_PER_TASK: {config.get('CORES_PER_TASK', 'N/A')}")
+            log("=" * 50)
+            log("Auto-Tuned Settings Loaded")
+            log("=" * 50)
+            log(f"  Cores_Per_Task: {config.get('CORES_PER_TASK', 'N/A')}")
             for comment in comments:
-                log("INFO", "Config", f"  {comment}")
-            log("INFO", "Config", "=" * 50)
+                log(f"  {comment}")
+            log("=" * 50)
         except Exception as e:
-            log("WARNING", "Config", f"Failed to load auto-tuned config: {e}")
+            log(f"Failed to load auto-tuned config: {e}", level='WARNING')
     return config
 
 _AUTO_TUNED = _load_auto_tuned_config()
@@ -252,8 +252,7 @@ def calculate_max_concurrent(cpu_count: int = None, memory_gb: float = None) -> 
     max_concurrent = min(cpu_based_limit, memory_based_limit)
 
     # Log the calculation for visibility
-    log("INFO", "Config",
-        f"Auto-scaling: {cpu_count} cores, {memory_gb:.1f}GB RAM → "
+    log(f"Auto-scaling: {cpu_count} cores, {memory_gb:.1f}GB RAM → "
         f"{max_concurrent} concurrent tasks "
         f"(cpu_limit={cpu_based_limit}, mem_limit={memory_based_limit}, "
         f"cores_per_task={CORES_PER_TASK}, mem_per_task={MEMORY_PER_TASK_GB}GB)")
@@ -289,12 +288,12 @@ def _log_vectorbt_status():
     """Log VectorBT configuration status."""
     if USE_VECTORBT:
         if _vectorbt_available:
-            log("INFO", "Config", "VectorBT ENABLED and available (100x faster backtesting)")
+            log("Vectorbt Enabled And Available (100X Faster Backtesting)")
         else:
-            log("WARNING", "Config", "VectorBT ENABLED but not installed - will use standard engine")
-            log("WARNING", "Config", "To install: pip install vectorbt numba")
+            log("VectorBT ENABLED but not installed - will use standard engine", level='WARNING')
+            log("To install: pip install vectorbt numba", level='WARNING')
     else:
-        log("INFO", "Config", "VectorBT disabled (USE_VECTORBT=false)")
+        log("VectorBT disabled (USE_VECTORBT=false)")
 
 _log_vectorbt_status()
 

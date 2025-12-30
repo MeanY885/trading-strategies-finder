@@ -29,13 +29,17 @@ from config import (
 from state import app_state, concurrency_config
 from logging_config import log
 from services.task_watchdog import (
-    TimeoutCalculator,
     InterruptibleSleep,
-    TaskWatchdog,
     OrphanCleaner,
     init_orphan_cleaner,
     stop_orphan_cleaner
 )
+from services.progress_watchdog import (
+    ProgressBasedWatchdog,
+    create_progress_watchdog,
+    notify_task_completed
+)
+from services.throughput_monitor import throughput_monitor
 
 
 # =============================================================================
@@ -578,6 +582,9 @@ async def run_single_optimization(
     # Run optimization
     log(f"[Autonomous Optimizer] Starting optimization for {pair} ({granularity['n_trials']} trials)...")
     temp_status = {"running": True, "progress": 0, "message": "", "report": None, "abort": False}
+
+    # Register with throughput monitor for dynamic concurrency adjustment
+    throughput_monitor.register_task(combo_id, pair, granularity["n_trials"])
     # Register with app_state for centralized abort signaling
     app_state.set_current_optimization(temp_status)
     optimization_start_time = datetime.now()
@@ -652,6 +659,10 @@ async def run_single_optimization(
             if elapsed_seconds > 5 and current_trial > 0:
                 comb_per_sec = int(current_trial / elapsed_seconds)
 
+            # Update throughput monitor for dynamic concurrency adjustment
+            if current_trial > 0 and total_trials > 0:
+                throughput_monitor.update_task(combo_id, current_trial, total_trials)
+
             # Build status message with combination counts and throughput
             if current_trial > 0 and total_trials > 0:
                 if comb_per_sec > 0:
@@ -676,22 +687,20 @@ async def run_single_optimization(
     loop = asyncio.get_running_loop()
     progress_task = asyncio.create_task(update_progress())
 
-    # Calculate dynamic timeout based on task parameters
-    timeout_seconds = TimeoutCalculator.get_optimization_timeout(
-        timeframe_minutes=timeframe["minutes"],
-        period_months=period["months"],
-        n_trials=granularity["n_trials"]
-    )
-    log(f"[Autonomous Optimizer] {pair} - Dynamic timeout: {timeout_seconds}s")
+    # Create progress-based watchdog (NO absolute time limits)
+    # Watchdog monitors progress velocity and signal counts, not wall-clock time
+    total_combinations = granularity["n_trials"]
+    log(f"[Autonomous Optimizer] {pair} - Progress-based watchdog (no timeout)")
+    log(f"[Autonomous Optimizer] {pair} - Total combinations: {total_combinations:,}")
 
-    # Create watchdog to monitor progress
-    watchdog = TaskWatchdog(
+    watchdog = create_progress_watchdog(
         task_id=combo_id,
         status_dict=temp_status,
-        timeout_seconds=timeout_seconds,
+        total_combinations=total_combinations,
         progress_key="progress",
         abort_key="abort",
-        running_key="running"
+        running_key="running",
+        result_key="report"
     )
     watchdog_task = asyncio.create_task(watchdog.start())
 
@@ -699,21 +708,13 @@ async def run_single_optimization(
         from strategy_engine import run_strategy_finder
         log(f"[Autonomous Optimizer] {pair} - Submitting to thread pool...")
 
-        # Wrap executor call with timeout
-        await asyncio.wait_for(
-            loop.run_in_executor(
-                thread_pool,
-                run_optimization_sync,
-                df, combo, temp_status, run_strategy_finder, thread_pool
-            ),
-            timeout=timeout_seconds
+        # NO timeout wrapper - progress-based watchdog handles stall detection
+        await loop.run_in_executor(
+            thread_pool,
+            run_optimization_sync,
+            df, combo, temp_status, run_strategy_finder, thread_pool
         )
         log(f"[Autonomous Optimizer] {pair} - Thread pool execution completed")
-
-    except asyncio.TimeoutError:
-        log(f"[Autonomous Optimizer] {pair} - TIMEOUT after {timeout_seconds}s", level='ERROR')
-        temp_status["abort"] = True
-        return "timeout", 0
 
     except Exception as e:
         log(f"[Autonomous Optimizer] {pair} - EXCEPTION: {e}", level='ERROR')
@@ -725,13 +726,19 @@ async def run_single_optimization(
         # Clear from app_state centralized tracking
         app_state.set_current_optimization(None)
 
-        # Stop watchdog
+        # Unregister from throughput monitor
+        throughput_monitor.unregister_task(combo_id)
+
+        # Stop watchdog and notify coordinator
         await watchdog.stop()
         watchdog_task.cancel()
         try:
             await watchdog_task
         except asyncio.CancelledError:
             pass
+
+        # Notify coordinator for cross-task stall detection
+        await notify_task_completed(combo_id)
 
         # Stop progress task
         progress_task.cancel()
@@ -1143,10 +1150,26 @@ async def start_autonomous_optimizer(thread_pool):
             else:
                 SPAWN_COOLDOWN = 120  # Conservative spawning when resources tight
 
-            # Use centralized MAX_CONCURRENT calculation from config.py
-            # AUTO-SCALING: Based on available CPU cores and memory
-            # Formula: min(cores/8, memory/2GB) - ensures no resource contention
-            MAX_CONCURRENT = MAX_CONCURRENT_CALCULATED
+            # DYNAMIC MAX_CONCURRENT: Use throughput monitor's learned optimal value
+            # The monitor tracks total throughput at different concurrency levels and
+            # automatically adjusts based on observed performance (no static thresholds)
+            # Falls back to config-calculated value if monitor hasn't learned yet
+            dynamic_max = throughput_monitor.get_recommended_max_concurrent()
+            config_max = MAX_CONCURRENT_CALCULATED
+
+            # Use the lower of dynamic and config-based limits
+            # Config-based is an upper bound based on hardware
+            # Dynamic is learned optimal based on actual throughput
+            MAX_CONCURRENT = min(dynamic_max, config_max) if dynamic_max > 0 else config_max
+
+            # Periodically evaluate and adjust concurrency based on throughput
+            eval_result = await throughput_monitor.evaluate_and_adjust()
+            if eval_result.get("adjusted"):
+                log(f"[Parallel Optimizer] Throughput-based adjustment: {eval_result['reason']} "
+                    f"(max_concurrent now {eval_result['max_concurrent']})")
+
+            # Get current throughput for status display
+            total_throughput = throughput_monitor.get_total_throughput()
 
             # Check if we can spawn based on resources
             can_spawn_cpu = cpu_percent < CPU_SPAWN_THRESHOLD
@@ -1165,16 +1188,18 @@ async def start_autonomous_optimizer(thread_pool):
                 last_spawn_time = time.time()
                 app_state.update_autonomous_status(cycle_index=current_index)
 
-                log(f"[Parallel Optimizer] Spawned task #{current_index} | CPU: {cpu_percent:.1f}% | Mem: {mem_available_gb:.1f}GB")
+                log(f"[Parallel Optimizer] Spawned task #{current_index} ({len(active_tasks)}/{MAX_CONCURRENT}) | "
+                    f"CPU: {cpu_percent:.1f}% | Throughput: {total_throughput:,.0f}/sec")
 
-            # Update status with resource info
-            status_msg = f"Running {len(active_tasks)} tasks | CPU: {cpu_percent:.0f}% | Mem: {mem_available_gb:.1f}GB"
+            # Update status with resource and throughput info
+            throughput_str = f" | {total_throughput:,.0f}/sec" if total_throughput > 0 else ""
+            status_msg = f"Running {len(active_tasks)}/{MAX_CONCURRENT} tasks{throughput_str} | CPU: {cpu_percent:.0f}%"
             if not can_spawn_cpu:
-                status_msg += " | CPU high, waiting..."
+                status_msg += " | CPU high"
             elif not can_spawn_mem:
-                status_msg += " | Memory low, waiting..."
+                status_msg += " | Memory low"
             elif time_since_spawn < SPAWN_COOLDOWN and current_index < len(combinations):
-                status_msg += f" | Next spawn in {SPAWN_COOLDOWN - int(time_since_spawn)}s"
+                status_msg += f" | spawn in {SPAWN_COOLDOWN - int(time_since_spawn)}s"
 
             # Track state changes to avoid unnecessary broadcasts
             new_state = {
@@ -1194,10 +1219,12 @@ async def start_autonomous_optimizer(thread_pool):
                 start_autonomous_optimizer._last_state = new_state
                 app_state.update_autonomous_status(
                     running=len(active_tasks) > 0,
-                    max_parallel=len(active_tasks),  # Dynamic - no fixed max
+                    max_parallel=MAX_CONCURRENT,  # Dynamic based on throughput
                     message=status_msg,
                     cpu_percent=cpu_percent,
-                    memory_available_gb=mem_available_gb
+                    memory_available_gb=mem_available_gb,
+                    total_throughput=total_throughput,
+                    throughput_status=throughput_monitor.get_status()
                 )
 
                 # Use async broadcast directly since we're in async context
