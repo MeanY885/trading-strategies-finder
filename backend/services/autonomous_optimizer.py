@@ -860,6 +860,10 @@ async def process_single_combination(
             "started_at": started_at.isoformat(),
             "progress": 0,
             "message": f"Starting {combo['pair']}...",
+            "trial_current": 0,
+            "trial_total": combo["granularity"]["n_trials"],
+            "comb_per_sec": 0,
+            "estimated_remaining": None,
         }
 
         # Use app_state.add_running_optimization for centralized tracking
