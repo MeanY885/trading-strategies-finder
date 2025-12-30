@@ -114,7 +114,9 @@ class WebSocketManager:
                 await connection.send_json(message)
                 sent_count += 1
             except Exception as e:
-                log(f"[WebSocket] Error broadcasting {message_type} to client: {e}", level='WARNING')
+                # Client disconnected mid-broadcast - this is normal
+                error_msg = str(e) if str(e) else type(e).__name__
+                log(f"[WebSocket] Client disconnected during {message_type}: {error_msg}", level='DEBUG')
                 disconnected.append(connection)
 
         if sent_count > 0:
