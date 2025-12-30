@@ -1235,17 +1235,27 @@
 
         // Initialize History Tab
         async function initHistoryTab() {
-            historyInitialized = true;
             try {
+                // Show loading state
+                const loading = document.getElementById('history-loading');
+                if (loading) {
+                    loading.style.display = 'block';
+                    loading.textContent = 'Loading strategies...';
+                }
+
                 // Try WebSocket first (much faster than HTTP polling)
                 // Fall back to HTTP if WebSocket fails
                 try {
                     historyStrategies = await loadStrategiesViaWs();
                 } catch (wsError) {
                     console.log('[History] WebSocket failed, falling back to HTTP:', wsError.message);
-                    const response = await fetch('/api/db/strategies?limit=500');
+                    const response = await fetch('/api/db/strategies?limit=1000');
+                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
                     historyStrategies = await response.json();
                 }
+
+                // Only mark initialized AFTER successful load
+                historyInitialized = true;
 
                 // Extract filter options from strategies
                 const symbols = [...new Set(historyStrategies.map(s => s.symbol).filter(Boolean))].sort();

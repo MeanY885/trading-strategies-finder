@@ -7,6 +7,7 @@ Extracted from main.py for better modularity.
 import asyncio
 import json
 import time
+import threading
 from datetime import datetime, date
 from typing import Set, Dict, Any, Optional
 from fastapi import WebSocket
@@ -48,8 +49,10 @@ class WebSocketManager:
         self._throttle_lock = asyncio.Lock()  # Separate lock for atomic throttle check
         self._broadcast_queue: asyncio.Queue = None
         self._broadcast_task: asyncio.Task = None
-        self._throttle_interval = 1.0  # Minimum seconds between broadcasts per message type (increased from 0.5 for better UI performance at scale)
-        self._last_broadcast_times: Dict[str, float] = {}  # Per-type throttling
+        self._throttle_interval = 1.0  # Minimum seconds between broadcasts per message type
+        self._last_broadcast_times: Dict[str, float] = {}  # Per-type throttling (async)
+        self._sync_last_broadcast_times: Dict[str, float] = {}  # Per-type throttling (sync)
+        self._sync_throttle_lock = threading.Lock()  # Thread-safe lock for sync throttling
         self._throttled_types = {"autonomous_status", "elite_status", "optimization_status"}  # Types to throttle
         self._main_loop = None  # Store reference to main event loop
 
@@ -132,11 +135,21 @@ class WebSocketManager:
         """
         Thread-safe broadcast for use from synchronous code.
         Uses stored main event loop for reliable cross-thread communication.
+        Includes synchronous throttling to prevent message flooding.
         """
         try:
             # Check if we have clients to broadcast to
             if not self.active_connections:
                 return  # No clients connected
+
+            # SYNC THROTTLE CHECK - stops flooding at the source
+            if message_type in self._throttled_types:
+                with self._sync_throttle_lock:
+                    now = time.time()
+                    last_time = self._sync_last_broadcast_times.get(message_type, 0)
+                    if now - last_time < self._throttle_interval:
+                        return  # Skip - too soon since last broadcast
+                    self._sync_last_broadcast_times[message_type] = now
 
             # Use stored main loop (set during startup)
             if self._main_loop and self._main_loop.is_running():
