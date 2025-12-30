@@ -59,14 +59,16 @@ class ProgressVelocityTracker:
     """
 
     # How many measurements for velocity calculation
-    WINDOW_SIZE = 20
+    # Increased for batch processing - need a wider window to detect trends
+    WINDOW_SIZE = 100
 
     # Minimum velocity to consider "making progress"
     # This is progress-per-measurement, not per-second
-    MIN_VELOCITY = 0.0001  # 0.0001% per measurement
+    # Set very low because batch updates are sparse
+    MIN_VELOCITY = 0.00001  # 0.00001% per measurement
 
     def __init__(self):
-        self.history: Deque[VelocityDataPoint] = deque(maxlen=100)
+        self.history: Deque[VelocityDataPoint] = deque(maxlen=500)
         self._last_progress = 0.0
         self._measurement_count = 0
 
@@ -128,9 +130,9 @@ class ProgressVelocityTracker:
 
         if rolling_velocity <= self.MIN_VELOCITY:
             return "stalled"
-        elif avg_acceleration > 0.001:
+        elif avg_acceleration > 0.0001:
             return "accelerating"
-        elif avg_acceleration < -0.001:
+        elif avg_acceleration < -0.0001:
             return "decelerating"
         else:
             return "steady"
@@ -155,13 +157,14 @@ class SignalCountStallDetector:
     """
 
     # Consecutive unchanged measurements for warning
-    # VectorBT batch processing can take 30-60+ seconds between updates
-    # At CHECK_INTERVAL=0.5s, 40 measurements = ~20 seconds minimum
-    UNCHANGED_WARNING = 40
+    # VectorBT batch processing can take several minutes between updates
+    # At CHECK_INTERVAL=0.5s, 1800 measurements = ~15 minutes
+    UNCHANGED_WARNING = 1800
 
     # Consecutive unchanged measurements for abort
-    # Extended for batch processing: 120 measurements = ~60 seconds
-    UNCHANGED_ABORT = 120
+    # Extended for batch processing: 3600 measurements = ~30 minutes
+    # This gives enough time for large optimizations with 52,800+ combinations
+    UNCHANGED_ABORT = 3600
 
     def __init__(self):
         self._last_progress_value = 0.0
