@@ -4745,9 +4745,7 @@
                 '6m': '6 months',
                 '9m': '9 months',
                 '1y': '1 year',
-                '2y': '2 years',
-                '3y': '3 years',
-                '5y': '5 years'
+                '2y': '2 years'
             };
 
             // Debug: log first strategy to see structure
@@ -4891,8 +4889,6 @@
                     <td>${formatPnL(periodData['9 months'])}</td>
                     <td>${formatPnL(periodData['1 year'])}</td>
                     <td>${formatPnL(periodData['2 years'])}</td>
-                    <td>${formatPnL(periodData['3 years'])}</td>
-                    <td>${formatPnL(periodData['5 years'])}</td>
                     <td>
                         <button class="btn btn-small" onclick="event.stopPropagation(); showPineScript(${best.id})" title="Pine Script">📋</button>
                         <button class="btn btn-small" onclick="event.stopPropagation(); showExportPeriodModal(${best.id}, '${best.strategy_name.replace(/'/g, "\\'")}')" title="Export Trades CSV">📊</button>
@@ -4971,8 +4967,6 @@
                                 <th style="padding: 0.3rem; text-align: center; color: var(--text-muted);">9M</th>
                                 <th style="padding: 0.3rem; text-align: center; color: var(--text-muted);">1Y</th>
                                 <th style="padding: 0.3rem; text-align: center; color: var(--text-muted);">2Y</th>
-                                <th style="padding: 0.3rem; text-align: center; color: var(--text-muted);">3Y</th>
-                                <th style="padding: 0.3rem; text-align: center; color: var(--text-muted);">5Y</th>
                                 <th style="padding: 0.3rem; text-align: center; color: var(--text-muted);">Actions</th>
                             </tr>
                         </thead>
@@ -5000,8 +4994,6 @@
                             <td style="padding: 0.4rem; text-align: center;">${formatPnL(periodData['9 months'])}</td>
                             <td style="padding: 0.4rem; text-align: center;">${formatPnL(periodData['1 year'])}</td>
                             <td style="padding: 0.4rem; text-align: center;">${formatPnL(periodData['2 years'])}</td>
-                            <td style="padding: 0.4rem; text-align: center;">${formatPnL(periodData['3 years'])}</td>
-                            <td style="padding: 0.4rem; text-align: center;">${formatPnL(periodData['5 years'])}</td>
                             <td style="padding: 0.4rem; text-align: center;">
                                 <button class="btn btn-small" onclick="event.stopPropagation(); showPineScript(${variant.id})" title="Pine Script">📋</button>
                                 <button class="btn btn-small" onclick="event.stopPropagation(); showExportPeriodModal(${variant.id}, '${variant.strategy_name.replace(/'/g, "\\'")}')" title="Export Trades CSV">📊</button>
