@@ -603,13 +603,22 @@ async def run_single_optimization(
             mapped_progress = 15 + int(inner_progress * 0.8)
             app_state.update_autonomous_status(progress=mapped_progress)
 
-            # Parse progress from message - format: "[Parallel] 49,400/79,200 (42.0%) | Found: 150"
+            # Parse progress from message
+            # VectorBT format: "VectorBT: Tested 49,400/79,200"
+            # Legacy format: "[Parallel] 49,400/79,200 (42.0%) | Found: 150"
             msg = temp_status.get("message", "")
             current_trial = 0
             total_trials = 0
 
-            # Match the actual format from strategy_engine.py
-            match = re.search(r'\[Parallel\]\s*([\d,]+)\s*/\s*([\d,]+)', msg)
+            # Try VectorBT format first (most common now)
+            match = re.search(r'Tested\s*([\d,]+)\s*/\s*([\d,]+)', msg)
+            if not match:
+                # Try legacy [Parallel] format
+                match = re.search(r'\[Parallel\]\s*([\d,]+)\s*/\s*([\d,]+)', msg)
+            if not match:
+                # Try generic X/Y format
+                match = re.search(r'([\d,]+)\s*/\s*([\d,]+)', msg)
+
             if match:
                 current_trial = int(match.group(1).replace(',', ''))
                 total_trials = int(match.group(2).replace(',', ''))
@@ -638,9 +647,9 @@ async def run_single_optimization(
             if estimated_remaining is not None and estimated_remaining < 0:
                 estimated_remaining = 0
 
-            # Build status message
+            # Build status message with combination counts
             if current_trial > 0 and total_trials > 0:
-                status_msg = f"{pair} - {current_trial:,}/{total_trials:,}"
+                status_msg = f"{pair} - {current_trial:,}/{total_trials:,} combinations"
             elif progress_pct > 0:
                 status_msg = f"Optimizing {pair} ({progress_pct}%)"
             else:
