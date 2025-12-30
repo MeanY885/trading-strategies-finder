@@ -1517,8 +1517,14 @@ class VectorBTEngine:
         direction: str,
         tp_percent: float,
         sl_percent: float,
+        include_equity_curve: bool = False,
     ) -> VectorBTResult:
-        """Extract metrics from VectorBT portfolio to VectorBTResult."""
+        """Extract metrics from VectorBT portfolio to VectorBTResult.
+
+        Args:
+            include_equity_curve: If False (default), skip expensive equity curve extraction.
+                                  Only set True for final top results display.
+        """
         try:
             trades = pf.trades
             total_trades = trades.count()
@@ -1551,8 +1557,9 @@ class VectorBTEngine:
             buy_hold = float((self.df['close'].iloc[-1] / self.df['close'].iloc[0] - 1) * 100)
             vs_buy_hold = total_return - buy_hold
 
-            # Equity curve
-            equity = pf.value().values.tolist()
+            # Equity curve - SKIP during optimization (expensive!)
+            # Only extract for top results when displaying to user
+            equity = pf.value().values.tolist() if include_equity_curve else []
 
             # Calculate composite score
             composite = self._calculate_composite_score(
