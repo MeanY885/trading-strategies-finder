@@ -104,7 +104,7 @@ class DynamicThroughputMonitor:
 
     # Absolute limits
     MIN_CONCURRENT = 1
-    MAX_CONCURRENT = 16  # Hard ceiling, system will find optimal below this
+    MAX_CONCURRENT = 32  # Hard ceiling raised for high-powered Docker systems
 
     def __init__(self):
         self.tasks: Dict[str, TaskMetrics] = {}
@@ -299,10 +299,9 @@ class DynamicThroughputMonitor:
             gain_pct = (current_throughput - lower_throughput) / lower_throughput if lower_throughput > 0 else 0
             if gain_pct > self.THROUGHPUT_GAIN_THRESHOLD:
                 # Still scaling well, try adding more
-                if current_concurrent < self.current_max_concurrent:
-                    return 0  # Already at max, can't increase
-                if current_concurrent >= self.MAX_CONCURRENT:
-                    return 0  # At hard ceiling
+                # Check if we've hit the hard ceiling for max_concurrent
+                if self.current_max_concurrent >= self.MAX_CONCURRENT:
+                    return 0  # Already at hard ceiling, can't increase further
                 log(f"[Throughput] Throughput improved {gain_pct*100:.1f}% - trying more concurrency")
                 return +1
 

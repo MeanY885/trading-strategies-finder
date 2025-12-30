@@ -29,11 +29,99 @@ DATA_DIR.mkdir(exist_ok=True)
 OUTPUT_DIR.mkdir(exist_ok=True)
 
 # =============================================================================
-# SYSTEM RESOURCES
+# SYSTEM RESOURCES (with Docker cgroup detection)
 # =============================================================================
 
-CPU_CORES = os.cpu_count() or 4
-MEMORY_TOTAL_GB = psutil.virtual_memory().total / (1024**3)
+def _detect_docker_cpu_limit() -> int:
+    """
+    Detect Docker CPU limits from cgroups.
+
+    Docker can limit CPU via:
+    - cgroup v1: /sys/fs/cgroup/cpu/cpu.cfs_quota_us and cpu.cfs_period_us
+    - cgroup v2: /sys/fs/cgroup/cpu.max
+
+    Returns the effective CPU count (or host CPU count if no limit).
+    """
+    host_cpus = os.cpu_count() or 4
+
+    # Try cgroup v2 first (newer Docker versions)
+    try:
+        cgroup_v2_path = Path("/sys/fs/cgroup/cpu.max")
+        if cgroup_v2_path.exists():
+            content = cgroup_v2_path.read_text().strip()
+            if content != "max":
+                parts = content.split()
+                if len(parts) >= 2:
+                    quota = int(parts[0])
+                    period = int(parts[1])
+                    if quota > 0 and period > 0:
+                        effective_cpus = max(1, quota // period)
+                        if effective_cpus < host_cpus:
+                            log(f"Docker CPU limit detected (cgroup v2): {effective_cpus} CPUs")
+                            return effective_cpus
+    except Exception:
+        pass
+
+    # Try cgroup v1 (older Docker versions)
+    try:
+        quota_path = Path("/sys/fs/cgroup/cpu/cpu.cfs_quota_us")
+        period_path = Path("/sys/fs/cgroup/cpu/cpu.cfs_period_us")
+        if quota_path.exists() and period_path.exists():
+            quota = int(quota_path.read_text().strip())
+            period = int(period_path.read_text().strip())
+            if quota > 0 and period > 0:
+                effective_cpus = max(1, quota // period)
+                if effective_cpus < host_cpus:
+                    log(f"Docker CPU limit detected (cgroup v1): {effective_cpus} CPUs")
+                    return effective_cpus
+    except Exception:
+        pass
+
+    return host_cpus
+
+
+def _detect_docker_memory_limit() -> float:
+    """
+    Detect Docker memory limits from cgroups.
+
+    Returns memory in GB (or host memory if no limit).
+    """
+    host_memory_gb = psutil.virtual_memory().total / (1024**3)
+
+    # Try cgroup v2 first
+    try:
+        cgroup_v2_path = Path("/sys/fs/cgroup/memory.max")
+        if cgroup_v2_path.exists():
+            content = cgroup_v2_path.read_text().strip()
+            if content != "max":
+                limit_bytes = int(content)
+                limit_gb = limit_bytes / (1024**3)
+                if limit_gb < host_memory_gb:
+                    log(f"Docker memory limit detected (cgroup v2): {limit_gb:.1f} GB")
+                    return limit_gb
+    except Exception:
+        pass
+
+    # Try cgroup v1
+    try:
+        cgroup_v1_path = Path("/sys/fs/cgroup/memory/memory.limit_in_bytes")
+        if cgroup_v1_path.exists():
+            limit_bytes = int(cgroup_v1_path.read_text().strip())
+            # Check if it's not the "unlimited" value (usually a very large number)
+            if limit_bytes < 9223372036854771712:  # Common "unlimited" value
+                limit_gb = limit_bytes / (1024**3)
+                if limit_gb < host_memory_gb:
+                    log(f"Docker memory limit detected (cgroup v1): {limit_gb:.1f} GB")
+                    return limit_gb
+    except Exception:
+        pass
+
+    return host_memory_gb
+
+
+# Use Docker-aware resource detection
+CPU_CORES = _detect_docker_cpu_limit()
+MEMORY_TOTAL_GB = _detect_docker_memory_limit()
 MEMORY_AVAILABLE_GB = psutil.virtual_memory().available / (1024**3)
 
 # =============================================================================

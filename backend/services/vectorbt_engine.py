@@ -24,6 +24,20 @@ try:
     import vectorbt as vbt
     from numba import njit
     VECTORBT_AVAILABLE = True
+
+    # ============================================
+    # VECTORBT PERFORMANCE CONFIGURATION
+    # ============================================
+    # Enable Numba JIT for portfolio simulation
+    vbt.settings.portfolio['use_numba'] = True
+
+    # Disable type checking for faster Numba compilation
+    vbt.settings.numba['check_func_type'] = False
+    vbt.settings.numba['check_func_suffix'] = False
+
+    # Silence warnings for cleaner output
+    vbt.settings.array_wrapper['silence_warnings'] = True
+
 except ImportError:
     VECTORBT_AVAILABLE = False
     vbt = None
@@ -641,75 +655,86 @@ class VectorBTEngine:
         """
         Generate entry signals for a strategy.
         Mirrors StrategyEngine._get_signals() for compatibility.
+        Uses caching to avoid recalculating signals for the same strategy/direction.
         """
+        # Check cache first - signals don't depend on TP/SL so can be reused
+        cache_key = f"{strategy}_{direction}"
+        if cache_key in self._signal_cache:
+            return self._signal_cache[cache_key]
+
         df = self.df
 
         def safe_bool(series):
             return series.fillna(False).astype(bool)
 
+        def cache_and_return(result: pd.Series) -> pd.Series:
+            """Cache the signal and return it."""
+            self._signal_cache[cache_key] = result
+            return result
+
         if strategy == 'always':
-            return pd.Series(True, index=df.index)
+            return cache_and_return(pd.Series(True, index=df.index))
 
         elif strategy == 'rsi_extreme':
             if direction == 'long':
-                return safe_bool((df['rsi'] > 30) & (df['rsi'].shift(1) <= 30))
+                return cache_and_return(safe_bool((df['rsi'] > 30) & (df['rsi'].shift(1) <= 30)))
             else:
-                return safe_bool((df['rsi'] < 70) & (df['rsi'].shift(1) >= 70))
+                return cache_and_return(safe_bool((df['rsi'] < 70) & (df['rsi'].shift(1) >= 70)))
 
         elif strategy == 'rsi_cross_50':
             if direction == 'long':
-                return safe_bool((df['rsi'] > 50) & (df['rsi'].shift(1) <= 50))
+                return cache_and_return(safe_bool((df['rsi'] > 50) & (df['rsi'].shift(1) <= 50)))
             else:
-                return safe_bool((df['rsi'] < 50) & (df['rsi'].shift(1) >= 50))
+                return cache_and_return(safe_bool((df['rsi'] < 50) & (df['rsi'].shift(1) >= 50)))
 
         elif strategy == 'stoch_extreme':
             if direction == 'long':
                 k_cross = (df['stoch_k'] > df['stoch_d']) & (df['stoch_k'].shift(1) <= df['stoch_d'].shift(1))
-                return safe_bool(k_cross & (df['stoch_k'] < 20))
+                return cache_and_return(safe_bool(k_cross & (df['stoch_k'] < 20)))
             else:
                 k_cross = (df['stoch_k'] < df['stoch_d']) & (df['stoch_k'].shift(1) >= df['stoch_d'].shift(1))
-                return safe_bool(k_cross & (df['stoch_k'] > 80))
+                return cache_and_return(safe_bool(k_cross & (df['stoch_k'] > 80)))
 
         elif strategy == 'bb_touch':
             if direction == 'long':
-                return safe_bool((df['close'] > df['bb_lower']) & (df['close'].shift(1) <= df['bb_lower'].shift(1)))
+                return cache_and_return(safe_bool((df['close'] > df['bb_lower']) & (df['close'].shift(1) <= df['bb_lower'].shift(1))))
             else:
-                return safe_bool((df['close'] < df['bb_upper']) & (df['close'].shift(1) >= df['bb_upper'].shift(1)))
+                return cache_and_return(safe_bool((df['close'] < df['bb_upper']) & (df['close'].shift(1) >= df['bb_upper'].shift(1))))
 
         elif strategy == 'bb_squeeze_breakout':
             squeeze = df['bb_width'] < df['bb_width'].rolling(20).mean() * 0.8
             expanding = df['bb_width'] > df['bb_width'].shift(1)
             if direction == 'long':
-                return safe_bool(squeeze.shift(1) & expanding & (df['close'] > df['bb_mid']))
+                return cache_and_return(safe_bool(squeeze.shift(1) & expanding & (df['close'] > df['bb_mid'])))
             else:
-                return safe_bool(squeeze.shift(1) & expanding & (df['close'] < df['bb_mid']))
+                return cache_and_return(safe_bool(squeeze.shift(1) & expanding & (df['close'] < df['bb_mid'])))
 
         elif strategy == 'ema_cross':
             if direction == 'long':
-                return safe_bool((df['ema_9'] > df['ema_21']) & (df['ema_9'].shift(1) <= df['ema_21'].shift(1)))
+                return cache_and_return(safe_bool((df['ema_9'] > df['ema_21']) & (df['ema_9'].shift(1) <= df['ema_21'].shift(1))))
             else:
-                return safe_bool((df['ema_9'] < df['ema_21']) & (df['ema_9'].shift(1) >= df['ema_21'].shift(1)))
+                return cache_and_return(safe_bool((df['ema_9'] < df['ema_21']) & (df['ema_9'].shift(1) >= df['ema_21'].shift(1))))
 
         elif strategy == 'sma_cross':
             sma_fast = df['close'].rolling(9).mean()
             sma_slow = df['close'].rolling(18).mean()
             if direction == 'long':
-                return safe_bool((sma_fast > sma_slow) & (sma_fast.shift(1) <= sma_slow.shift(1)))
+                return cache_and_return(safe_bool((sma_fast > sma_slow) & (sma_fast.shift(1) <= sma_slow.shift(1))))
             else:
-                return safe_bool((sma_fast < sma_slow) & (sma_fast.shift(1) >= sma_slow.shift(1)))
+                return cache_and_return(safe_bool((sma_fast < sma_slow) & (sma_fast.shift(1) >= sma_slow.shift(1))))
 
         elif strategy == 'macd_cross':
             histogram = df['macd'] - df['macd_signal']
             if direction == 'long':
-                return safe_bool((histogram > 0) & (histogram.shift(1) <= 0))
+                return cache_and_return(safe_bool((histogram > 0) & (histogram.shift(1) <= 0)))
             else:
-                return safe_bool((histogram < 0) & (histogram.shift(1) >= 0))
+                return cache_and_return(safe_bool((histogram < 0) & (histogram.shift(1) >= 0)))
 
         elif strategy == 'supertrend':
             if direction == 'long':
-                return safe_bool((df['supertrend_dir'] == 1) & (df['supertrend_dir'].shift(1) == -1))
+                return cache_and_return(safe_bool((df['supertrend_dir'] == 1) & (df['supertrend_dir'].shift(1) == -1)))
             else:
-                return safe_bool((df['supertrend_dir'] == -1) & (df['supertrend_dir'].shift(1) == 1))
+                return cache_and_return(safe_bool((df['supertrend_dir'] == -1) & (df['supertrend_dir'].shift(1) == 1)))
 
         elif strategy == 'consecutive_candles':
             up_close = df['close'] > df['close'].shift(1)
@@ -717,38 +742,38 @@ class VectorBTEngine:
             ups = up_close.astype(int).groupby((~up_close).cumsum()).cumsum()
             dns = down_close.astype(int).groupby((~down_close).cumsum()).cumsum()
             if direction == 'long':
-                return safe_bool(ups >= 3)
+                return cache_and_return(safe_bool(ups >= 3))
             else:
-                return safe_bool(dns >= 3)
+                return cache_and_return(safe_bool(dns >= 3))
 
         elif strategy == 'engulfing':
             if direction == 'long':
-                return safe_bool(df['green'] & df['red'].shift(1) &
-                               (df['close'] > df['open'].shift(1)) & (df['open'] < df['close'].shift(1)))
+                return cache_and_return(safe_bool(df['green'] & df['red'].shift(1) &
+                               (df['close'] > df['open'].shift(1)) & (df['open'] < df['close'].shift(1))))
             else:
-                return safe_bool(df['red'] & df['green'].shift(1) &
-                               (df['close'] < df['open'].shift(1)) & (df['open'] > df['close'].shift(1)))
+                return cache_and_return(safe_bool(df['red'] & df['green'].shift(1) &
+                               (df['close'] < df['open'].shift(1)) & (df['open'] > df['close'].shift(1))))
 
         elif strategy == 'inside_bar':
             inside = (df['high'] < df['high'].shift(1)) & (df['low'] > df['low'].shift(1))
             if direction == 'long':
-                return safe_bool(inside & (df['close'] > df['open']))
+                return cache_and_return(safe_bool(inside & (df['close'] > df['open'])))
             else:
-                return safe_bool(inside & (df['close'] < df['open']))
+                return cache_and_return(safe_bool(inside & (df['close'] < df['open'])))
 
         elif strategy == 'outside_bar':
             outside = (df['high'] > df['high'].shift(1)) & (df['low'] < df['low'].shift(1))
             if direction == 'long':
-                return safe_bool(outside & (df['close'] > df['open']))
+                return cache_and_return(safe_bool(outside & (df['close'] > df['open'])))
             else:
-                return safe_bool(outside & (df['close'] < df['open']))
+                return cache_and_return(safe_bool(outside & (df['close'] < df['open'])))
 
         elif strategy == 'atr_breakout':
             move = abs(df['close'] - df['close'].shift(1))
             if direction == 'long':
-                return safe_bool((move > df['atr'] * 1.5) & (df['close'] > df['close'].shift(1)))
+                return cache_and_return(safe_bool((move > df['atr'] * 1.5) & (df['close'] > df['close'].shift(1))))
             else:
-                return safe_bool((move > df['atr'] * 1.5) & (df['close'] < df['close'].shift(1)))
+                return cache_and_return(safe_bool((move > df['atr'] * 1.5) & (df['close'] < df['close'].shift(1))))
 
         # === MISSING STRATEGIES FROM STRATEGY_ENGINE ===
 
@@ -758,20 +783,20 @@ class VectorBTEngine:
             deviation = (df['close'] - sma) / sma * 100
             if direction == 'long':
                 # Long: price more than 1% below SMA (oversold)
-                return safe_bool(deviation < -1.0)
+                return cache_and_return(safe_bool(deviation < -1.0))
             else:
                 # Short: price more than 1% above SMA (overbought)
-                return safe_bool(deviation > 1.0)
+                return cache_and_return(safe_bool(deviation > 1.0))
 
         elif strategy == 'price_above_sma':
             # Trend: Price crosses SMA20
             sma = df['sma_20']
             if direction == 'long':
                 # Long: price crosses above SMA
-                return safe_bool((df['close'] > sma) & (df['close'].shift(1) <= sma.shift(1)))
+                return cache_and_return(safe_bool((df['close'] > sma) & (df['close'].shift(1) <= sma.shift(1))))
             else:
                 # Short: price crosses below SMA
-                return safe_bool((df['close'] < sma) & (df['close'].shift(1) >= sma.shift(1)))
+                return cache_and_return(safe_bool((df['close'] < sma) & (df['close'].shift(1) >= sma.shift(1))))
 
         elif strategy == 'big_candle':
             # Pattern: Large candle 2x ATR in opposite direction
@@ -779,10 +804,10 @@ class VectorBTEngine:
             big_candle = candle_size > df['atr'] * 2
             if direction == 'long':
                 # Long after big red candle (reversal)
-                return safe_bool(big_candle.shift(1) & df['red'].shift(1) & df['green'])
+                return cache_and_return(safe_bool(big_candle.shift(1) & df['red'].shift(1) & df['green']))
             else:
                 # Short after big green candle (reversal)
-                return safe_bool(big_candle.shift(1) & df['green'].shift(1) & df['red'])
+                return cache_and_return(safe_bool(big_candle.shift(1) & df['green'].shift(1) & df['red']))
 
         elif strategy == 'doji_reversal':
             # Pattern: Doji candle after trend
@@ -796,10 +821,10 @@ class VectorBTEngine:
                                 (df['close'].shift(4) < df['close'].shift(5))
             if direction == 'long':
                 # Long: Doji after downtrend (potential bullish reversal)
-                return safe_bool(doji.shift(1) & recent_down_trend & df['green'])
+                return cache_and_return(safe_bool(doji.shift(1) & recent_down_trend & df['green']))
             else:
                 # Short: Doji after uptrend (potential bearish reversal)
-                return safe_bool(doji.shift(1) & recent_up_trend & df['red'])
+                return cache_and_return(safe_bool(doji.shift(1) & recent_up_trend & df['red']))
 
         elif strategy == 'low_volatility_breakout':
             # Volatility: Breakout after low volatility period
@@ -808,9 +833,9 @@ class VectorBTEngine:
             low_vol = current_range.rolling(5).mean() < avg_range * 0.5  # Low volatility
             breakout = current_range > avg_range  # Current bar is a breakout
             if direction == 'long':
-                return safe_bool(low_vol.shift(1) & breakout & df['green'])
+                return cache_and_return(safe_bool(low_vol.shift(1) & breakout & df['green']))
             else:
-                return safe_bool(low_vol.shift(1) & breakout & df['red'])
+                return cache_and_return(safe_bool(low_vol.shift(1) & breakout & df['red']))
 
         elif strategy == 'higher_low':
             # Price Action: Higher low (long) or lower high (short)
@@ -818,12 +843,12 @@ class VectorBTEngine:
                 # Higher low: current low > previous swing low (simplified: last 5 bars)
                 prev_low = df['low'].rolling(5).min().shift(1)
                 curr_low = df['low']
-                return safe_bool((curr_low > prev_low) & (curr_low < curr_low.shift(1)) & df['green'])
+                return cache_and_return(safe_bool((curr_low > prev_low) & (curr_low < curr_low.shift(1)) & df['green']))
             else:
                 # Lower high: current high < previous swing high (simplified: last 5 bars)
                 prev_high = df['high'].rolling(5).max().shift(1)
                 curr_high = df['high']
-                return safe_bool((curr_high < prev_high) & (curr_high > curr_high.shift(1)) & df['red'])
+                return cache_and_return(safe_bool((curr_high < prev_high) & (curr_high > curr_high.shift(1)) & df['red']))
 
         elif strategy == 'support_resistance':
             # Price Action: Price at recent support/resistance level
@@ -835,10 +860,10 @@ class VectorBTEngine:
             near_resistance = abs(df['close'] - resistance) / resistance < 0.005
             if direction == 'long':
                 # Long: bounce from support
-                return safe_bool(near_support & df['green'] & (df['close'] > df['open']))
+                return cache_and_return(safe_bool(near_support & df['green'] & (df['close'] > df['open'])))
             else:
                 # Short: rejection from resistance
-                return safe_bool(near_resistance & df['red'] & (df['close'] < df['open']))
+                return cache_and_return(safe_bool(near_resistance & df['red'] & (df['close'] < df['open'])))
 
         # === COMBO STRATEGIES ===
 
@@ -847,38 +872,38 @@ class VectorBTEngine:
             if direction == 'long':
                 bb_touch = df['close'] <= df['bb_lower']
                 rsi_oversold = df['rsi'] < 35
-                return safe_bool(bb_touch & rsi_oversold)
+                return cache_and_return(safe_bool(bb_touch & rsi_oversold))
             else:
                 bb_touch = df['close'] >= df['bb_upper']
                 rsi_overbought = df['rsi'] > 65
-                return safe_bool(bb_touch & rsi_overbought)
+                return cache_and_return(safe_bool(bb_touch & rsi_overbought))
 
         elif strategy == 'supertrend_adx_combo':
             # Supertrend signal + ADX > 25 filter (Trend)
             direction_change = df['supertrend_dir'] - df['supertrend_dir'].shift(1)
             adx_strong = df['adx'] > 25
             if direction == 'long':
-                return safe_bool((direction_change > 0) & adx_strong)
+                return cache_and_return(safe_bool((direction_change > 0) & adx_strong))
             else:
-                return safe_bool((direction_change < 0) & adx_strong)
+                return cache_and_return(safe_bool((direction_change < 0) & adx_strong))
 
         elif strategy == 'ema_rsi_combo':
             # EMA cross + RSI confirmation (Trend)
             ema_cross_up = (df['ema_9'] > df['ema_21']) & (df['ema_9'].shift(1) <= df['ema_21'].shift(1))
             ema_cross_down = (df['ema_9'] < df['ema_21']) & (df['ema_9'].shift(1) >= df['ema_21'].shift(1))
             if direction == 'long':
-                return safe_bool(ema_cross_up & (df['rsi'] > 50))
+                return cache_and_return(safe_bool(ema_cross_up & (df['rsi'] > 50)))
             else:
-                return safe_bool(ema_cross_down & (df['rsi'] < 50))
+                return cache_and_return(safe_bool(ema_cross_down & (df['rsi'] < 50)))
 
         elif strategy == 'macd_stoch_combo':
             # MACD cross + Stochastic confirmation (Momentum)
             macd_cross_up = (df['macd'] > df['macd_signal']) & (df['macd'].shift(1) <= df['macd_signal'].shift(1))
             macd_cross_down = (df['macd'] < df['macd_signal']) & (df['macd'].shift(1) >= df['macd_signal'].shift(1))
             if direction == 'long':
-                return safe_bool(macd_cross_up & (df['stoch_k'] < 50))
+                return cache_and_return(safe_bool(macd_cross_up & (df['stoch_k'] < 50)))
             else:
-                return safe_bool(macd_cross_down & (df['stoch_k'] > 50))
+                return cache_and_return(safe_bool(macd_cross_down & (df['stoch_k'] > 50)))
 
         # === NEW STRATEGIES ===
 
@@ -886,10 +911,10 @@ class VectorBTEngine:
             # Ichimoku Tenkan-Kijun cross
             if direction == 'long':
                 # Long: Tenkan crosses above Kijun
-                return safe_bool((df['tenkan'] > df['kijun']) & (df['tenkan'].shift(1) <= df['kijun'].shift(1)))
+                return cache_and_return(safe_bool((df['tenkan'] > df['kijun']) & (df['tenkan'].shift(1) <= df['kijun'].shift(1))))
             else:
                 # Short: Tenkan crosses below Kijun
-                return safe_bool((df['tenkan'] < df['kijun']) & (df['tenkan'].shift(1) >= df['kijun'].shift(1)))
+                return cache_and_return(safe_bool((df['tenkan'] < df['kijun']) & (df['tenkan'].shift(1) >= df['kijun'].shift(1))))
 
         elif strategy == 'ichimoku_cloud':
             # Ichimoku Cloud breakout
@@ -897,26 +922,26 @@ class VectorBTEngine:
             cloud_bottom = df[['senkou_a', 'senkou_b']].min(axis=1)
             if direction == 'long':
                 # Long: price breaks above the cloud
-                return safe_bool((df['close'] > cloud_top) & (df['close'].shift(1) <= cloud_top.shift(1)))
+                return cache_and_return(safe_bool((df['close'] > cloud_top) & (df['close'].shift(1) <= cloud_top.shift(1))))
             else:
                 # Short: price breaks below the cloud
-                return safe_bool((df['close'] < cloud_bottom) & (df['close'].shift(1) >= cloud_bottom.shift(1)))
+                return cache_and_return(safe_bool((df['close'] < cloud_bottom) & (df['close'].shift(1) >= cloud_bottom.shift(1))))
 
         elif strategy == 'aroon_cross':
             # Aroon oscillator cross
             if direction == 'long':
                 # Long: Aroon Up crosses above Aroon Down
-                return safe_bool((df['aroon_up'] > df['aroon_down']) & (df['aroon_up'].shift(1) <= df['aroon_down'].shift(1)))
+                return cache_and_return(safe_bool((df['aroon_up'] > df['aroon_down']) & (df['aroon_up'].shift(1) <= df['aroon_down'].shift(1))))
             else:
                 # Short: Aroon Down crosses above Aroon Up
-                return safe_bool((df['aroon_down'] > df['aroon_up']) & (df['aroon_down'].shift(1) <= df['aroon_up'].shift(1)))
+                return cache_and_return(safe_bool((df['aroon_down'] > df['aroon_up']) & (df['aroon_down'].shift(1) <= df['aroon_up'].shift(1))))
 
         elif strategy == 'momentum_zero':
             # Momentum crosses zero
             if direction == 'long':
-                return safe_bool((df['mom'] > 0) & (df['mom'].shift(1) <= 0))
+                return cache_and_return(safe_bool((df['mom'] > 0) & (df['mom'].shift(1) <= 0)))
             else:
-                return safe_bool((df['mom'] < 0) & (df['mom'].shift(1) >= 0))
+                return cache_and_return(safe_bool((df['mom'] < 0) & (df['mom'].shift(1) >= 0)))
 
         elif strategy == 'roc_extreme':
             # Rate of Change extreme values - ADAPTIVE to any pair/timeframe
@@ -925,19 +950,19 @@ class VectorBTEngine:
             roc_upper = df['roc'].quantile(0.95)  # Top 5% = overbought
             if direction == 'long':
                 # Long: ROC in bottom 5th percentile (oversold)
-                return safe_bool(df['roc'] < roc_lower)
+                return cache_and_return(safe_bool(df['roc'] < roc_lower))
             else:
                 # Short: ROC in top 95th percentile (overbought)
-                return safe_bool(df['roc'] > roc_upper)
+                return cache_and_return(safe_bool(df['roc'] > roc_upper))
 
         elif strategy == 'uo_extreme':
             # Ultimate Oscillator extreme values
             if direction == 'long':
                 # Long: UO below 30 (oversold)
-                return safe_bool(df['uo'] < 30)
+                return cache_and_return(safe_bool(df['uo'] < 30))
             else:
                 # Short: UO above 70 (overbought)
-                return safe_bool(df['uo'] > 70)
+                return cache_and_return(safe_bool(df['uo'] > 70))
 
         elif strategy == 'chop_trend':
             # Choppiness Index indicates trending market
@@ -945,17 +970,17 @@ class VectorBTEngine:
             is_trending = df['chop'] < 38.2
             if direction == 'long':
                 # Long: trending market with price above SMA
-                return safe_bool(is_trending & (df['close'] > df['sma_20']))
+                return cache_and_return(safe_bool(is_trending & (df['close'] > df['sma_20'])))
             else:
                 # Short: trending market with price below SMA
-                return safe_bool(is_trending & (df['close'] < df['sma_20']))
+                return cache_and_return(safe_bool(is_trending & (df['close'] < df['sma_20'])))
 
         elif strategy == 'double_ema_cross':
             # EMA 12/26 cross (same as MACD periods)
             if direction == 'long':
-                return safe_bool((df['ema_12'] > df['ema_26']) & (df['ema_12'].shift(1) <= df['ema_26'].shift(1)))
+                return cache_and_return(safe_bool((df['ema_12'] > df['ema_26']) & (df['ema_12'].shift(1) <= df['ema_26'].shift(1))))
             else:
-                return safe_bool((df['ema_12'] < df['ema_26']) & (df['ema_12'].shift(1) >= df['ema_26'].shift(1)))
+                return cache_and_return(safe_bool((df['ema_12'] < df['ema_26']) & (df['ema_12'].shift(1) >= df['ema_26'].shift(1))))
 
         # === TRIPLE EMA ALIGNMENT ===
         elif strategy == 'triple_ema':
@@ -964,20 +989,20 @@ class VectorBTEngine:
                 # All EMAs aligned bullishly and just crossed into alignment
                 aligned = (df['ema_9'] > df['ema_21']) & (df['ema_21'] > df['ema_50'])
                 was_not_aligned = ~((df['ema_9'].shift(1) > df['ema_21'].shift(1)) & (df['ema_21'].shift(1) > df['ema_50'].shift(1)))
-                return safe_bool(aligned & was_not_aligned)
+                return cache_and_return(safe_bool(aligned & was_not_aligned))
             else:
                 # All EMAs aligned bearishly
                 aligned = (df['ema_9'] < df['ema_21']) & (df['ema_21'] < df['ema_50'])
                 was_not_aligned = ~((df['ema_9'].shift(1) < df['ema_21'].shift(1)) & (df['ema_21'].shift(1) < df['ema_50'].shift(1)))
-                return safe_bool(aligned & was_not_aligned)
+                return cache_and_return(safe_bool(aligned & was_not_aligned))
 
         # === McGINLEY DYNAMIC STRATEGIES ===
         elif strategy == 'mcginley_cross':
             # Price crosses McGinley Dynamic
             if direction == 'long':
-                return safe_bool((df['close'] > df['mcginley']) & (df['close'].shift(1) <= df['mcginley'].shift(1)))
+                return cache_and_return(safe_bool((df['close'] > df['mcginley']) & (df['close'].shift(1) <= df['mcginley'].shift(1))))
             else:
-                return safe_bool((df['close'] < df['mcginley']) & (df['close'].shift(1) >= df['mcginley'].shift(1)))
+                return cache_and_return(safe_bool((df['close'] < df['mcginley']) & (df['close'].shift(1) >= df['mcginley'].shift(1))))
 
         elif strategy == 'mcginley_trend':
             # McGinley changes direction (slope)
@@ -985,68 +1010,68 @@ class VectorBTEngine:
             mcg_slope_prev = df['mcginley'].shift(1) - df['mcginley'].shift(2)
             if direction == 'long':
                 # Slope turns positive
-                return safe_bool((mcg_slope > 0) & (mcg_slope_prev <= 0))
+                return cache_and_return(safe_bool((mcg_slope > 0) & (mcg_slope_prev <= 0)))
             else:
                 # Slope turns negative
-                return safe_bool((mcg_slope < 0) & (mcg_slope_prev >= 0))
+                return cache_and_return(safe_bool((mcg_slope < 0) & (mcg_slope_prev >= 0)))
 
         # === HULL MOVING AVERAGE ===
         elif strategy == 'hull_ma_cross':
             # Price crosses Hull MA
             if direction == 'long':
-                return safe_bool((df['close'] > df['hull_ma']) & (df['close'].shift(1) <= df['hull_ma'].shift(1)))
+                return cache_and_return(safe_bool((df['close'] > df['hull_ma']) & (df['close'].shift(1) <= df['hull_ma'].shift(1))))
             else:
-                return safe_bool((df['close'] < df['hull_ma']) & (df['close'].shift(1) >= df['hull_ma'].shift(1)))
+                return cache_and_return(safe_bool((df['close'] < df['hull_ma']) & (df['close'].shift(1) >= df['hull_ma'].shift(1))))
 
         elif strategy == 'hull_ma_turn':
             # Hull MA changes direction
             hull_slope = df['hull_ma'] - df['hull_ma'].shift(1)
             hull_slope_prev = df['hull_ma'].shift(1) - df['hull_ma'].shift(2)
             if direction == 'long':
-                return safe_bool((hull_slope > 0) & (hull_slope_prev <= 0))
+                return cache_and_return(safe_bool((hull_slope > 0) & (hull_slope_prev <= 0)))
             else:
-                return safe_bool((hull_slope < 0) & (hull_slope_prev >= 0))
+                return cache_and_return(safe_bool((hull_slope < 0) & (hull_slope_prev >= 0)))
 
         # === ZLEMA (Zero-Lag EMA) ===
         elif strategy == 'zlema_cross':
             # Price crosses Zero-Lag EMA
             if direction == 'long':
-                return safe_bool((df['close'] > df['zlema']) & (df['close'].shift(1) <= df['zlema'].shift(1)))
+                return cache_and_return(safe_bool((df['close'] > df['zlema']) & (df['close'].shift(1) <= df['zlema'].shift(1))))
             else:
-                return safe_bool((df['close'] < df['zlema']) & (df['close'].shift(1) >= df['zlema'].shift(1)))
+                return cache_and_return(safe_bool((df['close'] < df['zlema']) & (df['close'].shift(1) >= df['zlema'].shift(1))))
 
         # === CHANDELIER EXIT ===
         elif strategy == 'chandelier_entry':
             # Chandelier Exit signal
             if direction == 'long':
                 # Price crosses above chandelier long stop
-                return safe_bool((df['close'] > df['chandelier_long']) & (df['close'].shift(1) <= df['chandelier_long'].shift(1)))
+                return cache_and_return(safe_bool((df['close'] > df['chandelier_long']) & (df['close'].shift(1) <= df['chandelier_long'].shift(1))))
             else:
                 # Price crosses below chandelier short stop
-                return safe_bool((df['close'] < df['chandelier_short']) & (df['close'].shift(1) >= df['chandelier_short'].shift(1)))
+                return cache_and_return(safe_bool((df['close'] < df['chandelier_short']) & (df['close'].shift(1) >= df['chandelier_short'].shift(1))))
 
         # === TSI (True Strength Index) ===
         elif strategy == 'tsi_cross':
             # TSI crosses signal line
             if direction == 'long':
-                return safe_bool((df['tsi'] > df['tsi_signal']) & (df['tsi'].shift(1) <= df['tsi_signal'].shift(1)))
+                return cache_and_return(safe_bool((df['tsi'] > df['tsi_signal']) & (df['tsi'].shift(1) <= df['tsi_signal'].shift(1))))
             else:
-                return safe_bool((df['tsi'] < df['tsi_signal']) & (df['tsi'].shift(1) >= df['tsi_signal'].shift(1)))
+                return cache_and_return(safe_bool((df['tsi'] < df['tsi_signal']) & (df['tsi'].shift(1) >= df['tsi_signal'].shift(1))))
 
         elif strategy == 'tsi_zero':
             # TSI crosses zero line
             if direction == 'long':
-                return safe_bool((df['tsi'] > 0) & (df['tsi'].shift(1) <= 0))
+                return cache_and_return(safe_bool((df['tsi'] > 0) & (df['tsi'].shift(1) <= 0)))
             else:
-                return safe_bool((df['tsi'] < 0) & (df['tsi'].shift(1) >= 0))
+                return cache_and_return(safe_bool((df['tsi'] < 0) & (df['tsi'].shift(1) >= 0)))
 
         # === CMF (Chaikin Money Flow) ===
         elif strategy == 'cmf_cross':
             # CMF crosses zero
             if direction == 'long':
-                return safe_bool((df['cmf'] > 0) & (df['cmf'].shift(1) <= 0))
+                return cache_and_return(safe_bool((df['cmf'] > 0) & (df['cmf'].shift(1) <= 0)))
             else:
-                return safe_bool((df['cmf'] < 0) & (df['cmf'].shift(1) >= 0))
+                return cache_and_return(safe_bool((df['cmf'] < 0) & (df['cmf'].shift(1) >= 0)))
 
         # === OBV (On Balance Volume) ===
         elif strategy == 'obv_trend':
@@ -1057,30 +1082,30 @@ class VectorBTEngine:
             price_high = df['close'].rolling(lookback).max()
             price_low = df['close'].rolling(lookback).min()
             if direction == 'long':
-                return safe_bool((df['obv'] == obv_high) & (df['close'] >= price_high * 0.98))
+                return cache_and_return(safe_bool((df['obv'] == obv_high) & (df['close'] >= price_high * 0.98)))
             else:
-                return safe_bool((df['obv'] == obv_low) & (df['close'] <= price_low * 1.02))
+                return cache_and_return(safe_bool((df['obv'] == obv_low) & (df['close'] <= price_low * 1.02)))
 
         # === MFI (Money Flow Index) ===
         elif strategy == 'mfi_extreme':
             if direction == 'long':
-                return safe_bool((df['mfi'] > 20) & (df['mfi'].shift(1) <= 20))
+                return cache_and_return(safe_bool((df['mfi'] > 20) & (df['mfi'].shift(1) <= 20)))
             else:
-                return safe_bool((df['mfi'] < 80) & (df['mfi'].shift(1) >= 80))
+                return cache_and_return(safe_bool((df['mfi'] < 80) & (df['mfi'].shift(1) >= 80)))
 
         # === PPO (Percentage Price Oscillator) ===
         elif strategy == 'ppo_cross':
             if direction == 'long':
-                return safe_bool((df['ppo'] > df['ppo_signal']) & (df['ppo'].shift(1) <= df['ppo_signal'].shift(1)))
+                return cache_and_return(safe_bool((df['ppo'] > df['ppo_signal']) & (df['ppo'].shift(1) <= df['ppo_signal'].shift(1))))
             else:
-                return safe_bool((df['ppo'] < df['ppo_signal']) & (df['ppo'].shift(1) >= df['ppo_signal'].shift(1)))
+                return cache_and_return(safe_bool((df['ppo'] < df['ppo_signal']) & (df['ppo'].shift(1) >= df['ppo_signal'].shift(1))))
 
         # === Fisher Transform ===
         elif strategy == 'fisher_cross':
             if direction == 'long':
-                return safe_bool((df['fisher'] > df['fisher_signal']) & (df['fisher'].shift(1) <= df['fisher_signal'].shift(1)))
+                return cache_and_return(safe_bool((df['fisher'] > df['fisher_signal']) & (df['fisher'].shift(1) <= df['fisher_signal'].shift(1))))
             else:
-                return safe_bool((df['fisher'] < df['fisher_signal']) & (df['fisher'].shift(1) >= df['fisher_signal'].shift(1)))
+                return cache_and_return(safe_bool((df['fisher'] < df['fisher_signal']) & (df['fisher'].shift(1) >= df['fisher_signal'].shift(1))))
 
         # === Squeeze Momentum ===
         elif strategy == 'squeeze_momentum':
@@ -1089,25 +1114,25 @@ class VectorBTEngine:
             squeeze_fired = squeeze.shift(1) & ~squeeze  # Squeeze released
             mom = df['close'] - df['close'].shift(20)  # Simple momentum
             if direction == 'long':
-                return safe_bool(squeeze_fired & (mom > 0))
+                return cache_and_return(safe_bool(squeeze_fired & (mom > 0)))
             else:
-                return safe_bool(squeeze_fired & (mom < 0))
+                return cache_and_return(safe_bool(squeeze_fired & (mom < 0)))
 
         # === VWAP Cross ===
         elif strategy == 'vwap_cross':
             if direction == 'long':
-                return safe_bool((df['close'] > df['vwap']) & (df['close'].shift(1) <= df['vwap'].shift(1)))
+                return cache_and_return(safe_bool((df['close'] > df['vwap']) & (df['close'].shift(1) <= df['vwap'].shift(1))))
             else:
-                return safe_bool((df['close'] < df['vwap']) & (df['close'].shift(1) >= df['vwap'].shift(1)))
+                return cache_and_return(safe_bool((df['close'] < df['vwap']) & (df['close'].shift(1) >= df['vwap'].shift(1))))
 
         # === VWMA CROSS ===
         elif strategy == 'vwma_cross':
             # Price crosses VWMA (Trend Following)
             vwma = df['vwma']
             if direction == 'long':
-                return safe_bool((df['close'] > vwma) & (df['close'].shift(1) <= vwma.shift(1)))
+                return cache_and_return(safe_bool((df['close'] > vwma) & (df['close'].shift(1) <= vwma.shift(1))))
             else:
-                return safe_bool((df['close'] < vwma) & (df['close'].shift(1) >= vwma.shift(1)))
+                return cache_and_return(safe_bool((df['close'] < vwma) & (df['close'].shift(1) >= vwma.shift(1))))
 
         # === VWMA TREND ===
         elif strategy == 'vwma_trend':
@@ -1116,10 +1141,10 @@ class VectorBTEngine:
             vwma_slope = vwma - vwma.shift(1)
             if direction == 'long':
                 # Long when VWMA starts sloping up
-                return safe_bool((vwma_slope > 0) & (vwma_slope.shift(1) <= 0))
+                return cache_and_return(safe_bool((vwma_slope > 0) & (vwma_slope.shift(1) <= 0)))
             else:
                 # Short when VWMA starts sloping down
-                return safe_bool((vwma_slope < 0) & (vwma_slope.shift(1) >= 0))
+                return cache_and_return(safe_bool((vwma_slope < 0) & (vwma_slope.shift(1) >= 0)))
 
         # === PIVOT BOUNCE ===
         elif strategy == 'pivot_bounce':
@@ -1129,11 +1154,11 @@ class VectorBTEngine:
             if direction == 'long':
                 # Price bounces off S1
                 near_s1 = (df['low'] <= s1 * 1.005) & (df['low'] >= s1 * 0.995)
-                return safe_bool(near_s1 & (df['close'] > df['open']))
+                return cache_and_return(safe_bool(near_s1 & (df['close'] > df['open'])))
             else:
                 # Price bounces off R1
                 near_r1 = (df['high'] >= r1 * 0.995) & (df['high'] <= r1 * 1.005)
-                return safe_bool(near_r1 & (df['close'] < df['open']))
+                return cache_and_return(safe_bool(near_r1 & (df['close'] < df['open'])))
 
         # === LINEAR REGRESSION CHANNEL ===
         elif strategy == 'linreg_channel':
@@ -1141,18 +1166,18 @@ class VectorBTEngine:
             upper = df['linreg_upper']
             lower = df['linreg_lower']
             if direction == 'long':
-                return safe_bool((df['close'] > lower) & (df['close'].shift(1) <= lower.shift(1)))
+                return cache_and_return(safe_bool((df['close'] > lower) & (df['close'].shift(1) <= lower.shift(1))))
             else:
-                return safe_bool((df['close'] < upper) & (df['close'].shift(1) >= upper.shift(1)))
+                return cache_and_return(safe_bool((df['close'] < upper) & (df['close'].shift(1) >= upper.shift(1))))
 
         # === AWESOME OSCILLATOR ZERO CROSS ===
         elif strategy == 'ao_zero_cross':
             # Awesome Oscillator crosses zero (Momentum)
             ao = df['ao']
             if direction == 'long':
-                return safe_bool((ao > 0) & (ao.shift(1) <= 0))
+                return cache_and_return(safe_bool((ao > 0) & (ao.shift(1) <= 0)))
             else:
-                return safe_bool((ao < 0) & (ao.shift(1) >= 0))
+                return cache_and_return(safe_bool((ao < 0) & (ao.shift(1) >= 0)))
 
         # === AWESOME OSCILLATOR TWIN PEAKS ===
         elif strategy == 'ao_twin_peaks':
@@ -1163,12 +1188,12 @@ class VectorBTEngine:
                 # Twin peaks below zero: AO < 0, AO > ao_low, AO rising
                 ao_low = ao.rolling(lookback).min()
                 ao_rising = ao > ao.shift(1)
-                return safe_bool((ao < 0) & (ao > ao_low) & ao_rising)
+                return cache_and_return(safe_bool((ao < 0) & (ao > ao_low) & ao_rising))
             else:
                 # Twin peaks above zero: AO > 0, AO < ao_high, AO falling
                 ao_high = ao.rolling(lookback).max()
                 ao_falling = ao < ao.shift(1)
-                return safe_bool((ao > 0) & (ao < ao_high) & ao_falling)
+                return cache_and_return(safe_bool((ao > 0) & (ao < ao_high) & ao_falling))
 
         # === ELDER RAY ===
         elif strategy == 'elder_ray':
@@ -1180,12 +1205,12 @@ class VectorBTEngine:
                 # EMA rising, bear power negative but rising
                 ema_rising = ema_13 > ema_13.shift(1)
                 bear_rising = bear_power > bear_power.shift(1)
-                return safe_bool(ema_rising & (bear_power < 0) & bear_rising)
+                return cache_and_return(safe_bool(ema_rising & (bear_power < 0) & bear_rising))
             else:
                 # EMA falling, bull power positive but falling
                 ema_falling = ema_13 < ema_13.shift(1)
                 bull_falling = bull_power < bull_power.shift(1)
-                return safe_bool(ema_falling & (bull_power > 0) & bull_falling)
+                return cache_and_return(safe_bool(ema_falling & (bull_power > 0) & bull_falling))
 
         # === RSI + MACD COMBO ===
         elif strategy == 'rsi_macd_combo':
@@ -1194,54 +1219,54 @@ class VectorBTEngine:
             if direction == 'long':
                 rsi_oversold = df['rsi'] < 30
                 macd_bullish = histogram > histogram.shift(1)
-                return safe_bool(rsi_oversold & macd_bullish)
+                return cache_and_return(safe_bool(rsi_oversold & macd_bullish))
             else:
                 rsi_overbought = df['rsi'] > 70
                 macd_bearish = histogram < histogram.shift(1)
-                return safe_bool(rsi_overbought & macd_bearish)
+                return cache_and_return(safe_bool(rsi_overbought & macd_bearish))
 
         # === WILLIAMS %R EXTREME ===
         elif strategy == 'williams_r':
             if direction == 'long':
-                return safe_bool(df['willr'] < -80)
+                return cache_and_return(safe_bool(df['willr'] < -80))
             else:
-                return safe_bool(df['willr'] > -20)
+                return cache_and_return(safe_bool(df['willr'] > -20))
 
         # === CCI EXTREME ===
         elif strategy == 'cci_extreme':
             if direction == 'long':
-                return safe_bool(df['cci'] < -100)
+                return cache_and_return(safe_bool(df['cci'] < -100))
             else:
-                return safe_bool(df['cci'] > 100)
+                return cache_and_return(safe_bool(df['cci'] > 100))
 
         # === ADX STRONG TREND ===
         elif strategy == 'adx_strong_trend':
             strong_trend = df['adx'] > 25
             if direction == 'long':
-                return safe_bool(strong_trend & (df['di_plus'] > df['di_minus']))
+                return cache_and_return(safe_bool(strong_trend & (df['di_plus'] > df['di_minus'])))
             else:
-                return safe_bool(strong_trend & (df['di_minus'] > df['di_plus']))
+                return cache_and_return(safe_bool(strong_trend & (df['di_minus'] > df['di_plus'])))
 
         # === PARABOLIC SAR REVERSAL ===
         elif strategy == 'psar_reversal':
             if direction == 'long':
-                return safe_bool((df['close'] > df['psar']) & (df['close'].shift(1) <= df['psar'].shift(1)))
+                return cache_and_return(safe_bool((df['close'] > df['psar']) & (df['close'].shift(1) <= df['psar'].shift(1))))
             else:
-                return safe_bool((df['close'] < df['psar']) & (df['close'].shift(1) >= df['psar'].shift(1)))
+                return cache_and_return(safe_bool((df['close'] < df['psar']) & (df['close'].shift(1) >= df['psar'].shift(1))))
 
         # === VWAP BOUNCE ===
         elif strategy == 'vwap_bounce':
             if 'vwap' not in df.columns or df['vwap'].isna().all():
-                return pd.Series(False, index=df.index)
+                return cache_and_return(pd.Series(False, index=df.index))
             vwap = df['vwap'].ffill().fillna(df['close'])
             if direction == 'long':
                 touched_below = df['low'] < vwap
                 closed_above = df['close'] > vwap
-                return safe_bool(touched_below & closed_above)
+                return cache_and_return(safe_bool(touched_below & closed_above))
             else:
                 touched_above = df['high'] > vwap
                 closed_below = df['close'] < vwap
-                return safe_bool(touched_above & closed_below)
+                return cache_and_return(safe_bool(touched_above & closed_below))
 
         # === RSI DIVERGENCE ===
         elif strategy == 'rsi_divergence':
@@ -1249,28 +1274,28 @@ class VectorBTEngine:
             if direction == 'long':
                 price_lower_low = df['low'] < df['low'].rolling(lookback).min().shift(1)
                 rsi_higher_low = df['rsi'] > df['rsi'].rolling(lookback).min().shift(1)
-                return safe_bool(price_lower_low & rsi_higher_low & (df['rsi'] < 40))
+                return cache_and_return(safe_bool(price_lower_low & rsi_higher_low & (df['rsi'] < 40)))
             else:
                 price_higher_high = df['high'] > df['high'].rolling(lookback).max().shift(1)
                 rsi_lower_high = df['rsi'] < df['rsi'].rolling(lookback).max().shift(1)
-                return safe_bool(price_higher_high & rsi_lower_high & (df['rsi'] > 60))
+                return cache_and_return(safe_bool(price_higher_high & rsi_lower_high & (df['rsi'] > 60)))
 
         # === KELTNER CHANNEL BREAKOUT ===
         elif strategy == 'keltner_breakout':
             if direction == 'long':
-                return safe_bool((df['close'] > df['kc_upper']) & (df['close'].shift(1) <= df['kc_upper'].shift(1)))
+                return cache_and_return(safe_bool((df['close'] > df['kc_upper']) & (df['close'].shift(1) <= df['kc_upper'].shift(1))))
             else:
-                return safe_bool((df['close'] < df['kc_lower']) & (df['close'].shift(1) >= df['kc_lower'].shift(1)))
+                return cache_and_return(safe_bool((df['close'] < df['kc_lower']) & (df['close'].shift(1) >= df['kc_lower'].shift(1))))
 
         # === DONCHIAN CHANNEL BREAKOUT (TURTLE TRADING) ===
         elif strategy == 'donchian_breakout':
             if direction == 'long':
-                return safe_bool((df['close'] > df['dc_upper'].shift(1)) & (df['close'].shift(1) <= df['dc_upper'].shift(2)))
+                return cache_and_return(safe_bool((df['close'] > df['dc_upper'].shift(1)) & (df['close'].shift(1) <= df['dc_upper'].shift(2))))
             else:
-                return safe_bool((df['close'] < df['dc_lower'].shift(1)) & (df['close'].shift(1) >= df['dc_lower'].shift(2)))
+                return cache_and_return(safe_bool((df['close'] < df['dc_lower'].shift(1)) & (df['close'].shift(1) >= df['dc_lower'].shift(2))))
 
-        # Default: no signals
-        return pd.Series(False, index=df.index)
+        # Default: no signals (also cached)
+        return cache_and_return(pd.Series(False, index=df.index))
 
     def run_single_backtest(
         self,
@@ -1314,6 +1339,7 @@ class VectorBTEngine:
                 fees=self.total_fees,
                 init_cash=self.initial_capital,
                 freq=self.data_freq,
+                save_returns=True,  # Performance: pre-compute returns for faster metrics
             )
 
             # Extract metrics
@@ -1435,6 +1461,7 @@ class VectorBTEngine:
                         fees=self.total_fees,
                         init_cash=self.initial_capital,
                         freq=self.data_freq,
+                        save_returns=True,  # Performance: pre-compute returns for faster metrics
                     )
 
                     # VECTORIZED METRIC EXTRACTION - get ALL metrics at once (massive speedup)
@@ -1527,8 +1554,8 @@ class VectorBTEngine:
 
                             completed += 1
 
-                            # Progress callback every 100 combinations (reduced from 10)
-                            if progress_callback and completed % 100 == 0:
+                            # Progress callback every 50 combinations for better watchdog responsiveness
+                            if progress_callback and completed % 50 == 0:
                                 progress_callback(completed, total_combos)
 
                     except Exception as extract_err:
@@ -1543,7 +1570,7 @@ class VectorBTEngine:
                             except:
                                 pass
                             completed += 1
-                            if progress_callback and completed % 100 == 0:
+                            if progress_callback and completed % 50 == 0:
                                 progress_callback(completed, total_combos)
 
                     # CRITICAL: Explicitly free large objects to prevent memory leak
@@ -1569,7 +1596,7 @@ class VectorBTEngine:
 
                             completed += 1
 
-                            if progress_callback and completed % 100 == 0:
+                            if progress_callback and completed % 50 == 0:
                                 progress_callback(completed, total_combos)
 
         # Sort by composite score and limit results to prevent OOM

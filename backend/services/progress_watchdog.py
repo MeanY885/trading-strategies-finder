@@ -155,10 +155,13 @@ class SignalCountStallDetector:
     """
 
     # Consecutive unchanged measurements for warning
-    UNCHANGED_WARNING = 20
+    # VectorBT batch processing can take 30-60+ seconds between updates
+    # At CHECK_INTERVAL=0.5s, 40 measurements = ~20 seconds minimum
+    UNCHANGED_WARNING = 40
 
     # Consecutive unchanged measurements for abort
-    UNCHANGED_ABORT = 50
+    # Extended for batch processing: 120 measurements = ~60 seconds
+    UNCHANGED_ABORT = 120
 
     def __init__(self):
         self._last_progress_value = 0.0
