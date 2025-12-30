@@ -392,7 +392,8 @@
             }
 
             if (message) {
-                message.textContent = status.message || 'Not running';
+                // Hide detailed status from top bar - shown in optimization queue instead
+                message.textContent = status.running ? '' : (status.enabled ? 'Waiting for next cycle' : 'Not running');
             }
 
             // Update toggle switch state
@@ -5397,7 +5398,8 @@
                     badge.textContent = 'Off';
                 }
 
-                message.textContent = status.message || 'Not running';
+                // Hide detailed status from top bar - shown in optimization queue instead
+                message.textContent = status.running ? '' : (status.enabled ? 'Waiting for next cycle' : 'Not running');
 
                 // Update cycle progress (inline in status bar)
                 const cycleProgress = document.getElementById('autonomousCycleProgress');
