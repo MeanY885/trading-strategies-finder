@@ -372,7 +372,7 @@
             if (badge) {
                 if (parallelCount > 0) {
                     badge.className = 'status-badge success';
-                    badge.textContent = `Running ${parallelCount}`;
+                    badge.textContent = 'Running';
                 } else if (status.running) {
                     badge.className = 'status-badge success';
                     badge.textContent = 'Running';
@@ -5379,7 +5379,7 @@
                 if (parallelCount > 0) {
                     // Parallel processing active
                     badge.className = 'status-badge success';
-                    badge.textContent = `Running ${parallelCount}`;
+                    badge.textContent = 'Running';
                 } else if (status.running) {
                     badge.className = 'status-badge success';
                     badge.textContent = 'Running';
