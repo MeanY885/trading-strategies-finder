@@ -84,13 +84,16 @@ class TimeoutCalculator:
     }
 
     # Base timeouts in seconds
-    BASE_OPTIMIZATION_TIMEOUT = 300   # 5 minutes
-    BASE_DATA_FETCH_TIMEOUT = 120     # 2 minutes
-    BASE_BACKTEST_TIMEOUT = 60        # 1 minute
+    # PHILOSOPHY: Progress-based detection is PRIMARY, absolute timeout is SAFETY NET
+    # If task is making progress, let it run. Only abort if truly stuck or hits max.
+    # VectorBT optimizations can take 40+ minutes for some combinations.
+    BASE_OPTIMIZATION_TIMEOUT = 7200  # 2 hours base (generous, relies on progress detection)
+    BASE_DATA_FETCH_TIMEOUT = 300     # 5 minutes (network can be slow)
+    BASE_BACKTEST_TIMEOUT = 120       # 2 minutes
 
-    # Absolute limits
-    MIN_TIMEOUT = 60      # 1 minute minimum
-    MAX_TIMEOUT = 3600    # 1 hour maximum
+    # Absolute limits - these are SAFETY NETS, not expected durations
+    MIN_TIMEOUT = 300     # 5 minute minimum
+    MAX_TIMEOUT = 14400   # 4 hours maximum (safety net only)
 
     @classmethod
     def _interpolate_multiplier(cls, value: float, multipliers: Dict[float, float]) -> float:
@@ -263,9 +266,10 @@ class TaskWatchdog:
     is detected for too long, sets the abort flag to stop the task.
     """
 
-    # Default thresholds
+    # Default thresholds - THIS IS THE PRIMARY ABORT MECHANISM
+    # Tasks are aborted when progress stalls, not based on total time
     DEFAULT_WARNING_SECONDS = 300    # 5 minutes without progress = warning
-    DEFAULT_ABORT_SECONDS = 600      # 10 minutes without progress = abort
+    DEFAULT_ABORT_SECONDS = 600      # 10 minutes without progress = abort (PRIMARY)
     CHECK_INTERVAL = 10              # Check every 10 seconds
 
     def __init__(self,

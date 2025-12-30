@@ -4785,19 +4785,18 @@ class StrategyEngine:
         if self.db and save_to_db and profitable:
             self._update_status(f"Saving top {min(50, len(profitable))} strategies to database...", 95)
 
-            for i, result in enumerate(profitable[:50]):  # Save top 50
-                self.db.save_strategy(
-                    result,
-                    run_id=db_run_id,
-                    symbol=symbol,
-                    timeframe=timeframe,
-                    data_start=self.data_start,
-                    data_end=self.data_end
-                )
-                # Update progress during save
-                if i % 10 == 0:
-                    save_progress = 95 + int((i / min(50, len(profitable))) * 4)
-                    self._update_status(f"Saving strategies... {i+1}/{min(50, len(profitable))}", save_progress)
+            # Use batch insert for much better performance (1 commit instead of 50)
+            to_save = profitable[:50]
+            batch_result = self.db.save_strategies_batch(
+                to_save,
+                run_id=db_run_id,
+                symbol=symbol,
+                timeframe=timeframe,
+                data_start=self.data_start,
+                data_end=self.data_end
+            )
+
+            self._update_status(f"Saved {batch_result['saved']} strategies...", 98)
 
             self.db.complete_optimization_run(
                 db_run_id,
@@ -4809,7 +4808,7 @@ class StrategyEngine:
             if HAS_CACHE:
                 invalidate_strategy_caches()
 
-            log(f"Saved {min(50, len(profitable))} strategies to database", "INFO")
+            log(f"Batch saved {batch_result['saved']} strategies to database ({batch_result['skipped']} duplicates skipped)", "INFO")
 
         self._update_status(
             f"Complete! Tested {tested:,} | Found {len(profitable)} profitable strategies",
@@ -4936,27 +4935,17 @@ class StrategyEngine:
             if save_to_db and self.db and profitable:
                 self._update_status("VectorBT: Saving to database...", 95)
                 to_save = profitable[:50]
-                for rank, result in enumerate(to_save):
-                    try:
-                        self.db.save_strategy(
-                            strategy_name=result.strategy_name,
-                            symbol=symbol or "UNKNOWN",
-                            timeframe=timeframe or "15m",
-                            direction=result.direction,
-                            entry_rule=result.entry_rule,
-                            params=result.params,
-                            win_rate=result.win_rate,
-                            profit_factor=result.profit_factor,
-                            total_return=result.total_pnl_percent,
-                            max_drawdown=result.max_drawdown_percent,
-                            total_trades=result.total_trades,
-                            composite_score=result.composite_score,
-                            rank=rank + 1,
-                            equity_curve=result.equity_curve,
-                            trades=result.trades_list
-                        )
-                    except Exception as e:
-                        log(f"[VectorBT] Error saving strategy: {e}", level='WARNING')
+
+                # Use batch insert for much better performance (1 commit instead of 50)
+                try:
+                    batch_result = self.db.save_strategies_batch(
+                        to_save,
+                        symbol=symbol or "UNKNOWN",
+                        timeframe=timeframe or "15m"
+                    )
+                    log(f"[VectorBT] Batch saved {batch_result['saved']} strategies ({batch_result['skipped']} duplicates skipped)")
+                except Exception as e:
+                    log(f"[VectorBT] Error batch saving strategies: {e}", level='WARNING')
 
             self._update_status(
                 f"VectorBT Complete! Found {len(profitable)} profitable strategies (100x faster)",

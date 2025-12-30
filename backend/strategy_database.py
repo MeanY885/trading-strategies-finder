@@ -475,17 +475,160 @@ class StrategyDatabase:
     def save_strategies_batch(self, results: List[Any], run_id: int = None,
                               symbol: str = None, timeframe: str = None,
                               data_source: str = None, data_start: str = None,
-                              data_end: str = None) -> int:
-        """Save multiple strategy results efficiently."""
+                              data_end: str = None,
+                              skip_duplicates: bool = True) -> Dict[str, int]:
+        """
+        Save multiple strategy results efficiently using batch operations.
+
+        Uses a single transaction with executemany() for dramatic performance improvement.
+        100 strategies = 1 commit instead of 100 commits.
+
+        Args:
+            results: List of strategy results to save
+            run_id: Optional optimization run ID
+            symbol: Trading symbol (e.g., 'BTCUSDT')
+            timeframe: Timeframe (e.g., '15m')
+            data_source: Data source identifier
+            data_start: Start date of data
+            data_end: End date of data
+            skip_duplicates: If True, skip duplicate strategies (default True)
+
+        Returns:
+            Dict with 'saved', 'skipped', and 'errors' counts
+        """
+        if not results:
+            return {'saved': 0, 'skipped': 0, 'errors': 0}
+
         saved = 0
-        for result in results:
+        skipped = 0
+        errors = 0
+
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+
             try:
-                self.save_strategy(result, run_id, symbol, timeframe,
-                                   data_source, data_start, data_end)
-                saved += 1
+                # Prepare batch data
+                batch_data = []
+
+                for result in results:
+                    try:
+                        # Extract params
+                        params = result.params if hasattr(result, 'params') else {}
+                        tp_percent = params.get('tp_percent', 1.0)
+                        sl_percent = params.get('sl_percent', 3.0)
+
+                        strategy_name = getattr(result, 'strategy_name', 'unknown')
+                        total_trades = getattr(result, 'total_trades', 0)
+                        win_rate = getattr(result, 'win_rate', 0)
+                        total_pnl = getattr(result, 'total_pnl', 0)
+                        profit_factor = getattr(result, 'profit_factor', 0)
+
+                        # Check for duplicate if needed
+                        if skip_duplicates:
+                            cursor.execute('''
+                                SELECT 1 FROM strategies
+                                WHERE strategy_name = %s
+                                  AND symbol = %s
+                                  AND timeframe = %s
+                                  AND ABS(tp_percent - %s) < 0.01
+                                  AND ABS(sl_percent - %s) < 0.01
+                                  AND total_trades = %s
+                                  AND ABS(win_rate - %s) < 0.01
+                                  AND ABS(total_pnl - %s) < 0.01
+                                  AND ABS(profit_factor - %s) < 0.01
+                                LIMIT 1
+                            ''', (strategy_name, symbol, timeframe, tp_percent, sl_percent,
+                                  total_trades, win_rate, total_pnl, profit_factor))
+
+                            if cursor.fetchone():
+                                skipped += 1
+                                continue
+
+                        # Convert found_by list to JSON
+                        found_by = json.dumps(result.found_by) if hasattr(result, 'found_by') else '[]'
+
+                        # Convert equity curve to JSON
+                        equity_curve = json.dumps(result.equity_curve) if hasattr(result, 'equity_curve') else '[]'
+
+                        # Determine trade mode from direction
+                        direction = getattr(result, 'direction', 'long')
+                        trade_mode = 'bidirectional' if direction == 'both' else direction
+
+                        # Build tuple for batch insert
+                        row_data = (
+                            strategy_name,
+                            getattr(result, 'strategy_category', 'unknown'),
+                            json.dumps(params),
+                            total_trades,
+                            win_rate,
+                            profit_factor,
+                            total_pnl,
+                            getattr(result, 'max_drawdown', 0),
+                            getattr(result, 'equity_r_squared', 0),
+                            getattr(result, 'recovery_factor', 0),
+                            getattr(result, 'sharpe_ratio', 0),
+                            getattr(result, 'composite_score', profit_factor * 10),
+                            tp_percent,
+                            sl_percent,
+                            getattr(result, 'val_pnl', 0),
+                            getattr(result, 'val_profit_factor', 0),
+                            getattr(result, 'val_win_rate', 0),
+                            found_by,
+                            data_source,
+                            symbol,
+                            timeframe,
+                            data_start,
+                            data_end,
+                            run_id,
+                            equity_curve,
+                            trade_mode,
+                            getattr(result, 'long_trades', 0),
+                            getattr(result, 'long_wins', 0),
+                            getattr(result, 'long_pnl', 0.0),
+                            getattr(result, 'short_trades', 0),
+                            getattr(result, 'short_wins', 0),
+                            getattr(result, 'short_pnl', 0.0),
+                            getattr(result, 'flip_count', 0),
+                            getattr(result, 'total_pnl_percent', 0.0),
+                            getattr(result, 'avg_trade', 0.0),
+                            getattr(result, 'buy_hold_return', 0.0),
+                            getattr(result, 'vs_buy_hold', 0.0),
+                            getattr(result, 'consistency_score', 0.0)
+                        )
+                        batch_data.append(row_data)
+
+                    except Exception as e:
+                        log(f"Error preparing strategy {getattr(result, 'strategy_name', 'unknown')}: {e}", level='ERROR')
+                        errors += 1
+
+                # Execute batch insert if we have data
+                if batch_data:
+                    insert_sql = '''
+                        INSERT INTO strategies
+                        (strategy_name, strategy_category, params, total_trades, win_rate,
+                         profit_factor, total_pnl, max_drawdown, equity_r_squared, recovery_factor,
+                         sharpe_ratio, composite_score, tp_percent, sl_percent,
+                         val_pnl, val_profit_factor, val_win_rate, found_by, data_source, symbol,
+                         timeframe, data_start, data_end, optimization_run_id, equity_curve,
+                         trade_mode, long_trades, long_wins, long_pnl, short_trades, short_wins, short_pnl, flip_count,
+                         total_pnl_percent, avg_trade, buy_hold_return, vs_buy_hold, consistency_score)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    '''
+
+                    cursor.executemany(insert_sql, batch_data)
+                    saved = len(batch_data)
+
+                # Single commit for all inserts
+                conn.commit()
+
+                log(f"Batch saved {saved} strategies ({skipped} duplicates skipped, {errors} errors)")
+
             except Exception as e:
-                log(f"Error saving strategy {result.strategy_name}: {e}", level='ERROR')
-        return saved
+                conn.rollback()
+                log(f"Batch insert failed, rolling back: {e}", level='ERROR')
+                raise
+
+        return {'saved': saved, 'skipped': skipped, 'errors': errors}
 
     def get_top_strategies(self, limit: int = 10, symbol: str = None,
                            timeframe: str = None, min_trades: int = 3,
@@ -748,6 +891,172 @@ class StrategyDatabase:
         self._return_connection(conn)
 
         return updated
+
+    def update_elite_status_batch(self, updates: List[Dict]) -> Dict[str, int]:
+        """
+        Batch update elite validation status for multiple strategies.
+
+        Uses a single transaction for all updates - much faster than individual calls.
+
+        Args:
+            updates: List of dicts with keys:
+                - strategy_id: int (required)
+                - elite_status: str (required)
+                - periods_passed: int (required)
+                - periods_total: int (required)
+                - validation_data: str (optional)
+                - elite_score: float (optional, default 0)
+
+        Returns:
+            Dict with 'updated' and 'errors' counts
+        """
+        if not updates:
+            return {'updated': 0, 'errors': 0}
+
+        updated = 0
+        errors = 0
+        now = datetime.now().isoformat()
+
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+
+            try:
+                # Prepare batch data
+                batch_data = []
+
+                for update in updates:
+                    try:
+                        row_data = (
+                            update['elite_status'],
+                            now,
+                            update['periods_passed'],
+                            update['periods_total'],
+                            update.get('validation_data'),
+                            update.get('elite_score', 0),
+                            update['strategy_id']
+                        )
+                        batch_data.append(row_data)
+                    except KeyError as e:
+                        log(f"Missing required field in elite status update: {e}", level='ERROR')
+                        errors += 1
+
+                # Execute batch update
+                if batch_data:
+                    update_sql = '''
+                        UPDATE strategies
+                        SET elite_status = %s,
+                            elite_validated_at = %s,
+                            elite_periods_passed = %s,
+                            elite_periods_total = %s,
+                            elite_validation_data = %s,
+                            elite_score = %s
+                        WHERE id = %s
+                    '''
+
+                    cursor.executemany(update_sql, batch_data)
+                    updated = len(batch_data)
+
+                conn.commit()
+                log(f"Batch updated {updated} elite statuses ({errors} errors)")
+
+            except Exception as e:
+                conn.rollback()
+                log(f"Batch elite status update failed, rolling back: {e}", level='ERROR')
+                raise
+
+        return {'updated': updated, 'errors': errors}
+
+    def delete_strategies_batch(self, strategy_ids: List[int]) -> int:
+        """
+        Delete multiple strategies in a single transaction.
+
+        Args:
+            strategy_ids: List of strategy IDs to delete
+
+        Returns:
+            Number of strategies deleted
+        """
+        if not strategy_ids:
+            return 0
+
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+
+            try:
+                # Use ANY() for efficient batch delete
+                cursor.execute(
+                    'DELETE FROM strategies WHERE id = ANY(%s)',
+                    (strategy_ids,)
+                )
+                deleted = cursor.rowcount
+                conn.commit()
+
+                log(f"Batch deleted {deleted} strategies")
+                return deleted
+
+            except Exception as e:
+                conn.rollback()
+                log(f"Batch delete failed, rolling back: {e}", level='ERROR')
+                raise
+
+    def record_completed_optimizations_batch(self, completions: List[Dict]) -> int:
+        """
+        Record multiple completed optimizations in a single transaction.
+
+        Args:
+            completions: List of dicts with keys:
+                - pair: str
+                - period_label: str
+                - timeframe_label: str
+                - granularity_label: str
+                - strategies_found: int (optional, default 0)
+                - source: str (optional, default 'binance')
+                - duration_seconds: int (optional)
+
+        Returns:
+            Number of records upserted
+        """
+        if not completions:
+            return 0
+
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+
+            try:
+                batch_data = []
+                for comp in completions:
+                    batch_data.append((
+                        comp['pair'],
+                        comp['period_label'],
+                        comp['timeframe_label'],
+                        comp['granularity_label'],
+                        comp.get('strategies_found', 0),
+                        comp.get('source', 'binance'),
+                        comp.get('duration_seconds')
+                    ))
+
+                # Use executemany with ON CONFLICT for upsert
+                upsert_sql = '''
+                    INSERT INTO completed_optimizations
+                    (pair, period_label, timeframe_label, granularity_label, strategies_found, source, duration_seconds, completed_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                    ON CONFLICT (pair, period_label, timeframe_label, granularity_label)
+                    DO UPDATE SET strategies_found = EXCLUDED.strategies_found,
+                                  completed_at = CURRENT_TIMESTAMP,
+                                  duration_seconds = EXCLUDED.duration_seconds
+                '''
+
+                cursor.executemany(upsert_sql, batch_data)
+                upserted = len(batch_data)
+                conn.commit()
+
+                log(f"Batch recorded {upserted} completed optimizations")
+                return upserted
+
+            except Exception as e:
+                conn.rollback()
+                log(f"Batch completed optimizations record failed, rolling back: {e}", level='ERROR')
+                raise
 
     def get_elite_strategies_optimized(self, top_n_per_market: int = 10) -> List[Dict]:
         """Get top N validated strategies per pair/timeframe."""
