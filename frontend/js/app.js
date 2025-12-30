@@ -5289,10 +5289,14 @@
                 runningItems.forEach((item, idx) => {
                     const progress = item.progress || 0;
 
-                    // Build progress message with trial info, percentage, and ETA
+                    // Build progress message with trial info and speed
                     let progressMsg = '';
                     if (item.trial_current > 0 && item.trial_total > 0) {
                         progressMsg = `${item.pair} - ${item.trial_current.toLocaleString()}/${item.trial_total.toLocaleString()}`;
+                        // Add speed if available
+                        if (item.comb_per_sec > 0) {
+                            progressMsg += ` (${item.comb_per_sec.toLocaleString()}/sec)`;
+                        }
                     } else {
                         progressMsg = item.message || 'Processing...';
                     }

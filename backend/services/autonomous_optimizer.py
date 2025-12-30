@@ -493,7 +493,7 @@ async def run_single_optimization(
 
     last_broadcast_time = [0]  # Use list to allow mutation in nested function
 
-    async def update_parallel_status(message: str, progress: int = None, estimated_remaining: int = None, trial_current: int = 0, trial_total: int = 0):
+    async def update_parallel_status(message: str, progress: int = None, estimated_remaining: int = None, trial_current: int = 0, trial_total: int = 0, comb_per_sec: int = 0):
         # Use app_state.running_optimizations for centralized state management
         if combo_id and combo_id in app_state.running_optimizations:
             async with running_optimizations_async_lock:
@@ -506,6 +506,8 @@ async def run_single_optimization(
                     if trial_current > 0:
                         app_state.running_optimizations[combo_id]["trial_current"] = trial_current
                         app_state.running_optimizations[combo_id]["trial_total"] = trial_total
+                    if comb_per_sec > 0:
+                        app_state.running_optimizations[combo_id]["comb_per_sec"] = comb_per_sec
                     app_state.update_autonomous_status(
                         parallel_running=list(app_state.running_optimizations.values())
                     )
@@ -680,7 +682,7 @@ async def run_single_optimization(
                 message=status_msg,
                 estimated_remaining_seconds=estimated_remaining
             )
-            await update_parallel_status(status_msg, progress_pct, estimated_remaining, current_trial, total_trials)
+            await update_parallel_status(status_msg, progress_pct, estimated_remaining, current_trial, total_trials, comb_per_sec)
 
             await asyncio.sleep(0.2)
 
