@@ -43,6 +43,20 @@
         let strategyResultsScheduled = false;
 
         // =============================================================================
+        // PERFORMANCE: Autonomous history debouncing
+        // Prevents excessive HTTP requests and DOM rebuilds from rapid status updates
+        // =============================================================================
+        let autonomousHistoryDebounceTimer = null;
+        let autonomousHistoryLastUpdate = 0;
+        const AUTONOMOUS_HISTORY_DEBOUNCE_MS = 2000; // Only update history every 2 seconds max
+        let autonomousHistoryPending = false; // Track if an update is already in flight
+
+        // =============================================================================
+        // PERFORMANCE: Toggle state tracking for optimistic UI updates
+        // =============================================================================
+        let togglePendingRequest = false; // Prevent double-clicks during pending request
+
+        // =============================================================================
         // HELPER FUNCTIONS
         // =============================================================================
 
@@ -130,8 +144,8 @@
                 };
 
                 wsConnection.onmessage = function(event) {
-                    // Handle plain text responses (like "pong")
-                    if (event.data === 'pong') {
+                    // Handle plain text responses (like "pong" or "ping")
+                    if (event.data === 'pong' || event.data === 'ping') {
                         return; // Keepalive response, ignore
                     }
 
@@ -139,7 +153,12 @@
                         const message = JSON.parse(event.data);
                         handleWebSocketMessage(message);
                     } catch (e) {
-                        console.error('[WebSocket] Error parsing message:', e, event.data);
+                        // Only log error if it's not a known non-JSON message
+                        if (event.data && event.data.length < 20) {
+                            console.log('[WebSocket] Ignoring non-JSON message:', event.data);
+                        } else {
+                            console.error('[WebSocket] Error parsing message:', e, event.data?.substring(0, 100));
+                        }
                     }
                 };
 
@@ -180,8 +199,16 @@
             console.log('[WebSocket] Message received, type:', type);
 
             // First check if this is a response to a pending request
-            if (message.id && handleWsResponse(message)) {
-                return; // Handled as request response
+            if (message.id) {
+                const result = handleWsResponse(message);
+                if (result === true) {
+                    return; // Handled as request response
+                }
+                // Handle late responses - still process the data to update UI
+                if (result && result.late) {
+                    console.log('[WebSocket] Processing late response for UI update');
+                    // Fall through to process the message for UI update
+                }
             }
 
             // Apply throttling for frequent message types to prevent UI thrashing
@@ -260,14 +287,29 @@
                     // Server heartbeat - connection is alive
                     break;
 
-                // Data responses (when not matched by request ID)
-                case 'strategies_data':
+                // Data responses - handle late responses that arrive after timeout
                 case 'elite_data':
+                    // Late elite_data response - still update the UI
+                    console.log('[WebSocket] Processing elite_data (late response or broadcast)');
+                    if (message.status) {
+                        updateEliteUI(message.status);
+                        document.getElementById('validatedCount').textContent = message.status.validated || 0;
+                        document.getElementById('pendingCount').textContent = message.status.pending || 0;
+                    }
+                    if (message.strategies) {
+                        cachedEliteData = message;
+                        renderEliteTable(message.strategies, message.status || {});
+                    }
+                    break;
+
+                case 'strategies_data':
                 case 'queue_data':
                 case 'priority_data':
                 case 'db_stats':
                 case 'error':
-                    // These are handled by handleWsResponse above
+                    // These are normally handled by handleWsResponse above
+                    // Late responses will be logged but not processed here
+                    console.log('[WebSocket] Data response (possibly late):', type);
                     break;
 
                 default:
@@ -397,8 +439,35 @@
             // Note: Queue rendering is handled separately via renderTaskQueueFromCache
             // when queue data is received in the autonomous_status message
 
-            // Update history table when status changes
-            updateAutonomousHistory();
+            // PERFORMANCE FIX: Debounce history table updates
+            // Only update if: (1) enough time has passed AND (2) no update is in flight
+            // This prevents the ~10 HTTP requests/second from rapid WebSocket messages
+            const now = Date.now();
+            if (now - autonomousHistoryLastUpdate >= AUTONOMOUS_HISTORY_DEBOUNCE_MS && !autonomousHistoryPending) {
+                // Clear any pending debounce timer
+                if (autonomousHistoryDebounceTimer) {
+                    clearTimeout(autonomousHistoryDebounceTimer);
+                    autonomousHistoryDebounceTimer = null;
+                }
+                updateAutonomousHistoryDebounced();
+            } else if (!autonomousHistoryDebounceTimer) {
+                // Schedule a debounced update if not already scheduled
+                autonomousHistoryDebounceTimer = setTimeout(() => {
+                    autonomousHistoryDebounceTimer = null;
+                    if (!autonomousHistoryPending) {
+                        updateAutonomousHistoryDebounced();
+                    }
+                }, AUTONOMOUS_HISTORY_DEBOUNCE_MS);
+            }
+        }
+
+        // Debounced wrapper for history updates
+        function updateAutonomousHistoryDebounced() {
+            autonomousHistoryLastUpdate = Date.now();
+            autonomousHistoryPending = true;
+            updateAutonomousHistory().finally(() => {
+                autonomousHistoryPending = false;
+            });
         }
 
         // Helper to update elite UI from WebSocket
@@ -614,6 +683,8 @@
 
         let wsRequestId = 0;
         const wsPendingRequests = new Map();
+        // Track timed-out requests briefly to handle late responses gracefully
+        const wsTimedOutRequests = new Map();
 
         function wsRequest(type, timeout = 30000) {
             return new Promise((resolve, reject) => {
@@ -623,12 +694,21 @@
                 }
 
                 const id = ++wsRequestId;
+                const startTime = Date.now();
                 const timer = setTimeout(() => {
-                    wsPendingRequests.delete(id);
-                    reject(new Error('Request timeout'));
+                    const pending = wsPendingRequests.get(id);
+                    if (pending) {
+                        wsPendingRequests.delete(id);
+                        // Keep track of timed-out request for late response handling
+                        wsTimedOutRequests.set(id, { type, startTime, timedOutAt: Date.now() });
+                        // Clean up after 2 minutes
+                        setTimeout(() => wsTimedOutRequests.delete(id), 120000);
+                        console.warn(`[WS] Request ${type} (id=${id}) timed out after ${timeout}ms`);
+                        reject(new Error(`Request timeout for ${type}`));
+                    }
                 }, timeout);
 
-                wsPendingRequests.set(id, { resolve, reject, timer });
+                wsPendingRequests.set(id, { resolve, reject, timer, type, startTime });
 
                 wsConnection.send(JSON.stringify({ type, id }));
             });
@@ -637,9 +717,11 @@
         function handleWsResponse(message) {
             const id = message.id;
             if (id && wsPendingRequests.has(id)) {
-                const { resolve, reject, timer } = wsPendingRequests.get(id);
+                const { resolve, reject, timer, type, startTime } = wsPendingRequests.get(id);
                 clearTimeout(timer);
                 wsPendingRequests.delete(id);
+                const elapsed = Date.now() - startTime;
+                console.log(`[WS] Response for ${type} (id=${id}) received in ${elapsed}ms`);
                 // Check if this is an error response
                 if (message.type === 'error') {
                     reject(new Error(message.error || 'Unknown server error'));
@@ -647,6 +729,16 @@
                     resolve(message);
                 }
                 return true;
+            }
+            // Check if this is a late response for a timed-out request
+            if (id && wsTimedOutRequests.has(id)) {
+                const { type, startTime, timedOutAt } = wsTimedOutRequests.get(id);
+                const totalElapsed = Date.now() - startTime;
+                const afterTimeout = Date.now() - timedOutAt;
+                console.warn(`[WS] Late response for ${type} (id=${id}) arrived ${afterTimeout}ms after timeout (total: ${totalElapsed}ms)`);
+                wsTimedOutRequests.delete(id);
+                // Return the message type so caller can still use the data if needed
+                return { late: true, message };
             }
             return false;
         }
@@ -660,7 +752,8 @@
         // WebSocket data loading functions
         async function loadStrategiesViaWs() {
             try {
-                const response = await wsRequest('get_strategies', 30000);
+                // Use longer timeout (45s) - can be slow with many strategies
+                const response = await wsRequest('get_strategies', 45000);
                 cachedStrategies = response.data;
                 return response.data;
             } catch (e) {
@@ -671,7 +764,8 @@
 
         async function loadEliteViaWs() {
             try {
-                const response = await wsRequest('get_elite', 30000);
+                // Use longer timeout (60s) - database aggregation can be slow with many strategies
+                const response = await wsRequest('get_elite', 60000);
                 cachedEliteData = response;
                 return response;
             } catch (e) {
@@ -715,48 +809,71 @@
         }
 
         // Tab Navigation
+        // PERFORMANCE FIX: Tab switching is now non-blocking
+        // Visual feedback happens immediately, data loading happens asynchronously
         function showTab(tabName) {
-            // Hide all tab contents
-            document.querySelectorAll('.tab-content').forEach(tab => {
+            // PERFORMANCE: Use single getElementById calls instead of querySelectorAll loops
+            // Cache tab elements for faster access
+            const tabContent = document.getElementById(tabName + '-tab');
+            const tabButton = document.querySelector(`[data-tab="${tabName}"]`);
+
+            if (!tabContent || !tabButton) {
+                console.error('Tab not found:', tabName);
+                return;
+            }
+
+            // Hide all tab contents - use cached references where possible
+            const allTabs = document.querySelectorAll('.tab-content');
+            const allButtons = document.querySelectorAll('.tab-btn');
+
+            // Batch DOM reads/writes to prevent layout thrashing
+            // First: read current states (if needed)
+            // Then: batch all writes together
+
+            // Batch hide all tabs
+            allTabs.forEach(tab => {
                 tab.style.display = 'none';
             });
 
-            // Remove active class from all tab buttons
-            document.querySelectorAll('.tab-btn').forEach(btn => {
+            // Batch remove active from all buttons
+            allButtons.forEach(btn => {
                 btn.classList.remove('active');
             });
 
-            // Show selected tab
-            document.getElementById(tabName + '-tab').style.display = 'block';
-            document.querySelector(`[data-tab="${tabName}"]`).classList.add('active');
+            // Show selected tab - immediate visual feedback
+            tabContent.style.display = 'block';
+            tabButton.classList.add('active');
 
-            // Initialize history tab on first view
-            if (tabName === 'history' && !historyInitialized) {
-                initHistoryTab();
-            }
-
-            // Initialize validation tab on first view
-            if (tabName === 'validation' && !validationInitialized) {
-                initValidationTab();
-            }
-
-            // Initialize elite tab on first view
-            if (tabName === 'elite' && !eliteInitialized) {
-                initEliteTab();
-            }
-
-            // Initialize autonomous tab on first view
-            if (tabName === 'autonomous' && !autonomousInitialized) {
-                initAutonomousTab();
-            }
-
-            // Initialize tools tab on first view
-            if (tabName === 'tools') {
-                refreshDbStats();
-                if (!priorityInitialized) {
-                    initPriorityManager();
+            // PERFORMANCE FIX: Defer initialization to next frame
+            // This allows the tab switch animation to complete before loading data
+            requestAnimationFrame(() => {
+                // Initialize tabs asynchronously - don't block the UI
+                if (tabName === 'history' && !historyInitialized) {
+                    initHistoryTab(); // Already async, won't block
                 }
-            }
+
+                if (tabName === 'validation' && !validationInitialized) {
+                    initValidationTab();
+                }
+
+                if (tabName === 'elite' && !eliteInitialized) {
+                    initEliteTab(); // Already async, won't block
+                }
+
+                if (tabName === 'autonomous' && !autonomousInitialized) {
+                    initAutonomousTab();
+                }
+
+                if (tabName === 'tools') {
+                    // Defer stats refresh to not block tab switch
+                    setTimeout(() => {
+                        refreshDbStats();
+                        if (!priorityInitialized) {
+                            initPriorityManager();
+                        }
+                    }, 0);
+                }
+            });
         }
 
         // === TOOLS TAB FUNCTIONS ===
@@ -4530,6 +4647,24 @@
             currentExpandedEliteRow = null;
             currentExpandedEliteId = null;
 
+            // PERFORMANCE FIX: Cache parsed validation data to avoid repeated JSON.parse
+            // This was parsing the same JSON string multiple times per row (3+ times)
+            const validationCache = new Map();
+            function getCachedValidation(strategy) {
+                if (!validationCache.has(strategy.id)) {
+                    try {
+                        const data = JSON.parse(strategy.elite_validation_data || '[]');
+                        // Convert to object keyed by period for O(1) lookup
+                        const periodMap = {};
+                        data.forEach(r => { periodMap[r.period] = r; });
+                        validationCache.set(strategy.id, periodMap);
+                    } catch (e) {
+                        validationCache.set(strategy.id, {});
+                    }
+                }
+                return validationCache.get(strategy.id);
+            }
+
             // Helper to format P&L cell with validated date
             function formatPnL(periodData) {
                 // Format the validated_at date compactly with time
@@ -4569,14 +4704,10 @@
             }
 
             // Helper to get period PnL value for sorting
+            // PERFORMANCE FIX: Now uses validation cache instead of parsing JSON each time
             function getPeriodPnL(strategy, periodName) {
-                try {
-                    const validationResults = JSON.parse(strategy.elite_validation_data || '[]');
-                    const period = validationResults.find(r => r.period === periodName);
-                    return period?.pnl || 0;
-                } catch (e) {
-                    return 0;
-                }
+                const periodData = getCachedValidation(strategy);
+                return periodData[periodName]?.pnl || 0;
             }
 
             // Map sort column to period name
@@ -4694,12 +4825,8 @@
                 else if (rank === 2) medal = '🥈';
                 else if (rank === 3) medal = '🥉';
 
-                // Parse validation data for best strategy
-                let periodData = {};
-                try {
-                    const validationResults = JSON.parse(best.elite_validation_data || '[]');
-                    validationResults.forEach(r => { periodData[r.period] = r; });
-                } catch (e) {}
+                // PERFORMANCE FIX: Use cached validation data instead of parsing JSON
+                const periodData = getCachedValidation(best);
 
                 // TP/SL for best
                 const tp = best.tp_percent || best.params?.tp_percent || '--';
@@ -4831,12 +4958,8 @@
                     const score = (variant.elite_score || 0).toFixed(2);
                     const isBest = idx === 0;
 
-                    // Parse period data for this variant
-                    let periodData = {};
-                    try {
-                        const validationResults = JSON.parse(variant.elite_validation_data || '[]');
-                        validationResults.forEach(r => { periodData[r.period] = r; });
-                    } catch (e) {}
+                    // PERFORMANCE FIX: Use cached validation data instead of parsing JSON
+                    const periodData = getCachedValidation(variant);
 
                     html += `
                         <tr style="border-bottom: 1px solid var(--border-subtle); ${isBest ? 'background: rgba(34, 197, 94, 0.1);' : ''}">
@@ -4889,24 +5012,45 @@
             const toggle = document.getElementById('autonomousToggle');
             const label = document.getElementById('autonomousToggleLabel');
 
+            // PERFORMANCE FIX: Prevent double-clicks and provide instant visual feedback
+            if (togglePendingRequest) {
+                return; // Already processing a toggle request
+            }
+
+            // Optimistic UI update - show change immediately
+            const newState = toggle.checked; // The checkbox already changed
+            label.textContent = newState ? 'ON' : 'OFF';
+            label.style.color = newState ? 'var(--success)' : 'var(--text-secondary)';
+
+            togglePendingRequest = true;
+
             try {
                 const response = await fetch('/api/autonomous/toggle', { method: 'POST' });
                 const data = await response.json();
 
+                // Confirm the actual state from server (in case of mismatch)
                 if (data.status === 'enabled') {
                     label.textContent = 'ON';
                     label.style.color = 'var(--success)';
+                    toggle.checked = true;
                     addLog('Autonomous optimizer enabled', 'normal');
                 } else {
                     label.textContent = 'OFF';
                     label.style.color = 'var(--text-secondary)';
+                    toggle.checked = false;
                     addLog('Autonomous optimizer disabled', 'normal');
                 }
 
-                updateAutonomousStatus();
+                // Skip updateAutonomousStatus() - WebSocket provides updates
+                // This was causing additional HTTP requests and delays
             } catch (error) {
                 console.error('Failed to toggle autonomous optimizer:', error);
-                toggle.checked = !toggle.checked;  // Revert toggle
+                // Revert optimistic update on error
+                toggle.checked = !newState;
+                label.textContent = !newState ? 'ON' : 'OFF';
+                label.style.color = !newState ? 'var(--success)' : 'var(--text-secondary)';
+            } finally {
+                togglePendingRequest = false;
             }
         }
 

@@ -1383,14 +1383,45 @@ class VectorBTEngine:
 
                 short = direction == 'short'
 
-                # Broadcast across TP/SL combinations
+                # VectorBT broadcasting: tile close and entries to create multi-column DataFrames
+                # Each column represents a different TP/SL combination
+                n_tp = len(tp_range)
+                n_sl = len(sl_range)
+                n_combos = n_tp * n_sl
+
                 try:
+                    # Create column labels for TP/SL combinations
+                    # Format: MultiIndex with (tp_value, sl_value)
+                    col_tuples = [(tp, sl) for tp in tp_range for sl in sl_range]
+                    columns = pd.MultiIndex.from_tuples(col_tuples, names=['tp', 'sl'])
+
+                    # Tile close prices to have n_combos columns
+                    close_tiled = pd.DataFrame(
+                        np.tile(self.df['close'].values.reshape(-1, 1), (1, n_combos)),
+                        index=self.df.index,
+                        columns=columns
+                    )
+
+                    # Tile entries to match
+                    entries_arr = entries.values.reshape(-1, 1)
+                    entries_tiled = pd.DataFrame(
+                        np.tile(entries_arr, (1, n_combos)),
+                        index=self.df.index,
+                        columns=columns
+                    )
+
+                    # Create TP/SL arrays matching the column structure
+                    # Each column gets the same TP/SL value for all rows
+                    tp_arr = np.array([tp / 100 for tp, sl in col_tuples])  # Shape: (n_combos,)
+                    sl_arr = np.array([sl / 100 for tp, sl in col_tuples])  # Shape: (n_combos,)
+
+                    # Run vectorized portfolio simulation across all combinations
                     pf = vbt.Portfolio.from_signals(
-                        close=self.df['close'],
-                        entries=entries if not short else pd.Series(False, index=self.df.index),
-                        short_entries=entries if short else pd.Series(False, index=self.df.index),
-                        sl_stop=sl_range / 100,  # Broadcasting!
-                        tp_stop=tp_range / 100,  # Broadcasting!
+                        close=close_tiled,
+                        entries=entries_tiled if not short else pd.DataFrame(False, index=self.df.index, columns=columns),
+                        short_entries=entries_tiled if short else pd.DataFrame(False, index=self.df.index, columns=columns),
+                        sl_stop=sl_arr,  # Per-column stop loss
+                        tp_stop=tp_arr,  # Per-column take profit
                         size=self.position_size_pct / 100,
                         size_type='percent',
                         fees=self.total_fees,
@@ -1399,25 +1430,36 @@ class VectorBTEngine:
                     )
 
                     # Extract metrics for each combination
-                    for i, tp in enumerate(tp_range):
-                        for j, sl in enumerate(sl_range):
+                    for tp, sl in col_tuples:
+                        try:
+                            sub_pf = pf[(tp, sl)]
+                            result = self._extract_metrics(sub_pf, strategy, direction, tp, sl)
+                            if result.total_trades > 0:
+                                results.append(result)
+                        except Exception as e:
+                            log(f"[VectorBT] Error extracting metrics for TP={tp} SL={sl}: {e}", level='DEBUG')
+
+                        completed += 1
+
+                        if progress_callback and completed % 100 == 0:
+                            progress_callback(completed, total_combos)
+
+                except Exception as e:
+                    log(f"[VectorBT] Broadcast error for {strategy}/{direction}: {e}", level='WARNING')
+                    # Fall back to iterative approach
+                    for tp in tp_range:
+                        for sl in sl_range:
                             try:
-                                # Get sub-portfolio for this TP/SL combination
-                                sub_pf = pf[(i, j)] if hasattr(pf, '__getitem__') else pf
-                                result = self._extract_metrics(sub_pf, strategy, direction, tp, sl)
+                                result = self.run_single_backtest(strategy, direction, tp, sl)
                                 if result.total_trades > 0:
                                     results.append(result)
-                            except Exception as e:
-                                log(f"[VectorBT] Error extracting metrics [{i},{j}]: {e}", level='DEBUG')
+                            except Exception as inner_e:
+                                log(f"[VectorBT] Fallback error: {inner_e}", level='DEBUG')
 
                             completed += 1
 
                             if progress_callback and completed % 100 == 0:
                                 progress_callback(completed, total_combos)
-
-                except Exception as e:
-                    log(f"[VectorBT] Broadcast error for {strategy}/{direction}: {e}", level='WARNING')
-                    completed += len(tp_range) * len(sl_range)
 
         # Sort by composite score
         results.sort(key=lambda r: r.composite_score, reverse=True)

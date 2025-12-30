@@ -188,7 +188,7 @@ def has_period_boundary_crossed(period: str, last_validated_at: str) -> bool:
             months_diff = (now.year - validated.year) * 12 + (now.month - validated.month)
             return months_diff >= 9
 
-        elif period in ["1 year", "2 years", "3 years", "5 years"]:
+        elif period in ["1 year", "2 years"]:
             return now.year != validated.year
 
         else:

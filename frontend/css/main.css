@@ -473,8 +473,11 @@
             font-size: 0.85rem;
             font-weight: 500;
             cursor: pointer;
-            transition: all 0.2s;
+            /* PERFORMANCE: Specific properties instead of 'all', faster transition */
+            transition: background-color 0.1s ease-out, color 0.1s ease-out, border-color 0.1s ease-out;
             white-space: nowrap;
+            /* Prevent layout shift on active state */
+            contain: layout style;
         }
 
         .tab-btn:hover {
@@ -997,7 +1000,9 @@
             height: 26px;
             background-color: var(--bg-hover);
             border-radius: 26px;
-            transition: 0.3s;
+            /* PERFORMANCE: Use transform for animations (GPU accelerated) */
+            transition: background-color 0.15s ease-out;
+            will-change: background-color;
         }
 
         .toggle-slider:before {
@@ -1009,7 +1014,9 @@
             bottom: 3px;
             background-color: var(--text-muted);
             border-radius: 50%;
-            transition: 0.3s;
+            /* PERFORMANCE: Faster transition, GPU-accelerated transform */
+            transition: transform 0.15s ease-out, background-color 0.15s ease-out;
+            will-change: transform;
         }
 
         .toggle-switch input:checked + .toggle-slider {

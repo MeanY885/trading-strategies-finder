@@ -56,8 +56,7 @@ VALIDATION_PERIODS = [
     {"period": "9 months", "months": 9.0, "days": 270},
     {"period": "1 year", "months": 12.0, "days": 365},
     {"period": "2 years", "months": 24.0, "days": 730},
-    {"period": "3 years", "months": 36.0, "days": 1095},
-    {"period": "5 years", "months": 60.0, "days": 1825},
+    # 3-year and 5-year periods removed - cause timeouts during Elite validation
 ]
 
 # =============================================================================

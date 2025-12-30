@@ -134,7 +134,7 @@ async def validate_strategy(request: ValidateStrategyRequest):
             }
         max_days = data_limits.get(tf_minutes, 1825)
 
-        # Validation periods
+        # Validation periods (3-year and 5-year removed - cause timeouts)
         validation_periods = [
             {"period": "1 week", "months": 0.25, "days": 7},
             {"period": "2 weeks", "months": 0.5, "days": 14},
@@ -144,8 +144,6 @@ async def validate_strategy(request: ValidateStrategyRequest):
             {"period": "9 months", "months": 9.0, "days": 270},
             {"period": "1 year", "months": 12.0, "days": 365},
             {"period": "2 years", "months": 24.0, "days": 730},
-            {"period": "3 years", "months": 36.0, "days": 1095},
-            {"period": "5 years", "months": 60.0, "days": 1825},
         ]
 
         # Original metrics (baseline)

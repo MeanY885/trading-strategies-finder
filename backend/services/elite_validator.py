@@ -5,7 +5,7 @@ Background service that validates strategies across multiple time periods
 to determine their consistency and reliability.
 
 Features:
-- Multi-period validation (1 week to 5 years)
+- Multi-period validation (1 week to 2 years)
 - Period boundary detection (only re-validates when calendar boundaries crossed)
 - Parallel processing with configurable concurrency
 - Elite scoring based on consistency and profitability
