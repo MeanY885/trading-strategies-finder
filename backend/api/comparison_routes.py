@@ -630,7 +630,7 @@ async def debug_strategy(strategy_id: int, file: UploadFile = File(...)):
     Advanced Strategy Debugger - Compare TradingView trades against a specific strategy.
 
     This endpoint:
-    1. Fetches strategy details and trades from database
+    1. Fetches strategy details and trades from database (or regenerates them)
     2. Parses uploaded TradingView CSV
     3. Performs trade-by-trade comparison
     4. Detects root causes of discrepancies
@@ -643,6 +643,9 @@ async def debug_strategy(strategy_id: int, file: UploadFile = File(...)):
     Returns:
         Comprehensive comparison with root cause analysis
     """
+    from data_fetcher import BinanceDataFetcher
+    from services.vectorbt_engine import VectorBTEngine, is_vectorbt_available
+
     try:
         # 1. Fetch strategy from database
         db = get_strategy_db()
@@ -651,14 +654,37 @@ async def debug_strategy(strategy_id: int, file: UploadFile = File(...)):
         if not strategy:
             raise HTTPException(status_code=404, detail=f"Strategy {strategy_id} not found")
 
+        # Extract params
+        params = strategy.get("params", {})
+        if isinstance(params, str):
+            try:
+                params = json.loads(params)
+            except json.JSONDecodeError:
+                params = {}
+
+        # Get direction from params or trade_mode
+        direction = params.get("direction", strategy.get("trade_mode", "long"))
+        if direction == "bidirectional":
+            direction = "long"
+
+        # Get entry_rule from params or strategy_name
+        entry_rule = params.get("entry_rule", "")
+        if not entry_rule:
+            strategy_name = strategy.get("strategy_name", "")
+            parts = strategy_name.rsplit(" ", 1)
+            if len(parts) == 2 and parts[1] in ["Long", "Short"]:
+                entry_rule = parts[0]
+            else:
+                entry_rule = strategy_name
+
         # Extract strategy details
         strategy_info = {
             "id": strategy_id,
             "name": strategy.get("strategy_name", "Unknown"),
             "symbol": strategy.get("symbol", ""),
             "timeframe": strategy.get("timeframe", ""),
-            "direction": strategy.get("direction", ""),
-            "entry_rule": strategy.get("entry_rule", ""),
+            "direction": direction.upper(),
+            "entry_rule": entry_rule,
             "tp_percent": strategy.get("tp_percent", 0),
             "sl_percent": strategy.get("sl_percent", 0),
             "total_trades": strategy.get("total_trades", 0),
@@ -678,11 +704,53 @@ async def debug_strategy(strategy_id: int, file: UploadFile = File(...)):
             except json.JSONDecodeError:
                 our_trades_raw = []
 
+        # If trades_list is empty, regenerate trades using VectorBT
+        if not our_trades_raw and is_vectorbt_available():
+            try:
+                symbol = strategy.get("symbol", "BTCUSDT")
+                timeframe = strategy.get("timeframe", "15m")
+                tp_percent = strategy.get("tp_percent", 2.0)
+                sl_percent = strategy.get("sl_percent", 5.0)
+
+                supported_quotes = ['USDT', 'USDC', 'BUSD']
+                if any(symbol.endswith(q) for q in supported_quotes):
+                    if 'h' in timeframe:
+                        tf_minutes = int(timeframe.replace('h', '')) * 60
+                    else:
+                        tf_minutes = int(timeframe.replace('m', ''))
+
+                    fetcher = BinanceDataFetcher()
+                    df = await fetcher.fetch_ohlcv(symbol, tf_minutes, months=3)
+
+                    if df is not None and len(df) > 100:
+                        engine = VectorBTEngine(
+                            df=df,
+                            initial_capital=10000,
+                            position_size_pct=100,
+                            total_fees=0.001
+                        )
+
+                        result = engine.run_single_backtest(
+                            strategy_name=entry_rule,
+                            direction=direction.lower(),
+                            tp_percent=tp_percent,
+                            sl_percent=sl_percent,
+                            include_trades=True
+                        )
+
+                        if result and result.trades_list:
+                            our_trades_raw = result.trades_list
+
+            except Exception as regen_error:
+                import traceback
+                traceback.print_exc()
+                print(f"[DEBUG] Trade regeneration failed: {regen_error}")
+
         # Normalize our trades format
         our_trades = []
-        for t in our_trades_raw:
+        for i, t in enumerate(our_trades_raw):
             our_trades.append({
-                'trade_num': t.get('trade_num', len(our_trades) + 1),
+                'trade_num': t.get('trade_num', i + 1),
                 'direction': str(t.get('direction', '')).upper(),
                 'entry_time': str(t.get('entry_time', '')),
                 'exit_time': str(t.get('exit_time', '')),
@@ -808,8 +876,11 @@ async def debug_strategy(strategy_id: int, file: UploadFile = File(...)):
 async def get_debug_strategy_info(strategy_id: int):
     """
     Get strategy info for debug modal (without CSV upload).
-    Returns strategy details and our trades.
+    Returns strategy details and our trades (regenerated if not stored).
     """
+    from data_fetcher import BinanceDataFetcher
+    from services.vectorbt_engine import VectorBTEngine, is_vectorbt_available
+
     try:
         db = get_strategy_db()
         strategy = db.get_strategy_by_id(strategy_id)
@@ -817,14 +888,38 @@ async def get_debug_strategy_info(strategy_id: int):
         if not strategy:
             raise HTTPException(status_code=404, detail=f"Strategy {strategy_id} not found")
 
+        # Extract params
+        params = strategy.get("params", {})
+        if isinstance(params, str):
+            try:
+                params = json.loads(params)
+            except json.JSONDecodeError:
+                params = {}
+
+        # Get direction from params or trade_mode
+        direction = params.get("direction", strategy.get("trade_mode", "long"))
+        if direction == "bidirectional":
+            direction = "long"  # Default to long for display
+
+        # Get entry_rule from params or strategy_name
+        entry_rule = params.get("entry_rule", "")
+        if not entry_rule:
+            # Try to extract from strategy_name (format: "rule_name Long" or "rule_name Short")
+            strategy_name = strategy.get("strategy_name", "")
+            parts = strategy_name.rsplit(" ", 1)
+            if len(parts) == 2 and parts[1] in ["Long", "Short"]:
+                entry_rule = parts[0]
+            else:
+                entry_rule = strategy_name
+
         # Extract strategy details
         strategy_info = {
             "id": strategy_id,
             "name": strategy.get("strategy_name", "Unknown"),
             "symbol": strategy.get("symbol", ""),
             "timeframe": strategy.get("timeframe", ""),
-            "direction": strategy.get("direction", ""),
-            "entry_rule": strategy.get("entry_rule", ""),
+            "direction": direction.upper(),
+            "entry_rule": entry_rule,
             "tp_percent": strategy.get("tp_percent", 0),
             "sl_percent": strategy.get("sl_percent", 0),
             "total_trades": strategy.get("total_trades", 0),
@@ -844,11 +939,58 @@ async def get_debug_strategy_info(strategy_id: int):
             except json.JSONDecodeError:
                 our_trades_raw = []
 
+        # If trades_list is empty, regenerate trades using VectorBT
+        if not our_trades_raw and is_vectorbt_available():
+            try:
+                symbol = strategy.get("symbol", "BTCUSDT")
+                timeframe = strategy.get("timeframe", "15m")
+                tp_percent = strategy.get("tp_percent", 2.0)
+                sl_percent = strategy.get("sl_percent", 5.0)
+
+                # Check for supported pairs (Binance USDT pairs only)
+                supported_quotes = ['USDT', 'USDC', 'BUSD']
+                if any(symbol.endswith(q) for q in supported_quotes):
+                    # Convert timeframe to minutes
+                    if 'h' in timeframe:
+                        tf_minutes = int(timeframe.replace('h', '')) * 60
+                    else:
+                        tf_minutes = int(timeframe.replace('m', ''))
+
+                    # Fetch data (use 3 months for trade regeneration)
+                    fetcher = BinanceDataFetcher()
+                    df = await fetcher.fetch_ohlcv(symbol, tf_minutes, months=3)
+
+                    if df is not None and len(df) > 100:
+                        # Run VectorBT backtest
+                        engine = VectorBTEngine(
+                            df=df,
+                            initial_capital=10000,
+                            position_size_pct=100,
+                            total_fees=0.001
+                        )
+
+                        result = engine.run_single_backtest(
+                            strategy_name=entry_rule,
+                            direction=direction.lower(),
+                            tp_percent=tp_percent,
+                            sl_percent=sl_percent,
+                            include_trades=True
+                        )
+
+                        if result and result.trades_list:
+                            our_trades_raw = result.trades_list
+
+            except Exception as regen_error:
+                import traceback
+                traceback.print_exc()
+                print(f"[DEBUG] Trade regeneration failed: {regen_error}")
+                # Continue with empty trades list
+
         # Normalize our trades format
         our_trades = []
-        for t in our_trades_raw:
+        for i, t in enumerate(our_trades_raw):
             our_trades.append({
-                'trade_num': t.get('trade_num', len(our_trades) + 1),
+                'trade_num': t.get('trade_num', i + 1),
                 'direction': str(t.get('direction', '')).upper(),
                 'entry_time': str(t.get('entry_time', '')),
                 'exit_time': str(t.get('exit_time', '')),
@@ -861,7 +1003,8 @@ async def get_debug_strategy_info(strategy_id: int):
 
         return {
             "strategy": strategy_info,
-            "our_trades": our_trades
+            "our_trades": our_trades,
+            "trades_regenerated": len(our_trades_raw) > 0 and not strategy.get("trades_list")
         }
 
     except HTTPException:
