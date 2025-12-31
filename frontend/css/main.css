@@ -791,6 +791,17 @@
             border-color: var(--primary);
         }
 
+        .action-btn.debug {
+            background: linear-gradient(135deg, rgba(139, 92, 246, 0.1), rgba(236, 72, 153, 0.1));
+            border-color: #8b5cf6;
+        }
+
+        .action-btn.debug:hover {
+            background: linear-gradient(135deg, #8b5cf6, #ec4899);
+            border-color: #8b5cf6;
+            color: white;
+        }
+
         /* Strategy Detail Panel */
         .detail-stats-grid {
             display: flex;

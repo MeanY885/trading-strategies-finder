@@ -1624,6 +1624,7 @@
                             <button class="action-btn" onclick="event.stopPropagation(); downloadPineScript(${bestStrategy.id}, '${bestStrategy.strategy_name}')" title="Download Pine Script">📜</button>
                             <button class="action-btn" onclick="event.stopPropagation(); exportTradesCSV(${bestStrategy.id}, '${bestStrategy.strategy_name}')" title="Export Trades CSV">📊</button>
                             <button class="action-btn validate" onclick="event.stopPropagation(); validateFromHistory(${bestStrategy.id})" title="Validate Strategy">🔬</button>
+                            <button class="action-btn debug" onclick="event.stopPropagation(); openDebugModal(${bestStrategy.id})" title="Debug vs TradingView">🐛</button>
                             <button class="action-btn danger" onclick="event.stopPropagation(); deleteStrategy(${bestStrategy.id}, '${bestStrategy.strategy_name}')" title="Delete">🗑️</button>
                         </div>
                     </td>
@@ -1714,6 +1715,7 @@
                                 <button class="action-btn" onclick="event.stopPropagation(); downloadPineScript(${variant.id}, '${variant.strategy_name}')" title="Download">📜</button>
                                 <button class="action-btn" onclick="event.stopPropagation(); exportTradesCSV(${variant.id}, '${variant.strategy_name}')" title="Export Trades CSV">📊</button>
                                 <button class="action-btn validate" onclick="event.stopPropagation(); validateFromHistory(${variant.id})" title="Validate">🔬</button>
+                                <button class="action-btn debug" onclick="event.stopPropagation(); openDebugModal(${variant.id})" title="Debug vs TradingView">🐛</button>
                                 <button class="action-btn danger" onclick="event.stopPropagation(); deleteStrategy(${variant.id}, '${variant.strategy_name}')" title="Delete">🗑️</button>
                             </td>
                         </tr>`;
@@ -4942,9 +4944,11 @@
                 // PERFORMANCE FIX: Use cached validation data instead of parsing JSON
                 const periodData = getCachedValidation(best);
 
-                // TP/SL for best
-                const tp = best.tp_percent || best.params?.tp_percent || '--';
-                const sl = best.sl_percent || best.params?.sl_percent || '--';
+                // TP/SL for best (format to 1 decimal place)
+                const tpRaw = best.tp_percent || best.params?.tp_percent;
+                const slRaw = best.sl_percent || best.params?.sl_percent;
+                const tp = tpRaw !== undefined ? parseFloat(tpRaw).toFixed(1) : '--';
+                const sl = slRaw !== undefined ? parseFloat(slRaw).toFixed(1) : '--';
 
                 // Variant badge
                 const variantBadge = hasVariants ? `<span style="background: var(--primary); color: white; padding: 0.1rem 0.4rem; border-radius: 10px; font-size: 0.7rem; margin-left: 0.3rem;">${group.length}</span>` : '';
@@ -4983,6 +4987,7 @@
                         <button class="btn btn-small" onclick="event.stopPropagation(); showPineScript(${best.id})" title="Pine Script">📋</button>
                         <button class="btn btn-small" onclick="event.stopPropagation(); showExportPeriodModal(${best.id}, '${best.strategy_name.replace(/'/g, "\\'")}')" title="Export Trades CSV">📊</button>
                         <button class="btn btn-small" onclick="event.stopPropagation(); validateFromHistory(${best.id})" title="Re-validate">🔬</button>
+                        <button class="btn btn-small" onclick="event.stopPropagation(); openDebugModal(${best.id})" title="Debug vs TradingView">🐛</button>
                     </td>
                 `;
 
@@ -5063,8 +5068,10 @@
                         <tbody>`;
 
                 group.forEach((variant, idx) => {
-                    const tp = variant.tp_percent || variant.params?.tp_percent || '--';
-                    const sl = variant.sl_percent || variant.params?.sl_percent || '--';
+                    const tpRaw = variant.tp_percent || variant.params?.tp_percent;
+                    const slRaw = variant.sl_percent || variant.params?.sl_percent;
+                    const tp = tpRaw !== undefined ? parseFloat(tpRaw).toFixed(1) : '--';
+                    const sl = slRaw !== undefined ? parseFloat(slRaw).toFixed(1) : '--';
                     const score = (variant.elite_score || 0).toFixed(2);
                     const isBest = idx === 0;
 
@@ -5088,6 +5095,7 @@
                                 <button class="btn btn-small" onclick="event.stopPropagation(); showPineScript(${variant.id})" title="Pine Script">📋</button>
                                 <button class="btn btn-small" onclick="event.stopPropagation(); showExportPeriodModal(${variant.id}, '${variant.strategy_name.replace(/'/g, "\\'")}')" title="Export Trades CSV">📊</button>
                                 <button class="btn btn-small" onclick="event.stopPropagation(); validateFromHistory(${variant.id})" title="Re-validate">🔬</button>
+                                <button class="btn btn-small" onclick="event.stopPropagation(); openDebugModal(${variant.id})" title="Debug vs TradingView">🐛</button>
                             </td>
                         </tr>`;
                 });
@@ -5712,11 +5720,395 @@
             textarea.select();
         }
 
+        // =====================================================================
+        // ADVANCED STRATEGY DEBUGGER
+        // =====================================================================
+
+        let currentDebugStrategyId = null;
+        let currentDebugPineScript = '';
+        let currentDebugOurTrades = [];
+
+        async function openDebugModal(strategyId) {
+            currentDebugStrategyId = strategyId;
+            addLog(`🐛 Opening Advanced Debugger for strategy #${strategyId}...`);
+
+            // Show modal immediately
+            document.getElementById('debugModal').style.display = 'flex';
+            document.getElementById('debugResultsSection').style.display = 'none';
+            document.getElementById('debugTVUpload').value = '';
+
+            // Clear previous data
+            document.getElementById('debugStrategyName').textContent = 'Loading...';
+            document.getElementById('debugDirectionBadge').textContent = '';
+            document.getElementById('debugTP').textContent = '-';
+            document.getElementById('debugSL').textContent = '-';
+            document.getElementById('debugWinRate').textContent = '-';
+            document.getElementById('debugPF').textContent = '-';
+            document.getElementById('debugTrades').textContent = '-';
+            document.getElementById('debugPineScript').textContent = 'Loading...';
+            document.getElementById('debugOurTradesBody').innerHTML = '';
+            document.getElementById('debugOurTradeCount').textContent = '0';
+
+            try {
+                // Fetch strategy info and Pine Script in parallel
+                const [infoResponse, pineResponse] = await Promise.all([
+                    fetch(`/api/debug-strategy/${strategyId}/info`),
+                    fetch(`/api/db/strategies/${strategyId}/pinescript`)
+                ]);
+
+                if (!infoResponse.ok) {
+                    throw new Error(`Failed to fetch strategy info: ${infoResponse.statusText}`);
+                }
+
+                const infoData = await infoResponse.json();
+                const pineData = pineResponse.ok ? await pineResponse.json() : { pine_script: 'Failed to load Pine Script' };
+
+                // Store data for later use
+                currentDebugPineScript = pineData.pine_script || '';
+                currentDebugOurTrades = infoData.our_trades || [];
+
+                // Populate strategy info
+                const strategy = infoData.strategy;
+                document.getElementById('debugStrategyName').textContent = `${strategy.name} (${strategy.symbol} ${strategy.timeframe})`;
+
+                const dirBadge = document.getElementById('debugDirectionBadge');
+                const direction = (strategy.direction || '').toUpperCase();
+                dirBadge.textContent = direction || 'UNKNOWN';
+                dirBadge.style.background = direction === 'LONG' ? 'rgba(34, 197, 94, 0.2)' : 'rgba(239, 68, 68, 0.2)';
+                dirBadge.style.color = direction === 'LONG' ? 'var(--success)' : 'var(--danger)';
+
+                document.getElementById('debugTP').textContent = `${strategy.tp_percent?.toFixed(1) || 0}%`;
+                document.getElementById('debugSL').textContent = `${strategy.sl_percent?.toFixed(1) || 0}%`;
+                document.getElementById('debugWinRate').textContent = `${strategy.win_rate?.toFixed(1) || 0}%`;
+                document.getElementById('debugPF').textContent = strategy.profit_factor?.toFixed(2) || '0';
+                document.getElementById('debugTrades').textContent = strategy.total_trades || 0;
+
+                // Populate Pine Script
+                document.getElementById('debugPineScript').textContent = currentDebugPineScript;
+
+                // Populate our trades
+                document.getElementById('debugOurTradeCount').textContent = currentDebugOurTrades.length;
+                const tradesBody = document.getElementById('debugOurTradesBody');
+                tradesBody.innerHTML = currentDebugOurTrades.map((t, i) => {
+                    const pnlColor = t.pnl >= 0 ? 'var(--success)' : 'var(--danger)';
+                    const dirColor = t.direction === 'LONG' ? 'var(--success)' : 'var(--danger)';
+                    return `
+                        <tr style="border-bottom: 1px solid var(--border);">
+                            <td style="padding: 0.4rem 0.5rem; color: var(--text-muted);">${t.trade_num || i + 1}</td>
+                            <td style="padding: 0.4rem 0.5rem; color: ${dirColor}; font-weight: 600;">${t.direction}</td>
+                            <td style="padding: 0.4rem 0.5rem; color: var(--text-primary);">${formatDebugTime(t.entry_time)}</td>
+                            <td style="padding: 0.4rem 0.5rem; text-align: right; color: var(--text-primary);">${t.entry_price?.toFixed(2) || '-'}</td>
+                            <td style="padding: 0.4rem 0.5rem; text-align: right; color: var(--text-primary);">${t.exit_price?.toFixed(2) || '-'}</td>
+                            <td style="padding: 0.4rem 0.5rem; text-align: right; color: ${pnlColor}; font-weight: 600;">${t.pnl?.toFixed(2) || '0'}</td>
+                            <td style="padding: 0.4rem 0.5rem; color: var(--text-muted);">${t.exit_reason || '-'}</td>
+                        </tr>
+                    `;
+                }).join('');
+
+                addLog(`🐛 Debugger loaded: ${strategy.name} with ${currentDebugOurTrades.length} trades`);
+
+            } catch (error) {
+                console.error('Error opening debug modal:', error);
+                showToast('Failed to load strategy debug info: ' + error.message, 'error');
+                addLog(`❌ Debugger error: ${error.message}`, 'error');
+            }
+        }
+
+        function closeDebugModal() {
+            document.getElementById('debugModal').style.display = 'none';
+            currentDebugStrategyId = null;
+            currentDebugPineScript = '';
+            currentDebugOurTrades = [];
+        }
+
+        function formatDebugTime(timeStr) {
+            if (!timeStr) return '-';
+            try {
+                const date = new Date(timeStr);
+                return date.toLocaleString('en-GB', {
+                    month: 'short', day: 'numeric',
+                    hour: '2-digit', minute: '2-digit'
+                });
+            } catch {
+                return timeStr.slice(0, 16);
+            }
+        }
+
+        async function copyDebugPineScript() {
+            try {
+                await navigator.clipboard.writeText(currentDebugPineScript);
+                showToast('Pine Script copied to clipboard!', 'success');
+            } catch (error) {
+                showToast('Failed to copy: ' + error.message, 'error');
+            }
+        }
+
+        function downloadDebugPineScript() {
+            if (!currentDebugPineScript) {
+                showToast('No Pine Script to download', 'error');
+                return;
+            }
+            const blob = new Blob([currentDebugPineScript], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `strategy_${currentDebugStrategyId}_debug.pine`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            showToast('Pine Script downloaded!', 'success');
+        }
+
+        function exportDebugTrades() {
+            if (!currentDebugOurTrades || currentDebugOurTrades.length === 0) {
+                showToast('No trades to export', 'error');
+                return;
+            }
+
+            const headers = ['trade_num', 'direction', 'entry_time', 'exit_time', 'entry_price', 'exit_price', 'pnl', 'pnl_pct', 'exit_reason'];
+            const csv = [
+                headers.join(','),
+                ...currentDebugOurTrades.map(t => [
+                    t.trade_num || '',
+                    t.direction || '',
+                    t.entry_time || '',
+                    t.exit_time || '',
+                    t.entry_price || '',
+                    t.exit_price || '',
+                    t.pnl || '',
+                    t.pnl_pct || '',
+                    t.exit_reason || ''
+                ].join(','))
+            ].join('\n');
+
+            const blob = new Blob([csv], { type: 'text/csv' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `strategy_${currentDebugStrategyId}_trades.csv`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            showToast('Trades exported!', 'success');
+        }
+
+        async function uploadDebugTVTrades(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            addLog(`📁 Uploading TradingView trades for comparison...`);
+
+            try {
+                const formData = new FormData();
+                formData.append('file', file);
+
+                const response = await fetch(`/api/debug-strategy/${currentDebugStrategyId}`, {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.detail || 'Failed to analyze trades');
+                }
+
+                const data = await response.json();
+                displayDebugResults(data);
+
+                addLog(`✅ Comparison complete: ${data.comparison?.summary?.tradingview?.trade_count || 0} TV trades vs ${data.comparison?.summary?.our_system?.trade_count || 0} our trades`);
+
+            } catch (error) {
+                console.error('Error uploading TV trades:', error);
+                showToast('Failed to analyze trades: ' + error.message, 'error');
+                addLog(`❌ Comparison error: ${error.message}`, 'error');
+            }
+        }
+
+        function displayDebugResults(data) {
+            // Show results section
+            document.getElementById('debugResultsSection').style.display = 'block';
+
+            const comparison = data.comparison;
+            const analysis = data.analysis;
+            const rootCauses = data.root_causes || [];
+            const recommendations = data.recommendations || [];
+
+            // Summary
+            const summaryDiv = document.getElementById('debugSummary');
+            const tv = comparison.summary.tradingview;
+            const ours = comparison.summary.our_system;
+            const diff = comparison.summary.difference;
+
+            const matchRate = comparison.match_rate || 0;
+            const matchColor = matchRate >= 80 ? 'var(--success)' : matchRate >= 50 ? 'var(--warning)' : 'var(--danger)';
+
+            summaryDiv.innerHTML = `
+                <div style="background: var(--bg-primary); padding: 0.75rem; border-radius: 6px; text-align: center;">
+                    <div style="color: var(--text-muted); font-size: 0.75rem; margin-bottom: 0.25rem;">TradingView</div>
+                    <div style="color: var(--text-primary); font-weight: 600;">${tv.trade_count} trades</div>
+                    <div style="color: var(--text-muted); font-size: 0.8rem;">WR: ${tv.win_rate?.toFixed(1)}% | PnL: ${tv.total_pnl?.toFixed(2)}</div>
+                </div>
+                <div style="background: var(--bg-primary); padding: 0.75rem; border-radius: 6px; text-align: center;">
+                    <div style="color: var(--text-muted); font-size: 0.75rem; margin-bottom: 0.25rem;">Our System</div>
+                    <div style="color: var(--text-primary); font-weight: 600;">${ours.trade_count} trades</div>
+                    <div style="color: var(--text-muted); font-size: 0.8rem;">WR: ${ours.win_rate?.toFixed(1)}% | PnL: ${ours.total_pnl?.toFixed(2)}</div>
+                </div>
+                <div style="background: var(--bg-primary); padding: 0.75rem; border-radius: 6px; text-align: center;">
+                    <div style="color: var(--text-muted); font-size: 0.75rem; margin-bottom: 0.25rem;">Match Rate</div>
+                    <div style="color: ${matchColor}; font-weight: 600; font-size: 1.2rem;">${matchRate.toFixed(1)}%</div>
+                    <div style="color: var(--text-muted); font-size: 0.8rem;">Trade diff: ${diff.trade_count_diff > 0 ? '+' : ''}${diff.trade_count_diff}</div>
+                </div>
+            `;
+
+            // Root Causes
+            const rootCausesDiv = document.getElementById('debugRootCauses');
+            if (rootCauses.length > 0) {
+                rootCausesDiv.innerHTML = rootCauses.map(rc => {
+                    const severityColors = {
+                        high: { bg: 'rgba(239, 68, 68, 0.1)', border: 'var(--danger)' },
+                        medium: { bg: 'rgba(245, 158, 11, 0.1)', border: 'var(--warning)' },
+                        low: { bg: 'rgba(34, 197, 94, 0.1)', border: 'var(--success)' }
+                    };
+                    const colors = severityColors[rc.severity] || severityColors.medium;
+                    return `
+                        <div style="background: ${colors.bg}; border-left: 4px solid ${colors.border}; padding: 0.75rem; margin-bottom: 0.5rem; border-radius: 0 6px 6px 0;">
+                            <div style="display: flex; justify-content: space-between; align-items: center;">
+                                <span style="color: var(--text-primary); font-weight: 600;">${rc.cause}</span>
+                                <span style="color: ${colors.border}; font-size: 0.8rem; font-weight: 600;">${(rc.confidence * 100).toFixed(0)}% confidence</span>
+                            </div>
+                            <div style="color: var(--text-muted); font-size: 0.85rem; margin-top: 0.25rem;">${rc.evidence}</div>
+                        </div>
+                    `;
+                }).join('');
+            } else {
+                rootCausesDiv.innerHTML = '<div style="color: var(--text-muted);">No specific root causes detected.</div>';
+            }
+
+            // Recommendations
+            const recsDiv = document.getElementById('debugRecommendations');
+            if (recommendations.length > 0) {
+                recsDiv.innerHTML = `
+                    <ul style="margin: 0; padding-left: 1.5rem; color: var(--text-primary);">
+                        ${recommendations.map(r => `<li style="margin-bottom: 0.5rem;">${r}</li>`).join('')}
+                    </ul>
+                `;
+            } else {
+                recsDiv.innerHTML = '<div style="color: var(--text-muted);">No specific recommendations.</div>';
+            }
+
+            // Match counts
+            const matchCounts = analysis.match_counts;
+            document.getElementById('debugMatchCounts').innerHTML = `
+                <span style="background: rgba(34, 197, 94, 0.2); color: var(--success); padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.8rem;">
+                    Exact: ${matchCounts.exact}
+                </span>
+                <span style="background: rgba(245, 158, 11, 0.2); color: var(--warning); padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.8rem;">
+                    Close: ${matchCounts.close}
+                </span>
+                <span style="background: rgba(139, 92, 246, 0.2); color: #8b5cf6; padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.8rem;">
+                    Timing: ${matchCounts.timing_mismatch}
+                </span>
+                <span style="background: rgba(239, 68, 68, 0.2); color: var(--danger); padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.8rem;">
+                    Missing in TV: ${matchCounts.missing_in_tv}
+                </span>
+                <span style="background: rgba(236, 72, 153, 0.2); color: #ec4899; padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.8rem;">
+                    Missing in Ours: ${matchCounts.missing_in_ours}
+                </span>
+            `;
+
+            // Trade matches detail
+            const matchesDiv = document.getElementById('debugTradeMatches');
+            const exactMatches = analysis.exact_matches || [];
+            const closeMatches = analysis.close_matches || [];
+            const missingInTV = analysis.missing_in_tv || [];
+            const missingInOurs = analysis.missing_in_ours || [];
+
+            let matchesHtml = '';
+
+            if (exactMatches.length > 0 || closeMatches.length > 0) {
+                matchesHtml += `
+                    <div style="margin-bottom: 1rem;">
+                        <h5 style="margin: 0 0 0.5rem 0; color: var(--success);">✅ Matched Trades (${exactMatches.length + closeMatches.length})</h5>
+                        <table style="width: 100%; font-size: 0.75rem; border-collapse: collapse;">
+                            <thead>
+                                <tr style="background: var(--bg-primary);">
+                                    <th style="padding: 0.4rem; text-align: left;">TV Entry</th>
+                                    <th style="padding: 0.4rem; text-align: left;">Our Entry</th>
+                                    <th style="padding: 0.4rem; text-align: right;">Time Diff</th>
+                                    <th style="padding: 0.4rem; text-align: right;">PnL Diff</th>
+                                    <th style="padding: 0.4rem; text-align: center;">Quality</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${[...exactMatches, ...closeMatches].slice(0, 20).map(m => `
+                                    <tr style="border-bottom: 1px solid var(--border);">
+                                        <td style="padding: 0.4rem;">${formatDebugTime(m.tv_trade?.entry_time)}</td>
+                                        <td style="padding: 0.4rem;">${formatDebugTime(m.our_trade?.entry_time)}</td>
+                                        <td style="padding: 0.4rem; text-align: right;">${m.time_diff_hours?.toFixed(2) || 0}h</td>
+                                        <td style="padding: 0.4rem; text-align: right; color: ${Math.abs(m.pnl_diff || 0) < 1 ? 'var(--success)' : 'var(--warning)'};">${m.pnl_diff?.toFixed(2) || 0}</td>
+                                        <td style="padding: 0.4rem; text-align: center;">
+                                            <span style="padding: 0.1rem 0.3rem; border-radius: 4px; font-size: 0.7rem; ${m.time_diff_seconds < 60 ? 'background: rgba(34, 197, 94, 0.2); color: var(--success);' : 'background: rgba(245, 158, 11, 0.2); color: var(--warning);'}">
+                                                ${m.time_diff_seconds < 60 ? 'Exact' : 'Close'}
+                                            </span>
+                                        </td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                `;
+            }
+
+            if (missingInOurs.length > 0) {
+                matchesHtml += `
+                    <div style="margin-bottom: 1rem;">
+                        <h5 style="margin: 0 0 0.5rem 0; color: var(--danger);">❌ TradingView Only (${missingInOurs.length} - we missed these)</h5>
+                        <div style="display: flex; flex-wrap: wrap; gap: 0.5rem;">
+                            ${missingInOurs.slice(0, 10).map(t => `
+                                <span style="background: rgba(239, 68, 68, 0.1); padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.75rem; color: var(--text-primary);">
+                                    ${formatDebugTime(t.entry_time)} | ${t.direction} | ${t.pnl?.toFixed(2) || 0}
+                                </span>
+                            `).join('')}
+                            ${missingInOurs.length > 10 ? `<span style="color: var(--text-muted); font-size: 0.75rem;">...and ${missingInOurs.length - 10} more</span>` : ''}
+                        </div>
+                    </div>
+                `;
+            }
+
+            if (missingInTV.length > 0) {
+                matchesHtml += `
+                    <div>
+                        <h5 style="margin: 0 0 0.5rem 0; color: #ec4899;">🎯 Our System Only (${missingInTV.length} - extra trades)</h5>
+                        <div style="display: flex; flex-wrap: wrap; gap: 0.5rem;">
+                            ${missingInTV.slice(0, 10).map(t => `
+                                <span style="background: rgba(236, 72, 153, 0.1); padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.75rem; color: var(--text-primary);">
+                                    ${formatDebugTime(t.entry_time)} | ${t.direction} | ${t.pnl?.toFixed(2) || 0}
+                                </span>
+                            `).join('')}
+                            ${missingInTV.length > 10 ? `<span style="color: var(--text-muted); font-size: 0.75rem;">...and ${missingInTV.length - 10} more</span>` : ''}
+                        </div>
+                    </div>
+                `;
+            }
+
+            matchesDiv.innerHTML = matchesHtml || '<div style="color: var(--text-muted);">No trade matching data available.</div>';
+
+            // Scroll to results
+            document.getElementById('debugResultsSection').scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+
+        // =====================================================================
+        // END ADVANCED STRATEGY DEBUGGER
+        // =====================================================================
+
         // Close modal on escape key
         document.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') {
                 closePineModal();
                 closeExportModal();
+                closeDebugModal();
             }
         });
 
@@ -5726,6 +6118,9 @@
         });
         document.getElementById('exportPeriodModal')?.addEventListener('click', (e) => {
             if (e.target.id === 'exportPeriodModal') closeExportModal();
+        });
+        document.getElementById('debugModal')?.addEventListener('click', (e) => {
+            if (e.target.id === 'debugModal') closeDebugModal();
         });
 
         // Export Period Modal Functions

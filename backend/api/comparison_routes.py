@@ -5,12 +5,14 @@ API endpoints for TradingView comparison functionality.
 Extracted from main.py for better modularity.
 """
 import io
+import json
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, UploadFile, File
 import pandas as pd
 
 from state import app_state
+from strategy_database import get_strategy_db
 
 router = APIRouter(prefix="/api", tags=["comparison"])
 
@@ -616,6 +618,258 @@ async def debug_comparison(rank: int):
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error during analysis: {str(e)}")
+
+
+# =============================================================================
+# ADVANCED STRATEGY DEBUGGER
+# =============================================================================
+
+@router.post("/debug-strategy/{strategy_id}")
+async def debug_strategy(strategy_id: int, file: UploadFile = File(...)):
+    """
+    Advanced Strategy Debugger - Compare TradingView trades against a specific strategy.
+
+    This endpoint:
+    1. Fetches strategy details and trades from database
+    2. Parses uploaded TradingView CSV
+    3. Performs trade-by-trade comparison
+    4. Detects root causes of discrepancies
+    5. Generates actionable recommendations
+
+    Args:
+        strategy_id: Database ID of the strategy to debug
+        file: TradingView "List of Trades" CSV export
+
+    Returns:
+        Comprehensive comparison with root cause analysis
+    """
+    try:
+        # 1. Fetch strategy from database
+        db = get_strategy_db()
+        strategy = db.get_strategy_by_id(strategy_id)
+
+        if not strategy:
+            raise HTTPException(status_code=404, detail=f"Strategy {strategy_id} not found")
+
+        # Extract strategy details
+        strategy_info = {
+            "id": strategy_id,
+            "name": strategy.get("strategy_name", "Unknown"),
+            "symbol": strategy.get("symbol", ""),
+            "timeframe": strategy.get("timeframe", ""),
+            "direction": strategy.get("direction", ""),
+            "entry_rule": strategy.get("entry_rule", ""),
+            "tp_percent": strategy.get("tp_percent", 0),
+            "sl_percent": strategy.get("sl_percent", 0),
+            "total_trades": strategy.get("total_trades", 0),
+            "win_rate": strategy.get("win_rate", 0),
+            "profit_factor": strategy.get("profit_factor", 0),
+            "total_pnl": strategy.get("total_pnl", 0),
+            "max_drawdown": strategy.get("max_drawdown", 0),
+        }
+
+        # Get our trades from database
+        our_trades_raw = strategy.get("trades_list", [])
+
+        # Parse trades_list if it's a JSON string
+        if isinstance(our_trades_raw, str):
+            try:
+                our_trades_raw = json.loads(our_trades_raw)
+            except json.JSONDecodeError:
+                our_trades_raw = []
+
+        # Normalize our trades format
+        our_trades = []
+        for t in our_trades_raw:
+            our_trades.append({
+                'trade_num': t.get('trade_num', len(our_trades) + 1),
+                'direction': str(t.get('direction', '')).upper(),
+                'entry_time': str(t.get('entry_time', '')),
+                'exit_time': str(t.get('exit_time', '')),
+                'entry_price': float(t.get('entry_price', 0)),
+                'exit_price': float(t.get('exit_price', 0)),
+                'pnl': float(t.get('pnl', 0)),
+                'pnl_pct': float(t.get('pnl_pct', t.get('pnl_percent', 0))),
+                'exit_reason': t.get('exit_reason', t.get('result', '')),
+            })
+
+        # 2. Parse TradingView CSV
+        contents = await file.read()
+        df = pd.read_csv(io.StringIO(contents.decode('utf-8')))
+        df.columns = df.columns.str.strip()
+
+        # TradingView exports Entry + Exit rows per trade
+        tv_trades = []
+
+        for trade_num in df['Trade #'].unique():
+            trade_rows = df[df['Trade #'] == trade_num]
+
+            entry_row = trade_rows[trade_rows['Type'].str.contains('Entry', case=False, na=False)]
+            exit_row = trade_rows[trade_rows['Type'].str.contains('Exit', case=False, na=False)]
+
+            if len(entry_row) == 0 or len(exit_row) == 0:
+                continue
+
+            entry_row = entry_row.iloc[0]
+            exit_row = exit_row.iloc[0]
+
+            # Extract direction from Signal or Type
+            direction = 'LONG' if 'long' in str(entry_row.get('Signal', '')).lower() or 'long' in str(entry_row.get('Type', '')).lower() else 'SHORT'
+
+            # Try to get price from various possible column names
+            entry_price = 0
+            exit_price = 0
+            pnl = 0
+            pnl_pct = 0
+
+            # Price columns (TradingView uses different names)
+            for col in ['Price GBP', 'Price', 'Price USD', 'Price USDT']:
+                if col in entry_row.index:
+                    try:
+                        entry_price = float(entry_row.get(col, 0))
+                        exit_price = float(exit_row.get(col, 0))
+                        break
+                    except (ValueError, TypeError):
+                        continue
+
+            # PnL columns
+            for col in ['Net P&L GBP', 'Net P&L', 'Profit GBP', 'Profit', 'Net P&L USD', 'Net P&L USDT']:
+                if col in exit_row.index:
+                    try:
+                        pnl = float(exit_row.get(col, 0))
+                        break
+                    except (ValueError, TypeError):
+                        continue
+
+            # PnL % columns
+            for col in ['Net P&L %', 'Profit %', 'Return %']:
+                if col in exit_row.index:
+                    try:
+                        pnl_pct = float(str(exit_row.get(col, '0')).replace('%', ''))
+                        break
+                    except (ValueError, TypeError):
+                        continue
+
+            tv_trades.append({
+                'trade_num': int(trade_num),
+                'direction': direction,
+                'entry_time': str(entry_row.get('Date/Time', '')),
+                'exit_time': str(exit_row.get('Date/Time', '')),
+                'entry_price': entry_price,
+                'exit_price': exit_price,
+                'pnl': pnl,
+                'pnl_pct': pnl_pct,
+            })
+
+        # 3. Perform comparison
+        comparison = compare_trades(tv_trades, our_trades)
+
+        # 4. Run enhanced analysis with multiple tolerance windows
+        analysis = categorize_matches_by_tolerance(tv_trades, our_trades)
+
+        # 5. Detect root causes of discrepancies
+        root_causes = detect_root_causes(analysis, tv_trades, our_trades)
+
+        # 6. Generate actionable recommendations
+        recommendations = generate_recommendations(root_causes)
+
+        return {
+            "strategy": strategy_info,
+            "our_trades": our_trades,
+            "tv_trades": tv_trades,
+            "comparison": comparison,
+            "analysis": {
+                "exact_matches": analysis["exact_matches"],
+                "close_matches": analysis["close_matches"],
+                "timing_mismatches": analysis["timing_mismatches"],
+                "missing_in_tv": analysis["missing_in_tv"],
+                "missing_in_ours": analysis["missing_in_ours"],
+                "match_counts": {
+                    "exact": len(analysis["exact_matches"]),
+                    "close": len(analysis["close_matches"]),
+                    "timing_mismatch": len(analysis["timing_mismatches"]),
+                    "missing_in_tv": len(analysis["missing_in_tv"]),
+                    "missing_in_ours": len(analysis["missing_in_ours"])
+                }
+            },
+            "root_causes": root_causes,
+            "recommendations": recommendations
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error during debug analysis: {str(e)}")
+
+
+@router.get("/debug-strategy/{strategy_id}/info")
+async def get_debug_strategy_info(strategy_id: int):
+    """
+    Get strategy info for debug modal (without CSV upload).
+    Returns strategy details and our trades.
+    """
+    try:
+        db = get_strategy_db()
+        strategy = db.get_strategy_by_id(strategy_id)
+
+        if not strategy:
+            raise HTTPException(status_code=404, detail=f"Strategy {strategy_id} not found")
+
+        # Extract strategy details
+        strategy_info = {
+            "id": strategy_id,
+            "name": strategy.get("strategy_name", "Unknown"),
+            "symbol": strategy.get("symbol", ""),
+            "timeframe": strategy.get("timeframe", ""),
+            "direction": strategy.get("direction", ""),
+            "entry_rule": strategy.get("entry_rule", ""),
+            "tp_percent": strategy.get("tp_percent", 0),
+            "sl_percent": strategy.get("sl_percent", 0),
+            "total_trades": strategy.get("total_trades", 0),
+            "win_rate": strategy.get("win_rate", 0),
+            "profit_factor": strategy.get("profit_factor", 0),
+            "total_pnl": strategy.get("total_pnl", 0),
+            "max_drawdown": strategy.get("max_drawdown", 0),
+        }
+
+        # Get our trades from database
+        our_trades_raw = strategy.get("trades_list", [])
+
+        # Parse trades_list if it's a JSON string
+        if isinstance(our_trades_raw, str):
+            try:
+                our_trades_raw = json.loads(our_trades_raw)
+            except json.JSONDecodeError:
+                our_trades_raw = []
+
+        # Normalize our trades format
+        our_trades = []
+        for t in our_trades_raw:
+            our_trades.append({
+                'trade_num': t.get('trade_num', len(our_trades) + 1),
+                'direction': str(t.get('direction', '')).upper(),
+                'entry_time': str(t.get('entry_time', '')),
+                'exit_time': str(t.get('exit_time', '')),
+                'entry_price': float(t.get('entry_price', 0)),
+                'exit_price': float(t.get('exit_price', 0)),
+                'pnl': float(t.get('pnl', 0)),
+                'pnl_pct': float(t.get('pnl_pct', t.get('pnl_percent', 0))),
+                'exit_reason': t.get('exit_reason', t.get('result', '')),
+            })
+
+        return {
+            "strategy": strategy_info,
+            "our_trades": our_trades
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error fetching strategy info: {str(e)}")
 
 
 # =============================================================================
