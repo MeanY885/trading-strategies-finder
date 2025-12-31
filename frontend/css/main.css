@@ -905,6 +905,11 @@
             color: var(--text-secondary);
         }
 
+        .elite-badge.untestable-status {
+            background: linear-gradient(135deg, #d97706, #f59e0b);
+            color: white;
+        }
+
         .elite-progress {
             margin-left: auto;
             font-size: 0.85rem;

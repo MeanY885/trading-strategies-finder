@@ -270,14 +270,17 @@ async def validate_strategy(
     # Check for unsupported pairs
     supported_quotes = ['USDT', 'USDC', 'BUSD']
     if not any(symbol.endswith(q) for q in supported_quotes):
+        skip_reason = f"Symbol {symbol} not supported - Binance USDT pairs only"
+        log(f"[Elite Validation] Strategy #{strategy_id} ({strategy_name}): Skipping validation - {symbol} not supported (only USDT/USDC/BUSD pairs work with Binance data)")
         return {
             "elite_status": "skipped",
             "periods_passed": 0,
             "periods_total": 0,
             "elite_score": 0,
+            "skip_reason": skip_reason,
             "validation_data": json.dumps({
                 "status": "skipped",
-                "reason": f"Symbol {symbol} not supported - Binance USDT pairs only"
+                "reason": skip_reason
             })
         }
 
@@ -570,6 +573,21 @@ async def validate_strategy(
 
     elite_score = profitability_points + profit_bonus + drawdown_bonus
 
+    # Collect reasons for untestable status
+    failed_reasons = []
+    for r in results:
+        status = r.get('status')
+        if status == 'limit_exceeded':
+            failed_reasons.append(f"{r['period']}: data limit exceeded")
+        elif status == 'insufficient_data':
+            failed_reasons.append(f"{r['period']}: insufficient data (<50 candles)")
+        elif status == 'no_trades':
+            failed_reasons.append(f"{r['period']}: no trades generated")
+        elif status == 'error':
+            failed_reasons.append(f"{r['period']}: error - {r.get('message', 'unknown')}")
+        elif status == 'skipped':
+            failed_reasons.append(f"{r['period']}: skipped")
+
     # Simplified status: just 'validated' or 'untestable'
     # The score does the ranking - no need for elite/partial/failed categories
     if total_testable == 0:
@@ -582,7 +600,8 @@ async def validate_strategy(
         "periods_passed": passed,
         "periods_total": total_testable,
         "elite_score": elite_score,
-        "validation_data": json.dumps(results)
+        "validation_data": json.dumps(results),
+        "failed_reasons": failed_reasons
     }
 
 
@@ -671,7 +690,15 @@ async def validate_single_strategy_worker(strategy: dict, processed_count: list,
                     elite_score=result["elite_score"]
                 )
                 invalidate_counts_cache()
-                log(f"[Elite Validation] Result: {result['elite_status'].upper()} - {result['periods_passed']}/{result['periods_total']} periods")
+                # Log with detailed reasons for untestable strategies
+                failed_reasons = result.get('failed_reasons', [])
+                if result['elite_status'] == 'untestable' and failed_reasons:
+                    reasons_preview = ', '.join(failed_reasons[:3])
+                    if len(failed_reasons) > 3:
+                        reasons_preview += '...'
+                    log(f"[Elite Validation] Result: UNTESTABLE - {result['periods_passed']}/{result['periods_total']} periods. Reasons: {reasons_preview}")
+                else:
+                    log(f"[Elite Validation] Result: {result['elite_status'].upper()} - {result['periods_passed']}/{result['periods_total']} periods")
 
         except Exception as e:
             log(f"[Elite Validation] Error validating {strategy_name}: {e}", level='ERROR')
@@ -688,7 +715,12 @@ async def validate_single_strategy_worker(strategy: dict, processed_count: list,
                 processed=processed_count[0]
             )
             _update_queue_status()
-            broadcast_elite_status(app_state.get_elite_status())
+            # Broadcast status with data_updated flag so frontend knows to refresh elite data
+            broadcast_elite_status({
+                **app_state.get_elite_status(),
+                'data_updated': True,
+                'latest_validated_id': strategy_id
+            })
 
 
 def _update_queue_status():
