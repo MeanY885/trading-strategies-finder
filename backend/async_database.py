@@ -127,7 +127,13 @@ class AsyncDatabase:
                 WHERE id = $7
             ''', elite_status, datetime.now().isoformat(), periods_passed,
                  periods_total, validation_data, elite_score, strategy_id)
-            return result == 'UPDATE 1'
+            # asyncpg execute returns status string like 'UPDATE 1' or 'UPDATE 0'
+            # Check if at least one row was updated
+            success = result and 'UPDATE' in result and not result.endswith('0')
+            if not success:
+                from logging_config import log
+                log(f"[AsyncDB] update_elite_status: strategy_id={strategy_id}, result='{result}', success={success}", level='WARNING')
+            return success
 
     @classmethod
     async def get_priority_list(cls) -> List[Dict]:

@@ -264,8 +264,14 @@ async def validate_strategy(
     timeframe = strategy.get('timeframe', '15m')
     tp_percent = strategy.get('tp_percent', 2.0)
     sl_percent = strategy.get('sl_percent', 5.0)
-    entry_rule = params.get('entry_rule', 'rsi_oversold')
+    # CRITICAL: Use strategy_name (function name like 'stoch_extreme') NOT params.entry_rule
+    # params.entry_rule contains human-readable description like "Stochastic extreme levels"
+    # which the backtest engine doesn't recognize
+    entry_rule = strategy_name  # strategy_name is the actual function name
     direction = params.get('direction', strategy.get('trade_mode', 'long'))
+
+    # Debug: Log what we're using for backtest
+    log(f"[Elite Validation] Strategy #{strategy_id}: name={strategy_name}, entry_rule={entry_rule}, direction={direction}, tp={tp_percent}, sl={sl_percent}")
 
     # Check for unsupported pairs
     supported_quotes = ['USDT', 'USDC', 'BUSD']
@@ -595,6 +601,9 @@ async def validate_strategy(
     else:
         elite_status = 'validated'
 
+    # Log validation completion with detailed info
+    log(f"[Elite Validation] Strategy #{strategy_id} validation complete: status={elite_status}, passed={passed}/{total_testable}, score={elite_score:.2f}, results_count={len(results)}")
+
     return {
         "elite_status": elite_status,
         "periods_passed": passed,
@@ -681,14 +690,26 @@ async def validate_single_strategy_worker(strategy: dict, processed_count: list,
 
             if result:
                 # Use async database to avoid blocking the event loop
-                await AsyncDatabase.update_elite_status(
-                    strategy_id=strategy_id,
-                    elite_status=result["elite_status"],
-                    periods_passed=result["periods_passed"],
-                    periods_total=result["periods_total"],
-                    validation_data=result["validation_data"],
-                    elite_score=result["elite_score"]
-                )
+                log(f"[Elite Validation] Saving result for #{strategy_id}: status={result['elite_status']}, score={result['elite_score']:.2f}, periods={result['periods_passed']}/{result['periods_total']}")
+                try:
+                    update_success = await AsyncDatabase.update_elite_status(
+                        strategy_id=strategy_id,
+                        elite_status=result["elite_status"],
+                        periods_passed=result["periods_passed"],
+                        periods_total=result["periods_total"],
+                        validation_data=result["validation_data"],
+                        elite_score=result["elite_score"]
+                    )
+                    if update_success:
+                        log(f"[Elite Validation] DB UPDATE SUCCESS: Strategy #{strategy_id} -> {result['elite_status']}")
+                    else:
+                        log(f"[Elite Validation] DB UPDATE FAILED: Strategy #{strategy_id} - no rows updated!", level='ERROR')
+                except Exception as db_err:
+                    log(f"[Elite Validation] DB UPDATE EXCEPTION for #{strategy_id}: {db_err}", level='ERROR')
+                    import traceback
+                    traceback.print_exc()
+                    raise  # Re-raise to be caught by outer handler
+
                 invalidate_counts_cache()
                 # Log with detailed reasons for untestable strategies
                 failed_reasons = result.get('failed_reasons', [])
@@ -698,10 +719,15 @@ async def validate_single_strategy_worker(strategy: dict, processed_count: list,
                         reasons_preview += '...'
                     log(f"[Elite Validation] Result: UNTESTABLE - {result['periods_passed']}/{result['periods_total']} periods. Reasons: {reasons_preview}")
                 else:
-                    log(f"[Elite Validation] Result: {result['elite_status'].upper()} - {result['periods_passed']}/{result['periods_total']} periods")
+                    log(f"[Elite Validation] Result: {result['elite_status'].upper()} - {result['periods_passed']}/{result['periods_total']} periods, score={result['elite_score']:.2f}")
+            else:
+                # result is None - this means all periods were fresh (no update needed)
+                log(f"[Elite Validation] Strategy #{strategy_id} ({strategy_name}): validate_strategy returned None (all periods fresh, no update needed)")
 
         except Exception as e:
-            log(f"[Elite Validation] Error validating {strategy_name}: {e}", level='ERROR')
+            log(f"[Elite Validation] Error validating {strategy_name} (#{strategy_id}): {e}", level='ERROR')
+            import traceback
+            traceback.print_exc()
 
         finally:
             # Remove from running validations
@@ -777,22 +803,47 @@ async def validate_all_strategies():
             app_state.update_elite_status(message="No pending strategies to validate")
             return
 
-        # Sort by priority if available
+        # Sort by priority using the 4-list priority system (pairs + timeframes)
         try:
-            priority_list = await AsyncDatabase.get_priority_list()
-            if priority_list:
-                priority_lookup = {}
-                for item in priority_list:
+            priority_data = await AsyncDatabase.get_all_priority_lists()
+
+            if priority_data.get('populated'):
+                # Build position lookups from pairs and timeframes
+                pair_positions = {}
+                for item in priority_data.get('pairs', []):
                     if item.get('enabled'):
-                        key = (item['pair'], item['timeframe_label'])
-                        if key not in priority_lookup:
-                            priority_lookup[key] = item['position']
+                        pair_positions[item['value']] = item['position']
+
+                timeframe_positions = {}
+                for item in priority_data.get('timeframes', []):
+                    if item.get('enabled'):
+                        timeframe_positions[item['value']] = item['position']
+
+                # Log priority lookups for debugging
+                if pair_positions:
+                    sorted_pairs = sorted(pair_positions.items(), key=lambda x: x[1])[:5]
+                    log(f"[Elite Validator] Pair priority (top 5): {sorted_pairs}")
+                if timeframe_positions:
+                    sorted_tfs = sorted(timeframe_positions.items(), key=lambda x: x[1])
+                    log(f"[Elite Validator] Timeframe priority: {sorted_tfs}")
 
                 def get_priority(s):
-                    key = (s.get('symbol', ''), s.get('timeframe', ''))
-                    return priority_lookup.get(key, 999999)
+                    # Priority = (pair_position * 1000) + timeframe_position
+                    # This makes pair the primary sort key
+                    symbol = s.get('symbol', '')
+                    timeframe = s.get('timeframe', '')
+                    pair_pos = pair_positions.get(symbol, 999)
+                    tf_pos = timeframe_positions.get(timeframe, 999)
+                    return (pair_pos * 1000) + tf_pos
 
+                # Log strategies before and after sort
+                before_sort = [(s.get('symbol'), s.get('timeframe')) for s in pending[:5]]
                 pending.sort(key=get_priority)
+                after_sort = [(s.get('symbol'), s.get('timeframe')) for s in pending[:5]]
+                log(f"[Elite Validator] Before sort (first 5): {before_sort}")
+                log(f"[Elite Validator] After sort (first 5): {after_sort}")
+            else:
+                log(f"[Elite Validator] WARNING: Priority lists not populated, using default order")
         except Exception as e:
             log(f"[Elite Validator] Error sorting pending strategies by priority: {e}", level='ERROR')
 

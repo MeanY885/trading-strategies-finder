@@ -918,8 +918,13 @@
                     initValidationTab();
                 }
 
-                if (tabName === 'elite' && !eliteInitialized) {
-                    initEliteTab(); // Already async, won't block
+                if (tabName === 'elite') {
+                    if (!eliteInitialized) {
+                        initEliteTab(); // Already async, won't block
+                    } else {
+                        // Always refresh data when switching to elite tab (data may have updated)
+                        loadEliteData();
+                    }
                 }
 
                 if (tabName === 'autonomous' && !autonomousInitialized) {
