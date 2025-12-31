@@ -937,7 +937,7 @@
                     refreshDbStats();
                     // Refresh other tabs if they were loaded
                     if (historyInitialized) loadHistoryStrategies();
-                    if (eliteInitialized) loadEliteStrategies();
+                    if (eliteInitialized) loadEliteData();
                 } else {
                     alert('Error clearing database: ' + (result.error || 'Unknown error'));
                 }
@@ -958,7 +958,7 @@
                 if (response.ok) {
                     alert(`Elite validation reset!\n\n${result.reset_count || 0} strategies will be re-validated.`);
                     refreshDbStats();
-                    if (eliteInitialized) loadEliteStrategies();
+                    if (eliteInitialized) loadEliteData();
                 } else {
                     alert('Error resetting elite validation: ' + (result.detail || 'Unknown error'));
                 }
