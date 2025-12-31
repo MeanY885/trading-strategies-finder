@@ -1596,6 +1596,7 @@
                     <td>${dateStr}</td>
                     <td>
                         <div class="action-btn-group">
+                            <button class="action-btn chart-btn" onclick="event.stopPropagation(); openTVChart('${bestStrategy.symbol}', ${bestStrategy.timeframe}, ${bestStrategy.id})" title="View Chart">📈</button>
                             <button class="action-btn" onclick="event.stopPropagation(); copyPineScript(${bestStrategy.id})" title="Copy Pine Script">📋</button>
                             <button class="action-btn" onclick="event.stopPropagation(); downloadPineScript(${bestStrategy.id}, '${bestStrategy.strategy_name}')" title="Download Pine Script">📜</button>
                             <button class="action-btn" onclick="event.stopPropagation(); exportTradesCSV(${bestStrategy.id}, '${bestStrategy.strategy_name}')" title="Export Trades CSV">📊</button>
@@ -1685,6 +1686,7 @@
                             <td style="padding: 0.4rem;">${formatNumber(variant.profit_factor, 2)}</td>
                             <td style="padding: 0.4rem;" class="${pnlClass}">${pnlPrefix}${formatNumber(variant.total_pnl, 2)}</td>
                             <td style="padding: 0.4rem; text-align: center;">
+                                <button class="action-btn chart-btn" onclick="event.stopPropagation(); openTVChart('${variant.symbol}', ${variant.timeframe}, ${variant.id})" title="View Chart">📈</button>
                                 <button class="action-btn" onclick="event.stopPropagation(); copyPineScript(${variant.id})" title="Copy Pine Script">📋</button>
                                 <button class="action-btn" onclick="event.stopPropagation(); downloadPineScript(${variant.id}, '${variant.strategy_name}')" title="Download">📜</button>
                                 <button class="action-btn" onclick="event.stopPropagation(); exportTradesCSV(${variant.id}, '${variant.strategy_name}')" title="Export Trades CSV">📊</button>

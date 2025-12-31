@@ -1776,3 +1776,133 @@
             0%, 100% { opacity: 1; }
             50% { opacity: 0.6; }
         }
+
+        /* ============================================
+           TRADINGVIEW CHART CONTAINER STYLES
+           ============================================ */
+
+        /* Chart Modal Container */
+        #tv-chart-container {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 90%;
+            max-width: 1200px;
+            background: #1a1a2e;
+            border-radius: 12px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+            z-index: 1001;
+            border: 1px solid var(--border);
+        }
+
+        #tv-chart-container.hidden {
+            display: none;
+        }
+
+        /* Chart Modal Backdrop */
+        #tv-chart-backdrop {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.7);
+            z-index: 1000;
+        }
+
+        #tv-chart-backdrop.hidden {
+            display: none;
+        }
+
+        /* Chart Header */
+        .tv-chart-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 20px;
+            border-bottom: 1px solid #2a2a4e;
+            background: linear-gradient(135deg, rgba(139, 92, 246, 0.1), rgba(236, 72, 153, 0.05));
+            border-radius: 12px 12px 0 0;
+        }
+
+        .tv-chart-header h3 {
+            margin: 0;
+            color: var(--text-primary);
+            font-size: 1.1rem;
+            font-weight: 600;
+        }
+
+        .tv-chart-header .close-btn {
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            font-size: 1.75rem;
+            cursor: pointer;
+            padding: 0.25rem 0.5rem;
+            line-height: 1;
+            transition: color 0.2s, transform 0.2s;
+            border-radius: 4px;
+        }
+
+        .tv-chart-header .close-btn:hover {
+            color: var(--text-primary);
+            background: rgba(255, 255, 255, 0.1);
+            transform: scale(1.1);
+        }
+
+        /* Chart Widget Container */
+        #tv-chart-widget {
+            border-radius: 0 0 12px 12px;
+            overflow: hidden;
+        }
+
+        /* View Chart Button in History Table */
+        .action-btn.chart-btn {
+            background: linear-gradient(135deg, rgba(41, 98, 255, 0.2), rgba(0, 188, 212, 0.2));
+        }
+
+        .action-btn.chart-btn:hover {
+            background: linear-gradient(135deg, rgba(41, 98, 255, 0.4), rgba(0, 188, 212, 0.4));
+        }
+
+        /* Responsive adjustments for chart modal */
+        @media (max-width: 768px) {
+            #tv-chart-container {
+                width: 95%;
+                max-width: none;
+            }
+
+            .tv-chart-header {
+                padding: 10px 15px;
+            }
+
+            .tv-chart-header h3 {
+                font-size: 1rem;
+            }
+
+            #tv-chart-widget {
+                height: 400px !important;
+            }
+        }
+
+        @media (max-width: 600px) {
+            #tv-chart-container {
+                width: 100%;
+                height: 100%;
+                max-width: none;
+                border-radius: 0;
+                top: 0;
+                left: 0;
+                transform: none;
+            }
+
+            .tv-chart-header {
+                border-radius: 0;
+            }
+
+            #tv-chart-widget {
+                height: calc(100vh - 60px) !important;
+                border-radius: 0;
+            }
+        }

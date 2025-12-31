@@ -244,6 +244,106 @@ def get_strategy_pinescript_from_db(strategy_id: int):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/strategies/{strategy_id}/pinescript/debug")
+def get_strategy_pinescript_debug(strategy_id: int, max_trades: int = 50):
+    """
+    Generate DEBUG MODE Pine Script for a saved strategy.
+
+    This generates a special Pine Script that exports trade data to TradingView's
+    Data Window for easy comparison with Python backtest exports.
+
+    The debug script includes:
+    - Trade logging arrays that track all trade details
+    - CSV-formatted trade log: trade_num, direction, entry_time, exit_time,
+      entry_price, exit_price, tp_price, sl_price, pnl, exit_type, entry_rsi, entry_atr
+    - Labels in Data Window for easy copying
+    - Summary table with strategy parameters
+
+    Args:
+        strategy_id: Database ID of the strategy
+        max_trades: Maximum number of trades to log in Data Window (default 50)
+    """
+    if not HAS_DATABASE:
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    try:
+        db = get_strategy_db()
+        strategy = db.get_strategy_by_id(strategy_id)
+        if not strategy:
+            raise HTTPException(status_code=404, detail="Strategy not found")
+
+        # Extract entry_rule and direction from params
+        params = strategy['params']
+        entry_rule = params.get('entry_rule')
+        direction = params.get('direction') or strategy.get('trade_mode', 'long')
+
+        # Get position_size_pct from optimization run (stored as risk_percent)
+        position_size_pct = 100.0  # default
+        capital = 1000.0  # default
+        run_id = strategy.get('optimization_run_id')
+        if run_id:
+            run = db.get_optimization_run_by_id(run_id)
+            if run:
+                position_size_pct = run.get('risk_percent', 100.0)
+                capital = run.get('capital', 1000.0)
+
+        # Also check if stored in params (override if present)
+        position_size_pct = params.get('position_size_pct', position_size_pct)
+        capital = params.get('capital', capital)
+
+        # Build date range from strategy's data_start/data_end
+        date_range = None
+        data_start = strategy.get('data_start')
+        data_end = strategy.get('data_end')
+        if data_start and data_end:
+            try:
+                from datetime import datetime
+                start_dt = datetime.fromisoformat(data_start.replace('Z', '+00:00'))
+                end_dt = datetime.fromisoformat(data_end.replace('Z', '+00:00'))
+                date_range = {
+                    'enabled': True,
+                    'startDate': start_dt.strftime('%Y-%m-%d'),
+                    'startTime': start_dt.strftime('%H:%M'),
+                    'endDate': end_dt.strftime('%Y-%m-%d'),
+                    'endTime': end_dt.strftime('%H:%M'),
+                }
+            except Exception as e:
+                log(f"[Data] Date range parsing error for strategy {strategy_id}: {e}", level='WARNING')
+
+        generator = PineScriptGenerator()
+        pinescript = generator.generate_debug_mode(
+            strategy['strategy_name'],
+            params,
+            {
+                'total_trades': strategy['total_trades'],
+                'win_rate': strategy['win_rate'],
+                'total_pnl': strategy['total_pnl'],
+                'profit_factor': strategy['profit_factor'],
+                'max_drawdown': strategy['max_drawdown'],
+            },
+            entry_rule=entry_rule,
+            direction=direction,
+            position_size_pct=position_size_pct,
+            capital=capital,
+            date_range=date_range,
+            max_trades_to_log=max_trades
+        )
+
+        return {
+            'strategy_id': strategy_id,
+            'strategy_name': strategy['strategy_name'],
+            'mode': 'debug',
+            'tp_percent': strategy['tp_percent'],
+            'sl_percent': strategy['sl_percent'],
+            'max_trades_logged': max_trades,
+            'pinescript': pinescript
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.delete("/strategies/{strategy_id}")
 def delete_strategy(strategy_id: int):
     """Delete a strategy from the database."""

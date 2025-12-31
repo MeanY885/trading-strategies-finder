@@ -494,10 +494,284 @@ mih_atr(simple int length) =>
 
 '''
 
+    def _generate_professional_visuals(self, tp_percent: float, sl_percent: float) -> str:
+        """
+        Generate Pine Script v6 code for professional trade visualizations.
+
+        Includes:
+        - Win/Loss labels at exit with percentage
+        - P&L value labels in GBP
+        - Entry markers with price
+        - Trade zone overlays (green for longs, red for shorts)
+        - TP/SL level labels
+
+        Args:
+            tp_percent: Take profit percentage
+            sl_percent: Stop loss percentage
+
+        Returns:
+            Pine Script v6 code for professional visuals
+        """
+        return f'''
+// =============================================================================
+// PROFESSIONAL TRADE VISUALIZATIONS
+// =============================================================================
+
+// Color constants for professional appearance
+color WIN_COLOR = #00C853      // Bright green for wins
+color LOSS_COLOR = #FF1744     // Bright red for losses
+color LONG_ZONE = color.new(#1B5E20, 85)   // Dark green at 85% transparency
+color SHORT_ZONE = color.new(#B71C1C, 85)  // Dark red at 85% transparency
+color TP_COLOR = #00E676       // Light green for TP levels
+color SL_COLOR = #FF5252       // Light red for SL levels
+color ENTRY_LONG_COLOR = #2196F3   // Blue for long entries
+color ENTRY_SHORT_COLOR = #FF9800  // Orange for short entries
+
+// Track trade state for visualizations
+var float tradeEntryPrice = na
+var float tradeTpLevel = na
+var float tradeSlLevel = na
+var bool tradeIsLong = false
+var int tradeEntryBar = na
+var line tpLine = na
+var line slLine = na
+var label tpLabel = na
+var label slLabel = na
+var box tradeZone = na
+
+// Detect new position entry
+positionChanged = ta.change(strategy.position_size) != 0
+newLongEntry = strategy.position_size > 0 and strategy.position_size[1] <= 0
+newShortEntry = strategy.position_size < 0 and strategy.position_size[1] >= 0
+
+// Entry visualization - create markers and zones
+if newLongEntry
+    tradeEntryPrice := strategy.position_avg_price
+    tradeIsLong := true
+    tradeEntryBar := bar_index
+    tradeTpLevel := tradeEntryPrice * (1 + tpPercent / 100)
+    tradeSlLevel := tradeEntryPrice * (1 - slPercent / 100)
+
+    // Entry label with price
+    label.new(bar_index, low, "Long @ " + str.tostring(tradeEntryPrice, "#.##"),
+              style=label.style_label_up, color=ENTRY_LONG_COLOR, textcolor=color.white, size=size.small)
+
+    // TP level line and label
+    tpLine := line.new(bar_index, tradeTpLevel, bar_index + 20, tradeTpLevel,
+                       color=TP_COLOR, width=1, style=line.style_dashed)
+    tpLabel := label.new(bar_index + 10, tradeTpLevel, "TP " + str.tostring(tpPercent, "#.##") + "%",
+                         style=label.style_label_left, color=color.new(TP_COLOR, 50), textcolor=color.white, size=size.tiny)
+
+    // SL level line and label
+    slLine := line.new(bar_index, tradeSlLevel, bar_index + 20, tradeSlLevel,
+                       color=SL_COLOR, width=1, style=line.style_dashed)
+    slLabel := label.new(bar_index + 10, tradeSlLevel, "SL " + str.tostring(slPercent, "#.##") + "%",
+                         style=label.style_label_left, color=color.new(SL_COLOR, 50), textcolor=color.white, size=size.tiny)
+
+    // Trade zone overlay
+    tradeZone := box.new(bar_index, tradeTpLevel, bar_index + 1, tradeSlLevel,
+                         bgcolor=LONG_ZONE, border_color=color.new(#1B5E20, 50), border_width=1)
+
+if newShortEntry
+    tradeEntryPrice := strategy.position_avg_price
+    tradeIsLong := false
+    tradeEntryBar := bar_index
+    tradeTpLevel := tradeEntryPrice * (1 - tpPercent / 100)
+    tradeSlLevel := tradeEntryPrice * (1 + slPercent / 100)
+
+    // Entry label with price
+    label.new(bar_index, high, "SHORT @ " + str.tostring(tradeEntryPrice, "#.##"),
+              style=label.style_label_down, color=ENTRY_SHORT_COLOR, textcolor=color.white, size=size.small)
+
+    // TP level line and label
+    tpLine := line.new(bar_index, tradeTpLevel, bar_index + 20, tradeTpLevel,
+                       color=TP_COLOR, width=1, style=line.style_dashed)
+    tpLabel := label.new(bar_index + 10, tradeTpLevel, "TP " + str.tostring(tpPercent, "#.##") + "%",
+                         style=label.style_label_left, color=color.new(TP_COLOR, 50), textcolor=color.white, size=size.tiny)
+
+    // SL level line and label
+    slLine := line.new(bar_index, tradeSlLevel, bar_index + 20, tradeSlLevel,
+                       color=SL_COLOR, width=1, style=line.style_dashed)
+    slLabel := label.new(bar_index + 10, tradeSlLevel, "SL " + str.tostring(slPercent, "#.##") + "%",
+                         style=label.style_label_left, color=color.new(SL_COLOR, 50), textcolor=color.white, size=size.tiny)
+
+    // Trade zone overlay
+    tradeZone := box.new(bar_index, tradeSlLevel, bar_index + 1, tradeTpLevel,
+                         bgcolor=SHORT_ZONE, border_color=color.new(#B71C1C, 50), border_width=1)
+
+// Update trade zone while in position
+if strategy.position_size != 0 and not na(tradeZone)
+    if tradeIsLong
+        box.set_right(tradeZone, bar_index + 1)
+    else
+        box.set_right(tradeZone, bar_index + 1)
+
+    // Extend TP/SL lines
+    if not na(tpLine)
+        line.set_x2(tpLine, bar_index + 10)
+    if not na(slLine)
+        line.set_x2(slLine, bar_index + 10)
+
+// Exit visualization - show Win/Loss labels with P&L
+positionClosed = strategy.position_size == 0 and strategy.position_size[1] != 0
+if positionClosed
+    // Calculate P&L for the closed trade
+    exitPrice = close
+    pnlPercent = tradeIsLong ? ((exitPrice - tradeEntryPrice) / tradeEntryPrice) * 100 : ((tradeEntryPrice - exitPrice) / tradeEntryPrice) * 100
+    pnlGbp = strategy.netprofit - strategy.netprofit[1]
+    isWin = pnlGbp > 0
+
+    // Determine direction text
+    directionText = tradeIsLong ? "(Long)" : "(Short)"
+
+    // Win/Loss label with percentage
+    resultText = isWin ? "Win " + directionText + " " + str.tostring(math.abs(pnlPercent), "#.##") + "%" : "Loss " + directionText + " " + str.tostring(math.abs(pnlPercent), "#.##") + "%"
+    resultColor = isWin ? WIN_COLOR : LOSS_COLOR
+    labelY = tradeIsLong ? high : low
+    labelStyle = tradeIsLong ? label.style_label_down : label.style_label_up
+
+    label.new(bar_index, labelY, resultText,
+              style=labelStyle, color=resultColor, textcolor=color.white, size=size.normal)
+
+    // P&L value label in GBP
+    pnlText = isWin ? "+" + str.tostring(pnlGbp, "#.##") : str.tostring(pnlGbp, "#.##")
+    pnlLabelY = tradeIsLong ? high + (high - low) * 0.5 : low - (high - low) * 0.5
+    label.new(bar_index, pnlLabelY, pnlText,
+              style=label.style_label_center, color=color.new(resultColor, 30), textcolor=color.white, size=size.small)
+
+    // Reset trade state
+    tradeEntryPrice := na
+    tradeTpLevel := na
+    tradeSlLevel := na
+    tradeEntryBar := na
+'''
+
+    def _generate_enhanced_stats_table(self, strategy_name: str, direction: str, tp_percent: float, sl_percent: float) -> str:
+        """
+        Generate Pine Script v6 code for enhanced performance stats table.
+
+        Includes 14 rows:
+        - Total Trades, Wins, Losses
+        - Win Rate, Profit Factor, Net Profit
+        - Max Drawdown, Avg Win, Avg Loss
+        - Expectancy, Win:Loss Ratio
+        - TP/SL settings
+        - All values in GBP
+
+        Args:
+            strategy_name: Strategy name for header
+            direction: Trade direction (long/short/both)
+            tp_percent: Take profit percentage
+            sl_percent: Stop loss percentage
+
+        Returns:
+            Pine Script v6 code for enhanced stats table
+        """
+        direction_upper = direction.upper()
+        direction_color = "color.green" if direction == "long" else ("color.purple" if direction == "both" else "color.red")
+
+        return f'''
+// =============================================================================
+// ENHANCED PERFORMANCE STATS TABLE (14 Rows)
+// =============================================================================
+
+var table statsTable = table.new(position.top_right, 2, 14, bgcolor=color.new(color.black, 80), border_width=1)
+
+if barstate.islast
+    // Core metrics
+    totalTrades = strategy.closedtrades
+    winTrades = strategy.wintrades
+    lossTrades = strategy.losstrades
+    winRate = totalTrades > 0 ? (winTrades / totalTrades) * 100 : 0
+
+    // Profit metrics
+    netProfit = strategy.netprofit
+    grossProfit = strategy.grossprofit
+    grossLoss = math.abs(strategy.grossloss)
+    profitFactor = grossLoss > 0 ? grossProfit / grossLoss : 0
+
+    // Average trade metrics
+    avgWin = winTrades > 0 ? grossProfit / winTrades : 0
+    avgLoss = lossTrades > 0 ? grossLoss / lossTrades : 0
+
+    // Advanced metrics
+    maxDrawdown = strategy.max_drawdown
+    winLossRatio = avgLoss > 0 ? avgWin / avgLoss : 0
+    expectancy = totalTrades > 0 ? netProfit / totalTrades : 0
+
+    // Row 0: Strategy Header
+    table.cell(statsTable, 0, 0, "{strategy_name}", text_color=color.white,
+               bgcolor=color.new(color.purple, 60), text_size=size.small)
+    table.cell(statsTable, 1, 0, "{direction_upper}", bgcolor=color.new({direction_color}, 60),
+               text_color=color.white, text_size=size.small)
+
+    // Row 1: Total Trades
+    table.cell(statsTable, 0, 1, "Total Trades", text_color=color.gray, text_size=size.tiny)
+    table.cell(statsTable, 1, 1, str.tostring(totalTrades), text_color=color.white, text_size=size.tiny)
+
+    // Row 2: Wins
+    table.cell(statsTable, 0, 2, "Wins", text_color=color.gray, text_size=size.tiny)
+    table.cell(statsTable, 1, 2, str.tostring(winTrades), text_color=#00C853, text_size=size.tiny)
+
+    // Row 3: Losses
+    table.cell(statsTable, 0, 3, "Losses", text_color=color.gray, text_size=size.tiny)
+    table.cell(statsTable, 1, 3, str.tostring(lossTrades), text_color=#FF1744, text_size=size.tiny)
+
+    // Row 4: Win Rate
+    table.cell(statsTable, 0, 4, "Win Rate", text_color=color.gray, text_size=size.tiny)
+    table.cell(statsTable, 1, 4, str.tostring(winRate, "#.#") + "%",
+               text_color=winRate >= 50 ? #00C853 : #FF1744, text_size=size.tiny)
+
+    // Row 5: Profit Factor
+    table.cell(statsTable, 0, 5, "Profit Factor", text_color=color.gray, text_size=size.tiny)
+    table.cell(statsTable, 1, 5, str.tostring(profitFactor, "#.##"),
+               text_color=profitFactor >= 1 ? #00C853 : #FF1744, text_size=size.tiny)
+
+    // Row 6: Net Profit
+    table.cell(statsTable, 0, 6, "Net Profit", text_color=color.gray, text_size=size.tiny)
+    table.cell(statsTable, 1, 6, str.tostring(netProfit, "#.##"),
+               text_color=netProfit >= 0 ? #00C853 : #FF1744, text_size=size.tiny)
+
+    // Row 7: Max Drawdown
+    table.cell(statsTable, 0, 7, "Max Drawdown", text_color=color.gray, text_size=size.tiny)
+    table.cell(statsTable, 1, 7, str.tostring(maxDrawdown, "#.##"),
+               text_color=#FF1744, text_size=size.tiny)
+
+    // Row 8: Avg Win
+    table.cell(statsTable, 0, 8, "Avg Win", text_color=color.gray, text_size=size.tiny)
+    table.cell(statsTable, 1, 8, str.tostring(avgWin, "#.##"),
+               text_color=#00C853, text_size=size.tiny)
+
+    // Row 9: Avg Loss
+    table.cell(statsTable, 0, 9, "Avg Loss", text_color=color.gray, text_size=size.tiny)
+    table.cell(statsTable, 1, 9, str.tostring(avgLoss, "#.##"),
+               text_color=#FF1744, text_size=size.tiny)
+
+    // Row 10: Expectancy
+    table.cell(statsTable, 0, 10, "Expectancy", text_color=color.gray, text_size=size.tiny)
+    table.cell(statsTable, 1, 10, str.tostring(expectancy, "#.##"),
+               text_color=expectancy >= 0 ? #00C853 : #FF1744, text_size=size.tiny)
+
+    // Row 11: Win:Loss Ratio
+    table.cell(statsTable, 0, 11, "Win:Loss Ratio", text_color=color.gray, text_size=size.tiny)
+    table.cell(statsTable, 1, 11, str.tostring(winLossRatio, "#.##"),
+               text_color=winLossRatio >= 1 ? #00C853 : #FF1744, text_size=size.tiny)
+
+    // Row 12: TP Setting
+    table.cell(statsTable, 0, 12, "Take Profit", text_color=color.gray, text_size=size.tiny)
+    table.cell(statsTable, 1, 12, str.tostring(tpPercent, "#.##") + "%",
+               text_color=#00E676, text_size=size.tiny)
+
+    // Row 13: SL Setting
+    table.cell(statsTable, 0, 13, "Stop Loss", text_color=color.gray, text_size=size.tiny)
+    table.cell(statsTable, 1, 13, str.tostring(slPercent, "#.##") + "%",
+               text_color=#FF5252, text_size=size.tiny)
+'''
+
     def generate_exact_match(self, strategy_name: str, params: Dict, metrics: Dict = None,
                               entry_rule: str = None, direction: str = None,
                               position_size_pct: float = 100.0, capital: float = 1000.0,
-                              engine: str = "tradingview", date_range: Dict = None,
+                              engine: str = "mihakralj", date_range: Dict = None,
                               indicator_params: Dict = None) -> str:
         """
         Generate EXACT-MATCH Pine Script v6 that guarantees 1:1 match with Python backtester.
@@ -1510,6 +1784,14 @@ enableLongs = input.bool({str(enable_longs).lower()}, "Enable Long Trades", grou
 enableShorts = input.bool({str(enable_shorts).lower()}, "Enable Short Trades", group="Direction")
 {date_range_code}
 // =============================================================================
+// WARMUP PERIOD TRACKING
+// =============================================================================
+// Skip first N bars for accurate indicator values (mihakralj warmup compensation)
+
+var int warmupBars = 50
+bool warmupComplete = bar_index >= warmupBars
+
+// =============================================================================
 // ENTRY CONDITIONS
 // =============================================================================
 
@@ -1518,8 +1800,9 @@ enableShorts = input.bool({str(enable_shorts).lower()}, "Enable Short Trades", g
 {f'''// BIDIRECTIONAL - Check for signal conflict (skip when both fire)
 signalConflict = longEntrySignal and shortEntrySignal
 
-longCondition = longEntrySignal and not signalConflict and enableLongs{date_range_condition}
-shortCondition = shortEntrySignal and not signalConflict and enableShorts{date_range_condition}
+// Only enter trades after warmup period completes
+longCondition = longEntrySignal and not signalConflict and enableLongs and warmupComplete{date_range_condition}
+shortCondition = shortEntrySignal and not signalConflict and enableShorts and warmupComplete{date_range_condition}
 
 // =============================================================================
 // TRADE EXECUTION - BIDIRECTIONAL WITH FLIP LOGIC
@@ -1540,8 +1823,9 @@ if longCondition and strategy.position_size == 0
     strategy.entry("Long", strategy.long)
 
 if shortCondition and strategy.position_size == 0
-    strategy.entry("Short", strategy.short)''' if is_bidirectional else f'''longCondition = entrySignal and enableLongs and strategy.position_size == 0{date_range_condition}
-shortCondition = entrySignal and enableShorts and strategy.position_size == 0{date_range_condition}
+    strategy.entry("Short", strategy.short)''' if is_bidirectional else f'''// Only enter trades after warmup period completes
+longCondition = entrySignal and enableLongs and strategy.position_size == 0 and warmupComplete{date_range_condition}
+shortCondition = entrySignal and enableShorts and strategy.position_size == 0 and warmupComplete{date_range_condition}
 
 // =============================================================================
 // TRADE EXECUTION - EXACT MATCH WITH PYTHON
@@ -1568,7 +1852,7 @@ if strategy.position_size < 0  // Short position
     strategy.exit("Short Exit", "Short", limit=shortTP, stop=shortSL)
 
 // =============================================================================
-// VISUAL ELEMENTS (Simplified to avoid TradingView rendering issues)
+// VISUAL ELEMENTS - Signal Markers
 // =============================================================================
 
 // Entry signal markers
@@ -1582,49 +1866,9 @@ plotshape(shortCondition, "Short Signal", shape.triangledown, location.abovebar,
 alertcondition(longCondition, title="Long Entry", message="LONG entry at {{{{close}}}}")
 alertcondition(shortCondition, title="Short Entry", message="SHORT entry at {{{{close}}}}")
 
-// =============================================================================
-// PERFORMANCE STATS TABLE
-// =============================================================================
+{self._generate_professional_visuals(tp_percent, sl_percent)}
 
-var table statsTable = table.new(position.top_right, 2, 8, bgcolor=color.new(color.black, 80), border_width=1)
-
-if barstate.islast
-    totalTrades = strategy.closedtrades
-    winTrades = strategy.wintrades
-    lossTrades = strategy.losstrades
-    winRate = totalTrades > 0 ? (winTrades / totalTrades) * 100 : 0
-    netProfit = strategy.netprofit
-    grossProfit = strategy.grossprofit
-    grossLoss = strategy.grossloss
-    profitFactor = grossLoss != 0 ? grossProfit / math.abs(grossLoss) : 0
-
-    table.cell(statsTable, 0, 0, "{strategy_name}", text_color=color.white,
-               bgcolor=color.new(color.purple, 60), text_size=size.small)
-    table.cell(statsTable, 1, 0, "{direction_upper}", bgcolor=color.new({direction_color}, 60), text_color=color.white, text_size=size.small)
-
-    table.cell(statsTable, 0, 1, "TP / SL", text_color=color.gray, text_size=size.tiny)
-    table.cell(statsTable, 1, 1, str.tostring(tpPercent) + "% / " + str.tostring(slPercent) + "%", text_color=color.white, text_size=size.tiny)
-
-    table.cell(statsTable, 0, 2, "Trades", text_color=color.gray, text_size=size.tiny)
-    table.cell(statsTable, 1, 2, str.tostring(totalTrades), text_color=color.white, text_size=size.tiny)
-
-    table.cell(statsTable, 0, 3, "Win Rate", text_color=color.gray, text_size=size.tiny)
-    table.cell(statsTable, 1, 3, str.tostring(winRate, "#.#") + "%",
-               text_color=winRate >= 50 ? color.lime : color.red, text_size=size.tiny)
-
-    table.cell(statsTable, 0, 4, "Net Profit", text_color=color.gray, text_size=size.tiny)
-    table.cell(statsTable, 1, 4, "$" + str.tostring(netProfit, "#.##"),
-               text_color=netProfit >= 0 ? color.lime : color.red, text_size=size.tiny)
-
-    table.cell(statsTable, 0, 5, "Profit Factor", text_color=color.gray, text_size=size.tiny)
-    table.cell(statsTable, 1, 5, str.tostring(profitFactor, "#.##"),
-               text_color=profitFactor >= 1 ? color.lime : color.red, text_size=size.tiny)
-
-    table.cell(statsTable, 0, 6, "Gross Profit", text_color=color.gray, text_size=size.tiny)
-    table.cell(statsTable, 1, 6, "$" + str.tostring(grossProfit, "#.##"), text_color=color.lime, text_size=size.tiny)
-
-    table.cell(statsTable, 0, 7, "Gross Loss", text_color=color.gray, text_size=size.tiny)
-    table.cell(statsTable, 1, 7, "$" + str.tostring(math.abs(grossLoss), "#.##"), text_color=color.red, text_size=size.tiny)
+{self._generate_enhanced_stats_table(strategy_name, direction, tp_percent, sl_percent)}
 '''
 
         return script
@@ -4373,6 +4617,382 @@ if strategy.position_size < 0
 
     def _generate_doji_reversal(self, params: Dict, metrics: Dict = None) -> str:
         return self._generate_generic_simple("doji_reversal", params, metrics)
+
+    def generate_debug_mode(self, strategy_name: str, params: Dict, metrics: Dict = None,
+                            entry_rule: str = None, direction: str = None,
+                            position_size_pct: float = 100.0, capital: float = 1000.0,
+                            date_range: Dict = None, max_trades_to_log: int = 50) -> str:
+        """
+        Generate DEBUG MODE Pine Script v6 that exports trade data to Data Window.
+
+        This debug script tracks all trade details in arrays and exports them to labels
+        that can be copied from TradingView's Data Window for easy comparison with
+        Python backtest exports.
+
+        Args:
+            strategy_name: Name of the strategy
+            params: Optimized parameters (must include tp_percent, sl_percent)
+            metrics: Performance metrics from backtesting
+            entry_rule: Entry rule identifier (e.g., 'williams_r', 'rsi_extreme')
+            direction: Trade direction ('long', 'short', or 'both')
+            position_size_pct: Position size as % of equity
+            capital: Starting capital
+            date_range: Optional date range dict
+            max_trades_to_log: Maximum number of trades to display in Data Window (default 50)
+
+        Returns:
+            Complete Pine Script v6 debug code as string
+        """
+        gen_date = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+        # Extract percentage-based TP/SL
+        tp_percent = params.get('tp_percent', 1.0)
+        sl_percent = params.get('sl_percent', 3.0)
+
+        # Metrics comment
+        metrics_comment = ""
+        if metrics:
+            metrics_comment = f"""
+// PYTHON BACKTEST RESULTS (compare with TradingView):
+//   Total Trades: {metrics.get('total_trades', 'N/A')}
+//   Win Rate: {metrics.get('win_rate', 0):.1f}%
+//   Total P&L: £{metrics.get('total_pnl', 0):.2f}
+//   Profit Factor: {metrics.get('profit_factor', 0):.2f}
+//   Max Drawdown: £{metrics.get('max_drawdown', 0):.2f}"""
+
+        # Determine direction
+        if direction is None:
+            direction = "both"
+            if "long" in strategy_name.lower():
+                direction = "long"
+            elif "short" in strategy_name.lower():
+                direction = "short"
+
+        is_long = direction == "long"
+        is_short = direction == "short"
+        enable_longs = direction in ["long", "both"]
+        enable_shorts = direction in ["short", "both"]
+
+        # Generate date range filtering code
+        date_range_code = ""
+        date_range_condition = ""
+        if date_range and date_range.get('enabled'):
+            start_date = date_range.get('startDate', '2024-01-01')
+            start_time = date_range.get('startTime', '00:00')
+            end_date = date_range.get('endDate', '2025-12-31')
+            end_time = date_range.get('endTime', '23:59')
+
+            date_range_code = f'''
+// =============================================================================
+// DATE RANGE FILTER
+// =============================================================================
+
+useDateRange = input.bool(true, "Limit Backtest to Date Range", group="Date Range")
+fromDate = input.time(timestamp("{start_date} {start_time} +0000"), "From Date", group="Date Range")
+toDate = input.time(timestamp("{end_date} {end_time} +0000"), "To Date", group="Date Range")
+
+inDateRange() => not useDateRange or (time >= fromDate and time <= toDate)
+'''
+            date_range_condition = " and inDateRange()"
+
+        # Entry condition based on entry_rule
+        entry_rule = entry_rule or 'rsi_extreme'
+        entry_conditions = {
+            'rsi_extreme': '''rsiValue = ta.rsi(close, rsiLength)
+longCondition = ta.crossover(rsiValue, 30)
+shortCondition = ta.crossunder(rsiValue, 70)''',
+            'stoch_extreme': '''k = ta.sma(ta.stoch(close, high, low, stochK), stochSmooth)
+d = ta.sma(k, stochD)
+longCondition = ta.crossover(k, d) and k < 20
+shortCondition = ta.crossunder(k, d) and k > 80''',
+            'williams_r': '''willrValue = ta.wpr(willrLength)
+longCondition = willrValue < -80
+shortCondition = willrValue > -20''',
+            'bb_touch': '''[bbMiddle, bbUpper, bbLower] = ta.bb(close, bbLength, bbMult)
+longCondition = ta.crossover(close, bbLower)
+shortCondition = ta.crossunder(close, bbUpper)''',
+            'cci_extreme': '''cciValue = ta.cci(high, low, close, cciLength)
+longCondition = cciValue < -100
+shortCondition = cciValue > 100''',
+            'ema_crossover': '''emaFast = ta.ema(close, emaFastLen)
+emaSlow = ta.ema(close, emaSlowLen)
+longCondition = ta.crossover(emaFast, emaSlow)
+shortCondition = ta.crossunder(emaFast, emaSlow)''',
+            'macd_cross': '''[macdLine, signalLine, hist] = ta.macd(close, macdFast, macdSlow, macdSignal)
+longCondition = ta.crossover(macdLine, signalLine)
+shortCondition = ta.crossunder(macdLine, signalLine)''',
+            'supertrend': '''[supertrend, direction] = ta.supertrend(stFactor, stAtrLen)
+longCondition = direction == -1 and direction[1] == 1
+shortCondition = direction == 1 and direction[1] == -1''',
+        }
+
+        entry_code = entry_conditions.get(entry_rule, entry_conditions['rsi_extreme'])
+
+        # Direction filtering
+        if is_long:
+            direction_filter = '''
+// Direction filter: LONG ONLY
+shortCondition := false'''
+        elif is_short:
+            direction_filter = '''
+// Direction filter: SHORT ONLY
+longCondition := false'''
+        else:
+            direction_filter = '''
+// Direction filter: BOTH directions enabled'''
+
+        return f'''// =============================================================================
+// DEBUG MODE: Trade Data Export for Python Comparison
+// =============================================================================
+// Generated: {gen_date}
+// Strategy: {strategy_name}
+// Entry Rule: {entry_rule}
+// Direction: {direction}
+//
+// HOW TO USE:
+// 1. Apply this script to TradingView chart
+// 2. Run the strategy backtest
+// 3. Open the Data Window (Ctrl+D or Cmd+D)
+// 4. Scroll to the last bar - trade logs appear as labels
+// 5. Copy the CSV data from the Data Window
+// 6. Compare with Python backtest export
+//
+// TRADE LOG FORMAT (CSV):
+// trade_num,direction,entry_time,exit_time,entry_price,exit_price,tp_price,sl_price,pnl,exit_type,entry_rsi,entry_atr
+{metrics_comment}
+
+//@version=6
+strategy("{strategy_name} [DEBUG MODE]", overlay=true,
+         default_qty_type=strategy.percent_of_equity, default_qty_value={position_size_pct},
+         initial_capital={capital}, currency=currency.GBP,
+         commission_type=strategy.commission.percent, commission_value=0.1,
+         process_orders_on_close=true, pyramiding=0,
+         margin_long=100, margin_short=100)
+
+// =============================================================================
+// PARAMETERS
+// =============================================================================
+
+// Risk Management
+tpPercent = input.float({tp_percent}, "Take Profit %", minval=0.1, maxval=20.0, step=0.1, group="Risk")
+slPercent = input.float({sl_percent}, "Stop Loss %", minval=0.1, maxval=20.0, step=0.1, group="Risk")
+
+// Indicator Parameters
+rsiLength = input.int(14, "RSI Length", minval=2, maxval=50, group="Indicators")
+stochK = input.int(14, "Stoch K", minval=1, maxval=50, group="Indicators")
+stochD = input.int(3, "Stoch D", minval=1, maxval=20, group="Indicators")
+stochSmooth = input.int(3, "Stoch Smooth", minval=1, maxval=20, group="Indicators")
+bbLength = input.int(20, "BB Length", minval=5, maxval=50, group="Indicators")
+bbMult = input.float(2.0, "BB Mult", minval=0.5, maxval=5.0, step=0.1, group="Indicators")
+willrLength = input.int(14, "Williams %R Length", minval=2, maxval=50, group="Indicators")
+cciLength = input.int(20, "CCI Length", minval=5, maxval=50, group="Indicators")
+emaFastLen = input.int(9, "EMA Fast", minval=2, maxval=50, group="Indicators")
+emaSlowLen = input.int(21, "EMA Slow", minval=5, maxval=100, group="Indicators")
+macdFast = input.int(12, "MACD Fast", minval=2, maxval=50, group="Indicators")
+macdSlow = input.int(26, "MACD Slow", minval=5, maxval=100, group="Indicators")
+macdSignal = input.int(9, "MACD Signal", minval=2, maxval=50, group="Indicators")
+stFactor = input.float(3.0, "SuperTrend Factor", minval=1.0, maxval=10.0, step=0.1, group="Indicators")
+stAtrLen = input.int(10, "SuperTrend ATR Length", minval=1, maxval=50, group="Indicators")
+
+// Debug Settings
+maxTradesToLog = input.int({max_trades_to_log}, "Max Trades to Log", minval=10, maxval=200, group="Debug")
+showDebugLabels = input.bool(true, "Show Debug Labels", group="Debug")
+showDebugTable = input.bool(true, "Show Debug Summary Table", group="Debug")
+{date_range_code}
+// =============================================================================
+// DEBUG: TRADE LOGGING ARRAYS
+// =============================================================================
+
+// Trade log arrays - stores CSV formatted trade data
+var array<string> tradeLog = array.new_string(0)
+var int tradeNum = 0
+
+// Position tracking for logging
+var float entryPrice = na
+var float entryTime = na
+var float entryRsi = na
+var float entryAtr = na
+var float tpPrice = na
+var float slPrice = na
+var bool isLongPosition = false
+
+// =============================================================================
+// INDICATOR CALCULATIONS
+// =============================================================================
+
+atr = ta.atr(14)
+rsi = ta.rsi(close, rsiLength)
+
+// =============================================================================
+// ENTRY CONDITIONS ({entry_rule})
+// =============================================================================
+
+{entry_code}
+{direction_filter}
+
+// Apply date range filter
+longCondition := longCondition{date_range_condition}
+shortCondition := shortCondition{date_range_condition}
+
+// =============================================================================
+// TRADE EXECUTION WITH DEBUG LOGGING
+// =============================================================================
+
+// ENTRY: Track position entry details
+if longCondition and strategy.position_size == 0
+    strategy.entry("Long", strategy.long)
+    tradeNum += 1
+    entryPrice := close
+    entryTime := time
+    entryRsi := rsi
+    entryAtr := atr
+    tpPrice := close * (1 + tpPercent / 100)
+    slPrice := close * (1 - slPercent / 100)
+    isLongPosition := true
+
+if shortCondition and strategy.position_size == 0
+    strategy.entry("Short", strategy.short)
+    tradeNum += 1
+    entryPrice := close
+    entryTime := time
+    entryRsi := rsi
+    entryAtr := atr
+    tpPrice := close * (1 - tpPercent / 100)
+    slPrice := close * (1 + slPercent / 100)
+    isLongPosition := false
+
+// EXIT: Set TP/SL orders
+if strategy.position_size > 0
+    strategy.exit("Long Exit", "Long",
+                  limit=strategy.position_avg_price * (1 + tpPercent / 100),
+                  stop=strategy.position_avg_price * (1 - slPercent / 100))
+
+if strategy.position_size < 0
+    strategy.exit("Short Exit", "Short",
+                  limit=strategy.position_avg_price * (1 - tpPercent / 100),
+                  stop=strategy.position_avg_price * (1 + slPercent / 100))
+
+// =============================================================================
+// DEBUG: LOG TRADE ON EXIT
+// =============================================================================
+
+// Detect position close and log trade details
+positionClosed = strategy.position_size == 0 and strategy.position_size[1] != 0
+
+if positionClosed and not na(entryPrice)
+    // Calculate P&L
+    exitPrice = close
+    float pnl = 0.0
+    string exitType = "UNKNOWN"
+
+    if isLongPosition
+        pnl := (exitPrice - entryPrice) / entryPrice * 100
+        if exitPrice >= tpPrice
+            exitType := "TP"
+        else if exitPrice <= slPrice
+            exitType := "SL"
+        else
+            exitType := "SIGNAL"
+    else
+        pnl := (entryPrice - exitPrice) / entryPrice * 100
+        if exitPrice <= tpPrice
+            exitType := "TP"
+        else if exitPrice >= slPrice
+            exitType := "SL"
+        else
+            exitType := "SIGNAL"
+
+    // Format trade log entry as CSV
+    // Format: trade_num,direction,entry_time,exit_time,entry_price,exit_price,tp_price,sl_price,pnl,exit_type,entry_rsi,entry_atr
+    string dirStr = isLongPosition ? "LONG" : "SHORT"
+    string entryTimeStr = str.format("{{0,date,yyyy-MM-dd HH:mm}}", entryTime)
+    string exitTimeStr = str.format("{{0,date,yyyy-MM-dd HH:mm}}", time)
+
+    string logEntry = str.tostring(tradeNum) + "," +
+                      dirStr + "," +
+                      entryTimeStr + "," +
+                      exitTimeStr + "," +
+                      str.tostring(entryPrice, "#.##") + "," +
+                      str.tostring(exitPrice, "#.##") + "," +
+                      str.tostring(tpPrice, "#.##") + "," +
+                      str.tostring(slPrice, "#.##") + "," +
+                      str.tostring(pnl, "#.####") + "," +
+                      exitType + "," +
+                      str.tostring(entryRsi, "#.##") + "," +
+                      str.tostring(entryAtr, "#.##")
+
+    array.push(tradeLog, logEntry)
+
+    // Reset tracking variables
+    entryPrice := na
+    entryTime := na
+    entryRsi := na
+    entryAtr := na
+    tpPrice := na
+    slPrice := na
+
+// =============================================================================
+// DEBUG: DISPLAY TRADE LOG IN DATA WINDOW
+// =============================================================================
+
+// Display last N trades as labels (visible in Data Window)
+if barstate.islast and showDebugLabels
+    // Header label
+    label.new(bar_index, high * 1.01,
+              "=== TRADE LOG (CSV) ===\\ntrade_num,direction,entry_time,exit_time,entry_price,exit_price,tp_price,sl_price,pnl%,exit_type,entry_rsi,entry_atr",
+              style=label.style_label_down, color=color.blue, textcolor=color.white, size=size.small)
+
+    // Trade log labels (most recent trades)
+    int logSize = array.size(tradeLog)
+    int startIdx = math.max(0, logSize - maxTradesToLog)
+
+    for i = startIdx to logSize - 1
+        float yOffset = high * (1.005 - (i - startIdx) * 0.001)
+        label.new(bar_index - (i - startIdx), yOffset, array.get(tradeLog, i),
+                  style=label.style_none, textcolor=color.gray, size=size.tiny)
+
+// =============================================================================
+// DEBUG: SUMMARY TABLE
+// =============================================================================
+
+if barstate.islast and showDebugTable
+    var table debugTable = table.new(position.top_right, 2, 8, bgcolor=color.new(color.black, 80))
+
+    table.cell(debugTable, 0, 0, "DEBUG SUMMARY", bgcolor=color.blue, text_color=color.white)
+    table.cell(debugTable, 1, 0, "{strategy_name}", bgcolor=color.blue, text_color=color.white)
+
+    table.cell(debugTable, 0, 1, "Total Trades Logged", text_color=color.white)
+    table.cell(debugTable, 1, 1, str.tostring(array.size(tradeLog)), text_color=color.yellow)
+
+    table.cell(debugTable, 0, 2, "Direction", text_color=color.white)
+    table.cell(debugTable, 1, 2, "{direction.upper()}", text_color=color.yellow)
+
+    table.cell(debugTable, 0, 3, "Entry Rule", text_color=color.white)
+    table.cell(debugTable, 1, 3, "{entry_rule}", text_color=color.yellow)
+
+    table.cell(debugTable, 0, 4, "TP %", text_color=color.white)
+    table.cell(debugTable, 1, 4, str.tostring(tpPercent, "#.##") + "%", text_color=color.green)
+
+    table.cell(debugTable, 0, 5, "SL %", text_color=color.white)
+    table.cell(debugTable, 1, 5, str.tostring(slPercent, "#.##") + "%", text_color=color.red)
+
+    table.cell(debugTable, 0, 6, "Position Size", text_color=color.white)
+    table.cell(debugTable, 1, 6, str.tostring({position_size_pct}, "#.#") + "% of equity", text_color=color.yellow)
+
+    table.cell(debugTable, 0, 7, "Capital", text_color=color.white)
+    table.cell(debugTable, 1, 7, "£" + str.tostring({capital}, "#,###"), text_color=color.yellow)
+
+// =============================================================================
+// VISUAL: ENTRY/EXIT MARKERS
+// =============================================================================
+
+plotshape(longCondition and strategy.position_size[1] == 0, "Long Entry", shape.triangleup,
+          location.belowbar, color.green, size=size.small)
+plotshape(shortCondition and strategy.position_size[1] == 0, "Short Entry", shape.triangledown,
+          location.abovebar, color.red, size=size.small)
+plotshape(positionClosed, "Exit", shape.xcross,
+          location.belowbar, color.orange, size=size.tiny)
+'''
 
 
 

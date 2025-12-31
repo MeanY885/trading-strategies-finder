@@ -1402,8 +1402,11 @@ class VectorBTEngine:
                 freq=self.data_freq,
             )
 
-            # Extract metrics
-            return self._extract_metrics(pf, strategy, direction, tp_percent, sl_percent)
+            # Extract metrics (include equity curve and trades list for single backtests)
+            return self._extract_metrics(
+                pf, strategy, direction, tp_percent, sl_percent,
+                include_equity_curve=True, entries=entries
+            )
 
         except Exception as e:
             log(f"[VectorBT] Backtest error for {strategy}/{direction}: {e}", level='WARNING')
@@ -1743,12 +1746,15 @@ class VectorBTEngine:
         tp_percent: float,
         sl_percent: float,
         include_equity_curve: bool = False,
+        entries: pd.Series = None,
     ) -> VectorBTResult:
         """Extract metrics from VectorBT portfolio to VectorBTResult.
 
         Args:
             include_equity_curve: If False (default), skip expensive equity curve extraction.
                                   Only set True for final top results display.
+            entries: Entry signals series. If provided with include_equity_curve=True,
+                     trades_list with debug fields will be populated.
         """
         try:
             trades = pf.trades
@@ -1786,6 +1792,12 @@ class VectorBTEngine:
             # Only extract for top results when displaying to user
             equity = pf.value().values.tolist() if include_equity_curve else []
 
+            # Trades list with debug fields - SKIP during optimization (expensive!)
+            # Only extract for top results when displaying to user
+            trades_list = []
+            if include_equity_curve and entries is not None:
+                trades_list = self._build_trades_list(pf, direction, tp_percent, sl_percent, entries)
+
             # Calculate composite score
             composite = self._calculate_composite_score(
                 win_rate, profit_factor, total_return, max_dd_pct, total_trades
@@ -1814,6 +1826,7 @@ class VectorBTEngine:
                 beats_buy_hold=vs_buy_hold > 0,
                 composite_score=composite,
                 equity_curve=equity,
+                trades_list=trades_list,
                 params={
                     'tp_percent': tp_percent,
                     'sl_percent': sl_percent,
@@ -1825,6 +1838,197 @@ class VectorBTEngine:
         except Exception as e:
             log(f"[VectorBT] Metric extraction error: {e}", level='WARNING')
             return self._empty_result(strategy, direction, tp_percent, sl_percent)
+
+    def _build_trades_list(
+        self,
+        pf,
+        direction: str,
+        tp_percent: float,
+        sl_percent: float,
+        entries: pd.Series,
+    ) -> List[Dict]:
+        """
+        Build detailed trades list with debug fields for discrepancy debugging.
+
+        Args:
+            pf: VectorBT portfolio object
+            direction: 'long' or 'short'
+            tp_percent: Take profit percentage
+            sl_percent: Stop loss percentage
+            entries: Entry signals series
+
+        Returns:
+            List of trade dictionaries with debug fields
+        """
+        trades_list = []
+
+        try:
+            trades = pf.trades
+            if trades.count() == 0:
+                return trades_list
+
+            # Get trade records as DataFrame
+            records = trades.records_readable
+
+            for idx, trade in records.iterrows():
+                try:
+                    # Get entry and exit indices
+                    entry_idx = int(trade.get('Entry Index', trade.get('entry_idx', 0)))
+                    exit_idx = int(trade.get('Exit Index', trade.get('exit_idx', entry_idx)))
+
+                    # Signal bar is one before entry (when signal fired)
+                    signal_idx = max(0, entry_idx - 1)
+
+                    # Get timestamps from DataFrame index
+                    signal_bar_time = self.df.index[signal_idx] if signal_idx < len(self.df) else None
+                    entry_bar_time = self.df.index[entry_idx] if entry_idx < len(self.df) else None
+                    exit_bar_time = self.df.index[exit_idx] if exit_idx < len(self.df) else None
+
+                    # Get prices
+                    entry_price = float(trade.get('Avg Entry Price', trade.get('entry_price', 0)))
+                    exit_price = float(trade.get('Avg Exit Price', trade.get('exit_price', 0)))
+                    pnl = float(trade.get('PnL', trade.get('pnl', 0)))
+                    pnl_pct = float(trade.get('Return', trade.get('return_', 0))) * 100
+
+                    # Calculate TP/SL prices based on direction
+                    if direction == 'long':
+                        tp_price = entry_price * (1 + tp_percent / 100)
+                        sl_price = entry_price * (1 - sl_percent / 100)
+                    else:  # short
+                        tp_price = entry_price * (1 - tp_percent / 100)
+                        sl_price = entry_price * (1 + sl_percent / 100)
+
+                    # Determine exit type by comparing exit price to TP/SL
+                    exit_type = self._determine_exit_type(
+                        exit_price, entry_price, tp_price, sl_price, direction, exit_idx, len(self.df)
+                    )
+
+                    # Get indicator values at entry for debugging
+                    entry_indicators = self._get_entry_indicators(entry_idx)
+
+                    # Build trade record with debug fields
+                    trade_record = {
+                        # Standard fields
+                        'trade_num': idx + 1,
+                        'direction': direction,
+                        'entry_time': str(entry_bar_time) if entry_bar_time else None,
+                        'exit_time': str(exit_bar_time) if exit_bar_time else None,
+                        'entry': round(entry_price, 2),
+                        'exit': round(exit_price, 2),
+                        'pnl': round(pnl, 2),
+                        'pnl_pct': round(pnl_pct, 2),
+                        'result': 'WIN' if pnl > 0 else 'LOSS',
+
+                        # NEW DEBUG FIELDS
+                        'signal_bar_time': str(signal_bar_time) if signal_bar_time else None,
+                        'entry_bar_time': str(entry_bar_time) if entry_bar_time else None,
+                        'exit_bar_time': str(exit_bar_time) if exit_bar_time else None,
+                        'tp_price': round(tp_price, 2),
+                        'sl_price': round(sl_price, 2),
+                        'exit_type': exit_type,
+                        'entry_indicators': entry_indicators,
+                    }
+
+                    trades_list.append(trade_record)
+
+                except Exception as e:
+                    log(f"[VectorBT] Error processing trade {idx}: {e}", level='DEBUG')
+                    continue
+
+        except Exception as e:
+            log(f"[VectorBT] Error building trades list: {e}", level='WARNING')
+
+        return trades_list
+
+    def _determine_exit_type(
+        self,
+        exit_price: float,
+        entry_price: float,
+        tp_price: float,
+        sl_price: float,
+        direction: str,
+        exit_idx: int,
+        data_length: int,
+    ) -> str:
+        """
+        Determine how the trade exited based on exit price vs TP/SL levels.
+
+        Returns:
+            "TP_HIT", "SL_HIT", "EMERGENCY", or "SIGNAL"
+        """
+        # Small tolerance for price comparison (0.01%)
+        tolerance = 0.0001
+
+        if direction == 'long':
+            # For long: TP is above entry, SL is below entry
+            if exit_price >= tp_price * (1 - tolerance):
+                return "TP_HIT"
+            elif exit_price <= sl_price * (1 + tolerance):
+                return "SL_HIT"
+        else:  # short
+            # For short: TP is below entry, SL is above entry
+            if exit_price <= tp_price * (1 + tolerance):
+                return "TP_HIT"
+            elif exit_price >= sl_price * (1 - tolerance):
+                return "SL_HIT"
+
+        # If exited at end of data, it's an emergency close
+        if exit_idx >= data_length - 1:
+            return "EMERGENCY"
+
+        # Otherwise, exited due to a new signal (position flip)
+        return "SIGNAL"
+
+    def _get_entry_indicators(self, entry_idx: int) -> Dict[str, float]:
+        """
+        Get indicator values at entry bar for debugging.
+
+        Args:
+            entry_idx: Index of entry bar in DataFrame
+
+        Returns:
+            Dictionary with RSI, ATR, ADX, and BB position values
+        """
+        try:
+            if entry_idx < 0 or entry_idx >= len(self.df):
+                return {'rsi': None, 'atr': None, 'adx': None, 'bb_position': None}
+
+            row = self.df.iloc[entry_idx]
+
+            # RSI value
+            rsi = float(row.get('rsi', 0)) if pd.notna(row.get('rsi')) else None
+
+            # ATR value
+            atr = float(row.get('atr', 0)) if pd.notna(row.get('atr')) else None
+
+            # ADX value
+            adx = float(row.get('adx', 0)) if pd.notna(row.get('adx')) else None
+
+            # BB position: 0 = at lower band, 0.5 = middle, 1 = upper band
+            bb_upper = row.get('bb_upper')
+            bb_lower = row.get('bb_lower')
+            close = row.get('close')
+
+            if pd.notna(bb_upper) and pd.notna(bb_lower) and pd.notna(close):
+                bb_range = bb_upper - bb_lower
+                if bb_range > 0:
+                    bb_position = float((close - bb_lower) / bb_range)
+                    bb_position = max(0.0, min(1.0, bb_position))  # Clamp to 0-1
+                else:
+                    bb_position = 0.5
+            else:
+                bb_position = None
+
+            return {
+                'rsi': round(rsi, 2) if rsi is not None else None,
+                'atr': round(atr, 4) if atr is not None else None,
+                'adx': round(adx, 2) if adx is not None else None,
+                'bb_position': round(bb_position, 4) if bb_position is not None else None,
+            }
+
+        except Exception as e:
+            log(f"[VectorBT] Error getting entry indicators at idx {entry_idx}: {e}", level='DEBUG')
+            return {'rsi': None, 'atr': None, 'adx': None, 'bb_position': None}
 
     def _calculate_composite_score(
         self,

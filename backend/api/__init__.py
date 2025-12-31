@@ -14,6 +14,7 @@ from .priority_routes import router as priority_router
 from .db_routes import router as db_router
 from .comparison_routes import router as comparison_router
 from .validation_routes import router as validation_router
+from .tradingview_udf_routes import router as udf_router
 
 
 def register_routes(app):
@@ -27,6 +28,7 @@ def register_routes(app):
     app.include_router(db_router)
     app.include_router(comparison_router)
     app.include_router(validation_router)
+    app.include_router(udf_router)
 
 
 __all__ = [
@@ -39,5 +41,6 @@ __all__ = [
     'db_router',
     'comparison_router',
     'validation_router',
+    'udf_router',
     'register_routes',
 ]
