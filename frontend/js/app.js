@@ -4621,6 +4621,24 @@
 
         let elitePolling = false;
 
+        // PERFORMANCE FIX: Cache parsed validation data at module scope
+        // This is shared between renderEliteTableFiltered and toggleEliteVariants
+        const eliteValidationCache = new Map();
+        function getCachedValidation(strategy) {
+            if (!eliteValidationCache.has(strategy.id)) {
+                try {
+                    const data = JSON.parse(strategy.elite_validation_data || '[]');
+                    // Convert to object keyed by period for O(1) lookup
+                    const periodMap = {};
+                    data.forEach(r => { periodMap[r.period] = r; });
+                    eliteValidationCache.set(strategy.id, periodMap);
+                } catch (e) {
+                    eliteValidationCache.set(strategy.id, {});
+                }
+            }
+            return eliteValidationCache.get(strategy.id);
+        }
+
         // Set up event delegation for elite table (only once)
         let eliteTableDelegationSetup = false;
         function setupEliteTableDelegation() {
@@ -4661,7 +4679,7 @@
                         const pctSign = returnPct >= 0 ? '+' : '';
                         return `<span class="${colorClass}">£${sign}${pnl.toFixed(0)}<br><small style="opacity: 0.7;">(${pctSign}${returnPct.toFixed(1)}%)</small></span>`;
                     };
-                    toggleEliteVariants(row, group, formatPnL);
+                    toggleEliteVariants(row, group, formatPnL, getCachedValidation);
                 }
             });
         }
@@ -4760,23 +4778,8 @@
             currentExpandedEliteRow = null;
             currentExpandedEliteId = null;
 
-            // PERFORMANCE FIX: Cache parsed validation data to avoid repeated JSON.parse
-            // This was parsing the same JSON string multiple times per row (3+ times)
-            const validationCache = new Map();
-            function getCachedValidation(strategy) {
-                if (!validationCache.has(strategy.id)) {
-                    try {
-                        const data = JSON.parse(strategy.elite_validation_data || '[]');
-                        // Convert to object keyed by period for O(1) lookup
-                        const periodMap = {};
-                        data.forEach(r => { periodMap[r.period] = r; });
-                        validationCache.set(strategy.id, periodMap);
-                    } catch (e) {
-                        validationCache.set(strategy.id, {});
-                    }
-                }
-                return validationCache.get(strategy.id);
-            }
+            // Clear validation cache on re-render to pick up new data
+            eliteValidationCache.clear();
 
             // Helper to format P&L cell with validated date
             function formatPnL(periodData) {
@@ -4999,7 +5002,7 @@
                     const groupKey = `${best.strategy_name}|${best.symbol}|${best.timeframe}|${direction}`;
                     if (expandedEliteGroupKey === groupKey) {
                         // Re-expand this group
-                        setTimeout(() => toggleEliteVariants(row, group, formatPnL), 0);
+                        setTimeout(() => toggleEliteVariants(row, group, formatPnL, getCachedValidation), 0);
                     }
                 }
             });
@@ -5009,7 +5012,7 @@
         }
 
         // Toggle elite variants dropdown
-        function toggleEliteVariants(rowElement, group, formatPnL) {
+        function toggleEliteVariants(rowElement, group, formatPnL, getCachedValidation) {
             const best = group[0];
             const direction = best.params?.direction || best.trade_mode || 'long';
             const groupKey = `${best.strategy_name}|${best.symbol}|${best.timeframe}|${direction}`;
@@ -5791,6 +5794,10 @@
                 return;
             }
 
+            // Save values before closing modal (which clears them)
+            const strategyId = currentExportStrategyId;
+            const strategyName = currentExportStrategyName;
+
             closeExportModal();
             showToast(`Exporting ${selected.length} period(s)...`);
 
@@ -5799,7 +5806,7 @@
                 const periodName = cb.value;
                 const months = cb.dataset.months;
                 try {
-                    const url = `/api/export-trades/${currentExportStrategyId}?months=${months}&period_name=${periodName}`;
+                    const url = `/api/export-trades/${strategyId}?months=${months}&period_name=${periodName}`;
                     console.log('Fetching:', url);
                     const response = await fetch(url);
                     if (!response.ok) {
@@ -5808,7 +5815,7 @@
                     }
 
                     const disposition = response.headers.get('Content-Disposition');
-                    let filename = `${currentExportStrategyName}_${periodName}_trades.csv`;
+                    let filename = `${strategyName}_${periodName}_trades.csv`;
                     if (disposition) {
                         const match = disposition.match(/filename="?([^"]+)"?/);
                         if (match) filename = match[1];
