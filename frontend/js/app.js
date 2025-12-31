@@ -57,6 +57,16 @@
         let autonomousHistoryPending = false; // Track if an update is already in flight
 
         // =============================================================================
+        // PERFORMANCE: History tab live update debouncing
+        // Updates history tab when new strategies are found during optimization
+        // =============================================================================
+        let historyLiveUpdateDebounceTimer = null;
+        let historyLiveUpdateLastTime = 0;
+        const HISTORY_LIVE_UPDATE_DEBOUNCE_MS = 3000; // Only update every 3 seconds max
+        let historyLiveUpdatePending = false; // Track if an update is already in flight
+        let lastSeenCompletedCount = 0; // Track completed_count to detect NEW completions
+
+        // =============================================================================
         // PERFORMANCE: Toggle state tracking for optimistic UI updates
         // =============================================================================
         let togglePendingRequest = false; // Prevent double-clicks during pending request
@@ -277,6 +287,21 @@
                         cachedQueueData = message.queue;
                         renderTaskQueueFromCache(message.queue);
                     }
+                    // Trigger history refresh when NEW strategies are saved
+                    // Use completed_count to detect when a new task has finished
+                    if (message.autonomous) {
+                        const currentCompletedCount = message.autonomous.completed_count || 0;
+                        if (currentCompletedCount > lastSeenCompletedCount) {
+                            // A new task completed - check if it found strategies
+                            const recentCompleted = message.autonomous.queue_completed || [];
+                            const latestItem = recentCompleted[0]; // Most recent is first
+                            if (latestItem && latestItem.strategies_found > 0) {
+                                console.log(`[History Live] New strategies saved (${latestItem.strategies_found} from ${latestItem.pair})`);
+                                scheduleHistoryLiveUpdate();
+                            }
+                            lastSeenCompletedCount = currentCompletedCount;
+                        }
+                    }
                     break;
 
                 case 'elite_status':
@@ -285,7 +310,7 @@
 
                 case 'strategy_result':
                     // Individual strategy result from optimization
-                    if (message.result) handleStrategyResult(message.result);
+                    if (message.strategy) handleStrategyResult(message.strategy);
                     break;
 
                 case 'heartbeat':
@@ -415,15 +440,29 @@
 
             // Update cycle progress (shown inline in status bar)
             const cycleProgress = document.getElementById('autonomousCycleProgress');
-            if (cycleProgress && status.running) {
-                const completed = status.completed_count || 0;
-                const total = status.total_combinations || 0;
-                if (total > 0) {
-                    const pct = Math.round((completed / total) * 100);
-                    cycleProgress.textContent = `${completed} / ${total} (${pct}%)`;
-                }
+            const completed = status.completed_count || 0;
+            const total = status.total_combinations || 0;
+            const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
+
+            if (cycleProgress && status.running && total > 0) {
+                cycleProgress.textContent = `${completed} / ${total} (${pct}%)`;
             } else if (cycleProgress) {
                 cycleProgress.textContent = '';
+            }
+
+            // Update OVERALL progress bar (never resets - cumulative)
+            const overallContainer = document.getElementById('overallProgressContainer');
+            const overallProgressBar = document.getElementById('overallProgressBar');
+            const overallProgressText = document.getElementById('overallProgressText');
+
+            if (overallContainer && overallProgressBar && overallProgressText) {
+                if (status.running && total > 0) {
+                    overallContainer.style.display = 'block';
+                    overallProgressBar.style.width = `${pct}%`;
+                    overallProgressText.textContent = `${completed} / ${total} combinations completed (${pct}%)`;
+                } else if (!status.running && !status.enabled) {
+                    overallContainer.style.display = 'none';
+                }
             }
 
             // Update summary stats
@@ -596,7 +635,7 @@
                 const totalPeriods = item.total_periods || 8;
 
                 // Build progress message matching Auto Optimizer format:
-                // "LTCUSDT - 5/8 periods (1 year)"
+                // "BTCUSDT - 5/8 periods (1 year)"
                 const progressMsg = `${item.symbol || '?'} - ${periodIndex}/${totalPeriods} periods (${currentPeriod})`;
 
                 // ETA text with percentage (matching Auto Optimizer style)
@@ -670,6 +709,9 @@
             // Accumulate result
             pendingStrategyResults.push(result);
 
+            // Trigger debounced history update - strategies are now saved to DB
+            scheduleHistoryLiveUpdate();
+
             // Schedule batch render if not already scheduled
             if (strategyResultsScheduled) return;
             strategyResultsScheduled = true;
@@ -711,6 +753,92 @@
                     resultsBody.removeChild(resultsBody.lastChild);
                 }
             });
+        }
+
+        // =============================================================================
+        // HISTORY TAB LIVE UPDATES - Refresh history when new strategies are found
+        // =============================================================================
+
+        /**
+         * Schedule a debounced history refresh when new strategies are detected.
+         * Uses the same debounce pattern as autonomous history updates.
+         */
+        function scheduleHistoryLiveUpdate() {
+            // Skip if history tab hasn't been initialized yet (no data to update)
+            if (!historyInitialized) return;
+
+            const now = Date.now();
+
+            // If enough time has passed and no update is pending, update now
+            if (now - historyLiveUpdateLastTime >= HISTORY_LIVE_UPDATE_DEBOUNCE_MS && !historyLiveUpdatePending) {
+                // Clear any pending debounce timer
+                if (historyLiveUpdateDebounceTimer) {
+                    clearTimeout(historyLiveUpdateDebounceTimer);
+                    historyLiveUpdateDebounceTimer = null;
+                }
+                executeHistoryLiveUpdate();
+            } else if (!historyLiveUpdateDebounceTimer) {
+                // Schedule a debounced update if not already scheduled
+                historyLiveUpdateDebounceTimer = setTimeout(() => {
+                    historyLiveUpdateDebounceTimer = null;
+                    if (!historyLiveUpdatePending) {
+                        executeHistoryLiveUpdate();
+                    }
+                }, HISTORY_LIVE_UPDATE_DEBOUNCE_MS);
+            }
+        }
+
+        /**
+         * Execute the history live update - fetches fresh data from database.
+         */
+        async function executeHistoryLiveUpdate() {
+            historyLiveUpdateLastTime = Date.now();
+            historyLiveUpdatePending = true;
+
+            try {
+                // Fetch fresh strategies from database (includes symbol, timeframe, id)
+                let newStrategies;
+                try {
+                    newStrategies = await loadStrategiesViaWs();
+                } catch (wsError) {
+                    console.log('[History Live] WebSocket failed, falling back to HTTP:', wsError.message);
+                    const response = await fetch('/api/db/strategies?limit=1000');
+                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                    newStrategies = await response.json();
+                }
+
+                // Check if we have new strategies
+                const oldCount = historyStrategies.length;
+                const newCount = newStrategies.length;
+
+                // Update the historyStrategies array
+                historyStrategies = newStrategies;
+
+                // Sort according to current settings
+                sortStrategiesArray();
+
+                // Update count badge
+                const countEl = document.getElementById('history-count');
+                if (countEl) {
+                    countEl.textContent = `${historyStrategies.length} strategies`;
+                    countEl.className = 'status-badge ' + (historyStrategies.length > 0 ? 'success' : 'neutral');
+                }
+
+                // Only re-render if History tab is visible to avoid unnecessary DOM work
+                const historyTab = document.getElementById('history-tab');
+                if (historyTab && historyTab.style.display !== 'none') {
+                    renderHistoryTable();
+
+                    // Log update if count changed
+                    if (newCount !== oldCount) {
+                        console.log(`[History Live] Updated: ${oldCount} -> ${newCount} strategies`);
+                    }
+                }
+            } catch (error) {
+                console.error('[History Live] Failed to update:', error);
+            } finally {
+                historyLiveUpdatePending = false;
+            }
         }
 
         // =============================================================================
@@ -946,12 +1074,12 @@
         // === TOOLS TAB FUNCTIONS ===
 
         async function clearDatabase() {
-            if (!confirm('Are you sure you want to delete ALL strategies from the database?\n\nThis will remove:\n- All Strategy History\n- All Elite Strategies\n- All validation data\n\nThis action cannot be undone!')) {
+            if (!confirm('COMPLETE DATABASE NUKE\n\nThis will remove EVERYTHING:\n- All Strategy History\n- All Elite Strategies\n- All validation data\n- All optimization tracking\n- Reset Priority Queue to defaults\n\nThis action cannot be undone!')) {
                 return;
             }
 
             // Double confirmation
-            if (!confirm('FINAL WARNING: This will permanently delete all strategy data. Continue?')) {
+            if (!confirm('FINAL WARNING: This will permanently delete ALL data and reset to fresh defaults. Continue?')) {
                 return;
             }
 
@@ -960,11 +1088,13 @@
                 const result = await response.json();
 
                 if (response.ok) {
-                    alert(`Database cleared successfully!\n\nDeleted ${result.deleted || 0} strategies.`);
+                    alert(`Database NUKED!\n\n${result.deleted || 0} strategies deleted.\nPriority settings reset to defaults.`);
                     refreshDbStats();
-                    // Refresh other tabs if they were loaded
+                    // Refresh all tabs
                     if (historyInitialized) loadHistoryStrategies();
                     if (eliteInitialized) loadEliteData();
+                    // Reload priority lists with fresh defaults
+                    await loadPriorityLists();
                 } else {
                     alert('Error clearing database: ' + (result.error || 'Unknown error'));
                 }
@@ -1179,6 +1309,11 @@
                 loadPriorityLists(); // Reload on error
             }
         }
+        // Expose drag handlers to global scope for inline events
+        window.handleDragStart = handleDragStart;
+        window.handleDragEnd = handleDragEnd;
+        window.handleDragOver = handleDragOver;
+        window.handleDrop = handleDrop;
 
         async function togglePriorityListItem(listType, itemId) {
             try {
@@ -1188,6 +1323,8 @@
                 console.error('Error toggling item:', e);
             }
         }
+        // Expose to global scope for inline onclick
+        window.togglePriorityListItem = togglePriorityListItem;
 
         function updateCombinationCount() {
             const enabledPairs = priorityPairs.filter(p => p.enabled).length;
@@ -2258,20 +2395,43 @@
             return now.toTimeString().split(' ')[0];
         }
         
-        function addLog(message, type = 'normal') {
+        // Log categories with their display names
+        const LOG_CATEGORIES = {
+            data: 'DATA',
+            optimization: 'OPT',
+            elite: 'ELITE',
+            autonomous: 'AUTO',
+            error: 'ERROR',
+            success: 'OK',
+            websocket: 'WS',
+            strategy: 'STRAT',
+            system: 'SYS',
+            dedup: 'DEDUP',
+        };
+
+        function addLog(message, category = 'system') {
             const container = document.getElementById('logContainer');
             const entry = document.createElement('div');
-            entry.className = 'log-entry';
 
-            // Style based on type
-            if (type === 'detail') {
+            // Handle legacy 'type' parameter
+            if (category === 'normal') category = 'system';
+            if (category === 'detail') {
+                entry.className = 'log-entry';
                 entry.style.color = '#888';
                 entry.style.fontSize = '0.85em';
                 entry.style.marginLeft = '20px';
                 entry.innerHTML = message;
-            } else {
-                entry.innerHTML = `<span class="log-time">[${formatTime()}]</span> ${message}`;
+                container.appendChild(entry);
+                container.scrollTop = container.scrollHeight;
+                return;
             }
+
+            // Apply category class for background color
+            entry.className = `log-entry log-${category}`;
+
+            // Build log entry with category badge
+            const categoryLabel = LOG_CATEGORIES[category] || category.toUpperCase();
+            entry.innerHTML = `<span class="log-time">[${formatTime()}]</span><span class="log-category ${category}">${categoryLabel}</span>${message}`;
 
             container.appendChild(entry);
             container.scrollTop = container.scrollHeight;
@@ -2627,13 +2787,8 @@
                 { value: 'BNBUSDT', label: 'BNB/USDT (Binance Coin)' },
                 { value: 'XRPUSDT', label: 'XRP/USDT (Ripple)' },
                 { value: 'SOLUSDT', label: 'SOL/USDT (Solana)' },
-                { value: 'ADAUSDT', label: 'ADA/USDT (Cardano)' },
                 { value: 'DOGEUSDT', label: 'DOGE/USDT (Dogecoin)' },
-                { value: 'DOTUSDT', label: 'DOT/USDT (Polkadot)' },
-                { value: 'MATICUSDT', label: 'MATIC/USDT (Polygon)' },
-                { value: 'LTCUSDT', label: 'LTC/USDT (Litecoin)' },
-                { value: 'AVAXUSDT', label: 'AVAX/USDT (Avalanche)' },
-                { value: 'LINKUSDT', label: 'LINK/USDT (Chainlink)' },
+                { value: 'ADAUSDT', label: 'ADA/USDT (Cardano)' },
             ],
         };
 
@@ -5359,37 +5514,51 @@
 
             // Completed items (most recent first, show up to 3)
             const completedToShow = (queue.completed || []).slice(0, 3);
-            completedToShow.reverse().forEach(item => {
-                const statusIcon = item.status === 'completed' ? '✓' : item.status === 'skipped' ? '⏭' : '✗';
-                const statusClass = item.status;
-                const strategiesFound = item.strategies_found ?? 0;
-                const resultClass = strategiesFound > 0 ? 'has-strategies' : '';
-                const resultText = item.status === 'completed'
-                    ? `${strategiesFound} strategies`
-                    : item.status === 'skipped' ? 'Skipped' : 'Error';
-
+            if (completedToShow.length > 0) {
                 html += `
-                    <div class="task-queue-item ${statusClass}">
-                        <span class="task-status-icon ${statusClass}">${statusIcon}</span>
-                        <span>${item.pair}</span>
-                        <span>${item.period}</span>
-                        <span>${item.timeframe}</span>
-                        <span>${item.granularity}</span>
-                        <span class="task-result ${resultClass}">${resultText}</span>
+                    <div style="padding: 0.5rem 1rem; background: rgba(34, 197, 94, 0.05); border-bottom: 1px solid var(--border-color); font-size: 0.75rem; color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;">
+                        Recently Completed (${completedToShow.length})
                     </div>
                 `;
-            });
+                completedToShow.reverse().forEach(item => {
+                    const statusIcon = item.status === 'completed' ? '✓' : item.status === 'skipped' ? '⏭' : '✗';
+                    const statusClass = item.status;
+                    const strategiesFound = item.strategies_found ?? 0;
+                    const resultClass = strategiesFound > 0 ? 'has-strategies' : '';
+                    const resultText = item.status === 'completed'
+                        ? `${strategiesFound} strategies`
+                        : item.status === 'skipped' ? 'Skipped' : 'Error';
+
+                    html += `
+                        <div class="task-queue-item ${statusClass}">
+                            <span class="task-status-icon ${statusClass}">${statusIcon}</span>
+                            <span>${item.pair}</span>
+                            <span>${item.period}</span>
+                            <span>${item.timeframe}</span>
+                            <span>${item.granularity}</span>
+                            <span class="task-result ${resultClass}">${resultText}</span>
+                        </div>
+                    `;
+                });
+            }
 
             // PARALLEL: Show all running items with percentage and ETA
             const runningItems = queue.running || [];
             if (runningItems.length > 0) {
+                // Add section header for running tasks
+                html += `
+                    <div style="padding: 0.5rem 1rem; background: rgba(34, 197, 94, 0.1); border-bottom: 1px solid var(--border-color); font-size: 0.75rem; color: var(--success); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;">
+                        Running Tasks (${runningItems.length}) - Each bar shows progress for that specific combination
+                    </div>
+                `;
+
                 runningItems.forEach((item, idx) => {
                     const progress = item.progress || 0;
 
                     // Build progress message with trial info and speed
                     let progressMsg = '';
                     if (item.trial_current > 0 && item.trial_total > 0) {
-                        progressMsg = `${item.pair} - ${item.trial_current.toLocaleString()}/${item.trial_total.toLocaleString()}`;
+                        progressMsg = `${item.trial_current.toLocaleString()}/${item.trial_total.toLocaleString()} params`;
                         // Add speed if available
                         if (item.comb_per_sec > 0) {
                             progressMsg += ` (${item.comb_per_sec.toLocaleString()}/sec)`;
@@ -5426,18 +5595,26 @@
             }
 
             // Pending items
-            (queue.pending || []).forEach(item => {
+            const pendingItems = queue.pending || [];
+            if (pendingItems.length > 0) {
                 html += `
-                    <div class="task-queue-item pending">
-                        <span class="task-status-icon pending">○</span>
-                        <span>${item.pair}</span>
-                        <span>${item.period}</span>
-                        <span>${item.timeframe}</span>
-                        <span>${item.granularity}</span>
-                        <span class="task-result">Pending</span>
+                    <div style="padding: 0.5rem 1rem; background: var(--bg-secondary); border-bottom: 1px solid var(--border-color); font-size: 0.75rem; color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;">
+                        Up Next (${pendingItems.length} shown)
                     </div>
                 `;
-            });
+                pendingItems.forEach(item => {
+                    html += `
+                        <div class="task-queue-item pending">
+                            <span class="task-status-icon pending">○</span>
+                            <span>${item.pair}</span>
+                            <span>${item.period}</span>
+                            <span>${item.timeframe}</span>
+                            <span>${item.granularity}</span>
+                            <span class="task-result">Pending</span>
+                        </div>
+                    `;
+                });
+            }
 
             // Show remaining count and parallel info
             let footerText = '';

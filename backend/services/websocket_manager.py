@@ -5,6 +5,7 @@ Manages WebSocket connections for real-time UI updates.
 Extracted from main.py for better modularity.
 """
 import asyncio
+import hashlib
 import json
 import time
 import threading
@@ -35,6 +36,41 @@ def serialize_for_json(data: Any) -> Any:
     return data
 
 
+# Fields to exclude from payload hash comparison (volatile/timestamp fields)
+_VOLATILE_FIELDS = frozenset({
+    "timestamp", "updated_at", "created_at", "last_update", "last_updated",
+    "elapsed_time", "elapsed", "duration", "time_remaining", "eta",
+    "start_time", "end_time", "current_time"
+})
+
+
+def _strip_volatile_fields(data: Any) -> Any:
+    """
+    Recursively remove volatile fields (timestamps, elapsed times) from data
+    for hash comparison. These fields change frequently but don't represent
+    meaningful state changes.
+    """
+    if isinstance(data, dict):
+        return {k: _strip_volatile_fields(v) for k, v in data.items()
+                if k not in _VOLATILE_FIELDS}
+    elif isinstance(data, list):
+        return [_strip_volatile_fields(item) for item in data]
+    return data
+
+
+def _compute_payload_hash(data: Dict) -> str:
+    """
+    Compute a hash of the payload for change detection.
+    Excludes volatile fields like timestamps that change frequently.
+    """
+    # Strip volatile fields before hashing
+    stable_data = _strip_volatile_fields(data)
+    # Create deterministic JSON string
+    payload_str = json.dumps(stable_data, sort_keys=True, default=str)
+    # Use MD5 for speed (not security-critical)
+    return hashlib.md5(payload_str.encode()).hexdigest()
+
+
 class WebSocketManager:
     """
     Manages WebSocket connections for real-time UI updates.
@@ -55,6 +91,12 @@ class WebSocketManager:
         self._sync_throttle_lock = threading.Lock()  # Thread-safe lock for sync throttling
         self._throttled_types = {"autonomous_status", "elite_status", "optimization_status"}  # Types to throttle
         self._main_loop = None  # Store reference to main event loop
+
+        # Dirty flag system: track last payload hash per message type to skip redundant broadcasts
+        self._last_payload_hash: Dict[str, str] = {}  # message_type -> hash (async)
+        self._sync_last_payload_hash: Dict[str, str] = {}  # message_type -> hash (sync)
+        # Types that should be deduplicated (skip if payload unchanged)
+        self._dedupe_types = {"autonomous_status", "elite_status", "optimization_status", "data_status"}
 
     def set_main_loop(self, loop):
         """Store reference to main event loop for cross-thread broadcasts."""
@@ -86,14 +128,37 @@ class WebSocketManager:
             log(f"[WebSocket] Error sending to client: {e}", level='WARNING')
             return False
 
+    async def _send_to_connection(self, connection: WebSocket, message: Dict) -> Optional[WebSocket]:
+        """
+        Send message to a single connection.
+        Returns None on success, or the connection on failure (for cleanup).
+        """
+        try:
+            await connection.send_json(message)
+            return None  # Success
+        except Exception:
+            return connection  # Failed - needs cleanup
+
     async def broadcast(self, message_type: str, data: Dict) -> None:
         """
-        Broadcast a message to all connected clients.
+        Broadcast a message to all connected clients in parallel.
         Thread-safe - can be called from sync code via broadcast_sync.
         Throttles frequent message types to reduce network/UI load.
+        Deduplicates payloads to skip broadcasts when nothing meaningful changed.
+        Uses asyncio.gather for parallel sends so slow clients don't block others.
         """
         if not self.active_connections:
             return
+
+        # Apply deduplication for message types that broadcast frequently
+        # This check happens BEFORE throttling to catch duplicates early
+        if message_type in self._dedupe_types:
+            payload_hash = _compute_payload_hash(data)
+            last_hash = self._last_payload_hash.get(message_type)
+            if payload_hash == last_hash:
+                # Payload unchanged - skip broadcast entirely
+                return
+            self._last_payload_hash[message_type] = payload_hash
 
         # Apply throttling for frequent message types with atomic check-and-update
         if message_type in self._throttled_types:
@@ -110,17 +175,18 @@ class WebSocketManager:
         async with self._lock:
             connections_copy = list(self.active_connections)
 
-        disconnected = []
-        sent_count = 0
-        for connection in connections_copy:
-            try:
-                await connection.send_json(message)
-                sent_count += 1
-            except Exception as e:
-                # Client disconnected mid-broadcast - this is normal
-                error_msg = str(e) if str(e) else type(e).__name__
-                log(f"[WebSocket] Client disconnected during {message_type}: {error_msg}", level='DEBUG')
-                disconnected.append(connection)
+        if not connections_copy:
+            return
+
+        # Send to all clients in parallel - slow clients don't block others
+        results = await asyncio.gather(
+            *[self._send_to_connection(conn, message) for conn in connections_copy],
+            return_exceptions=True
+        )
+
+        # Collect failed connections (non-None results that aren't exceptions)
+        disconnected = [r for r in results if r is not None and not isinstance(r, Exception)]
+        sent_count = len(connections_copy) - len(disconnected)
 
         if sent_count > 0:
             log(f"[WebSocket] Broadcast {message_type} completed: {sent_count} clients")
@@ -135,12 +201,23 @@ class WebSocketManager:
         """
         Thread-safe broadcast for use from synchronous code.
         Uses stored main event loop for reliable cross-thread communication.
-        Includes synchronous throttling to prevent message flooding.
+        Includes synchronous throttling and deduplication to prevent message flooding.
         """
         try:
             # Check if we have clients to broadcast to
             if not self.active_connections:
                 return  # No clients connected
+
+            # SYNC DEDUPLICATION CHECK - stops redundant broadcasts at the source
+            # This runs in the caller's thread before any async scheduling
+            if message_type in self._dedupe_types:
+                with self._sync_throttle_lock:  # Reuse throttle lock for atomic check
+                    payload_hash = _compute_payload_hash(data)
+                    last_hash = self._sync_last_payload_hash.get(message_type)
+                    if payload_hash == last_hash:
+                        # Payload unchanged - skip broadcast entirely
+                        return
+                    self._sync_last_payload_hash[message_type] = payload_hash
 
             # SYNC THROTTLE CHECK - stops flooding at the source
             if message_type in self._throttled_types:

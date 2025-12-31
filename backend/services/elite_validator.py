@@ -950,6 +950,10 @@ async def start_auto_elite_validation():
             # Use async database to avoid blocking the event loop
             pending_count = await AsyncDatabase.get_pending_validation_count()
 
+            # Debug: also check elite counts for comparison
+            elite_counts = await AsyncDatabase.get_elite_counts()
+            log(f"[Elite Validation] pending_count={pending_count}, elite_counts={elite_counts}")
+
             if pending_count > 0:
                 log(f"[Elite Validation] Found {pending_count} pending strategies")
                 app_state.update_elite_status(
@@ -1004,8 +1008,8 @@ async def start_auto_elite_validation():
                     app_state.update_elite_status(
                         message="All periods fresh, waiting..."
                     )
-                    log(f"[Elite Validation] All {len(validated)} strategies fresh, checking in 1 hour")
-                    await asyncio.sleep(3600)
+                    log(f"[Elite Validation] All {len(validated)} strategies fresh, checking in 5 minutes")
+                    await asyncio.sleep(300)
 
         except Exception as e:
             log(f"[Elite Validation] Error: {e}", level='ERROR')

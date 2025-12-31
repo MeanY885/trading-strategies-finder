@@ -70,7 +70,7 @@ class UnifiedOptimizationRequest(BaseModel):
     )
 
     # Core parameters
-    symbol: str = Field(default="BTCGBP", description="Trading pair symbol")
+    symbol: str = Field(default="BTCUSDT", description="Trading pair symbol")
     timeframe: str = Field(default="15m", description="Candlestick timeframe")
     exchange: str = Field(default="BINANCE", description="Exchange name")
     capital: float = Field(default=1000.0, ge=0, description="Starting capital for backtesting")
@@ -523,8 +523,11 @@ async def get_trades_csv(rank: int = 1):
 
 @router.get("/export-trades/{strategy_id}")
 async def export_trades_from_db(strategy_id: int):
-    """Export trades for a strategy from the database."""
+    """Export trades for a strategy by regenerating them from stored parameters."""
     from strategy_database import get_strategy_db
+    from data_fetcher import BinanceDataFetcher
+    from services.vectorbt_engine import VectorBTEngine, is_vectorbt_available
+    import json
 
     try:
         db = get_strategy_db()
@@ -532,10 +535,76 @@ async def export_trades_from_db(strategy_id: int):
         if not strategy:
             raise HTTPException(status_code=404, detail="Strategy not found")
 
-        trades = strategy.get("trades_list", []) or []
+        # Extract strategy parameters
+        params = strategy.get("params", {})
+        if isinstance(params, str):
+            try:
+                params = json.loads(params)
+            except:
+                params = {}
+
+        symbol = strategy.get("symbol", "BTCUSDT")
+        timeframe = strategy.get("timeframe", "15m")
+        tp_percent = strategy.get("tp_percent", 2.0)
+        sl_percent = strategy.get("sl_percent", 5.0)
+        strategy_name = strategy.get("strategy_name", "unknown")
+        direction = params.get("direction", strategy.get("trade_mode", "long"))
+
+        # Check for supported pairs (Binance USDT pairs only)
+        supported_quotes = ['USDT', 'USDC', 'BUSD']
+        if not any(symbol.endswith(q) for q in supported_quotes):
+            raise HTTPException(status_code=400, detail=f"Cannot export trades for {symbol} - only USDT/USDC/BUSD pairs supported")
+
+        # Convert timeframe to minutes
+        if 'h' in timeframe:
+            tf_minutes = int(timeframe.replace('h', '')) * 60
+        else:
+            tf_minutes = int(timeframe.replace('m', ''))
+
+        # Fetch data (use 3 months for trade regeneration)
+        fetcher = BinanceDataFetcher()
+        df = await fetcher.fetch_ohlcv(pair=symbol, interval=tf_minutes, months=3)
+
+        if len(df) < 50:
+            raise HTTPException(status_code=400, detail="Insufficient data to regenerate trades")
+
+        # Run backtest to get trades
+        trades = []
+        if is_vectorbt_available():
+            try:
+                vbt_engine = VectorBTEngine(
+                    df,
+                    initial_capital=1000.0,
+                    position_size_pct=100.0,
+                    commission_pct=0.1
+                )
+                result = vbt_engine.run_single_backtest(
+                    strategy=strategy_name,
+                    direction=direction,
+                    tp_percent=tp_percent,
+                    sl_percent=sl_percent
+                )
+                trades = result.trades_list if hasattr(result, 'trades_list') and result.trades_list else []
+            except Exception as e:
+                log(f"[Export Trades] VectorBT error: {e}", level='WARNING')
 
         if not trades:
-            raise HTTPException(status_code=404, detail="No trades available for this strategy")
+            # Fallback to StrategyEngine
+            from strategy_engine import StrategyEngine
+            engine = StrategyEngine(df)
+            result = engine.backtest(
+                strategy=strategy_name,
+                direction=direction,
+                tp_percent=tp_percent,
+                sl_percent=sl_percent,
+                initial_capital=1000.0,
+                position_size_pct=100.0,
+                commission_pct=0.1
+            )
+            trades = result.trades_list if hasattr(result, 'trades_list') and result.trades_list else []
+
+        if not trades:
+            raise HTTPException(status_code=404, detail=f"No trades generated for this strategy (0 signals in last 3 months)")
 
         # Create CSV
         output = io.StringIO()
@@ -548,7 +617,7 @@ async def export_trades_from_db(strategy_id: int):
         for i, trade in enumerate(trades):
             writer.writerow({
                 "trade_num": i + 1,
-                "direction": trade.get("direction", "LONG"),
+                "direction": trade.get("direction", direction.upper()),
                 "entry_time": trade.get("entry_time", ""),
                 "entry_price": trade.get("entry_price", 0),
                 "exit_time": trade.get("exit_time", ""),
@@ -557,8 +626,8 @@ async def export_trades_from_db(strategy_id: int):
                 "pnl_pct": round(trade.get("pnl_pct", 0), 2)
             })
 
-        strategy_name = strategy.get("strategy_name", "strategy").replace(" ", "_")
-        filename = f"trades_{strategy_id}_{strategy_name}.csv"
+        safe_name = strategy_name.replace(" ", "_")
+        filename = f"trades_{strategy_id}_{safe_name}.csv"
 
         return StreamingResponse(
             iter([output.getvalue()]),
@@ -569,6 +638,7 @@ async def export_trades_from_db(strategy_id: int):
     except HTTPException:
         raise
     except Exception as e:
+        log(f"[Export Trades] Error: {e}", level='ERROR')
         raise HTTPException(status_code=500, detail=str(e))
 
 

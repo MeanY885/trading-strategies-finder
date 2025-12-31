@@ -11,9 +11,11 @@ Features:
 - Period boundary detection for re-optimization
 """
 import asyncio
+import atexit
 import json
 import time
 import re
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Callable
 import pandas as pd
@@ -68,6 +70,33 @@ orphan_cleaner_instance: Optional[OrphanCleaner] = None
 
 # Interruptible sleep for cycle waiting
 cycle_sleeper: Optional[InterruptibleSleep] = None
+
+# Dedicated thread pool for database operations to avoid blocking async event loop
+# Uses 4 workers to handle concurrent DB queries without overwhelming the connection pool
+_db_executor: Optional[ThreadPoolExecutor] = None
+
+
+def _get_db_executor() -> ThreadPoolExecutor:
+    """Get or create the database executor."""
+    global _db_executor
+    if _db_executor is None:
+        _db_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="db_")
+        log("[Autonomous Optimizer] Created database executor (4 workers)")
+    return _db_executor
+
+
+def shutdown_db_executor():
+    """Shutdown the database executor. Call during application shutdown."""
+    global _db_executor
+    if _db_executor is not None:
+        log("[Autonomous Optimizer] Shutting down database executor...")
+        _db_executor.shutdown(wait=True)
+        _db_executor = None
+        log("[Autonomous Optimizer] Database executor shutdown complete")
+
+
+# Register shutdown handler
+atexit.register(shutdown_db_executor)
 
 
 def init_async_primitives():
@@ -473,17 +502,22 @@ async def run_single_optimization(
     timeframe = combo["timeframe"]
     granularity = combo["granularity"]
 
-    # Look up historical average duration for ETA estimation
+    # Look up historical average duration for ETA estimation (run in executor to avoid blocking)
     historical_avg_duration = None
     try:
         from strategy_database import get_strategy_db
         db = get_strategy_db()
-        historical_avg_duration = db.get_average_duration(
-            pair=pair,
-            period_label=period["label"],
-            timeframe_label=timeframe["label"],
-            granularity_label=granularity["label"]
-        )
+        loop = asyncio.get_running_loop()
+
+        def _get_avg_duration():
+            return db.get_average_duration(
+                pair=pair,
+                period_label=period["label"],
+                timeframe_label=timeframe["label"],
+                granularity_label=granularity["label"]
+            )
+
+        historical_avg_duration = await loop.run_in_executor(_get_db_executor(), _get_avg_duration)
         if historical_avg_duration:
             log(f"[Autonomous Optimizer] Historical avg duration for {pair} {timeframe['label']}: {historical_avg_duration}s")
     except Exception as e:
@@ -834,6 +868,50 @@ async def process_single_combination(
         if not app_state.is_autonomous_enabled():
             return "aborted"
 
+        # SMART DEDUPLICATION: Skip if a finer granularity already completed
+        # Finer granularity (higher n_trials) tests ALL values that coarser would test
+        try:
+            from strategy_database import get_strategy_db
+            db = get_strategy_db()
+            finest_completed = db.get_finest_completed_granularity(
+                pair=combo["pair"],
+                period_label=combo["period"]["label"],
+                timeframe_label=combo["timeframe"]["label"]
+            )
+            current_trials = combo["granularity"]["n_trials"]
+
+            if finest_completed > 0 and current_trials <= finest_completed:
+                log(f"[Smart Dedup] SKIPPING {combo['pair']} {combo['timeframe']['label']} {combo['granularity']['label']} "
+                    f"- finer granularity already completed (n_trials: {current_trials} <= {finest_completed})")
+
+                # Record as skipped in status - increment BOTH skipped and completed
+                # (skipped items are still "done" from a queue progress perspective)
+                status = app_state.get_autonomous_status()
+                app_state.update_autonomous_status(
+                    skipped_count=status.get("skipped_count", 0) + 1,
+                    completed_count=status.get("completed_count", 0) + 1,  # Progress bar moves forward
+                )
+
+                # Add to completed queue so it shows in UI
+                queue_completed = status.get("queue_completed", [])
+                queue_completed.insert(0, {
+                    "index": combo_index,
+                    "pair": combo["pair"],
+                    "period": combo["period"]["label"],
+                    "timeframe": combo["timeframe"]["label"],
+                    "granularity": combo["granularity"]["label"],
+                    "completed_at": datetime.now().isoformat(),
+                    "status": "skipped",
+                    "strategies_found": 0,
+                    "skip_reason": f"Finer granularity ({finest_completed} trials) already done",
+                })
+                app_state.update_autonomous_status(queue_completed=queue_completed[:20])
+
+                return "skipped_dedup"
+        except Exception as e:
+            log(f"[Smart Dedup] Error checking granularity: {e}", level='WARNING')
+            # Continue with optimization if check fails
+
         # Wait for manual optimizer if running (with timeout)
         MANUAL_WAIT_TIMEOUT = 600  # 10 minutes max wait
         wait_start = time.time()
@@ -896,19 +974,24 @@ async def process_single_combination(
                     last_completed_at=completed_at.isoformat()
                 )
 
-                # Record in database with duration
+                # Record in database with duration (run in executor to avoid blocking)
                 try:
                     from strategy_database import get_strategy_db
                     db = get_strategy_db()
-                    db.record_completed_optimization(
-                        pair=combo["pair"],
-                        period_label=combo["period"]["label"],
-                        timeframe_label=combo["timeframe"]["label"],
-                        granularity_label=combo["granularity"]["label"],
-                        strategies_found=strategies_found,
-                        source=combo.get("source", "binance"),
-                        duration_seconds=duration_seconds
-                    )
+                    loop = asyncio.get_running_loop()
+
+                    def _record_completion():
+                        db.record_completed_optimization(
+                            pair=combo["pair"],
+                            period_label=combo["period"]["label"],
+                            timeframe_label=combo["timeframe"]["label"],
+                            granularity_label=combo["granularity"]["label"],
+                            strategies_found=strategies_found,
+                            source=combo.get("source", "binance"),
+                            duration_seconds=duration_seconds
+                        )
+
+                    await loop.run_in_executor(_get_db_executor(), _record_completion)
                     log(f"[Parallel Optimizer] Completed in {duration_seconds}s: {combo['pair']} {combo['timeframe']['label']}")
                 except Exception as e:
                     log(f"[Parallel Optimizer] Error recording completion: {e}", level='WARNING')
@@ -1076,17 +1159,35 @@ async def start_autonomous_optimizer(thread_pool):
                     gc.collect()
                     continue
 
-                # Re-check which items need processing (period boundaries may have crossed)
-                def recheck_freshness():
+                # REBUILD combinations list to pick up any priority changes, then check freshness
+                def rebuild_and_check_freshness():
                     try:
                         from strategy_database import get_strategy_db
                         db = get_strategy_db()
-                        return find_resume_index(combinations, db)
+                        # Rebuild combinations from current priority settings
+                        new_combinations = build_optimization_combinations()
+                        log(f"[Parallel Optimizer] Rebuilt {len(new_combinations)} combinations from priority settings")
+                        resume_idx = find_resume_index(new_combinations, db)
+                        return new_combinations, resume_idx
                     except Exception as e:
-                        log(f"[Parallel Optimizer] Error rechecking freshness: {e}", level='ERROR')
-                        return 0
+                        log(f"[Parallel Optimizer] Error rebuilding combinations: {e}", level='ERROR')
+                        return None, 0
 
-                next_index = await loop.run_in_executor(thread_pool, recheck_freshness)
+                new_combinations, next_index = await loop.run_in_executor(thread_pool, rebuild_and_check_freshness)
+
+                # Update combinations if successfully rebuilt
+                if new_combinations is not None:
+                    combinations = new_combinations
+                    # Update app state with new combinations list
+                    app_state.update_autonomous_status(
+                        total_combinations=len(combinations),
+                        combinations_list=[{
+                            "pair": c["pair"],
+                            "period": c["period"]["label"],
+                            "timeframe": c["timeframe"]["label"],
+                            "granularity": c["granularity"]["label"],
+                        } for c in combinations]
+                    )
 
                 if next_index >= len(combinations):
                     # All combinations still fresh - wait before checking again

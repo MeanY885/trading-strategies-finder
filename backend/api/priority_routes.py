@@ -11,6 +11,8 @@ from pydantic import BaseModel
 
 from config import AUTONOMOUS_CONFIG
 from strategy_database import get_strategy_db
+from services.cache import invalidate_priority_cache
+from logging_config import log
 
 router = APIRouter(prefix="/api/priority", tags=["priority"])
 
@@ -121,6 +123,9 @@ def add_priority_item(request: PriorityAddRequest):
     if item_id is None:
         return {"success": False, "message": "Combination already exists in priority list"}
 
+    invalidate_priority_cache()
+    log(f"[Priority] Added legacy item - cache invalidated")
+
     return {
         "success": True,
         "id": item_id,
@@ -137,6 +142,10 @@ def delete_priority_item(item_id: int):
     db = get_strategy_db()
     success = db.delete_priority_item(item_id)
 
+    if success:
+        invalidate_priority_cache()
+        log(f"[Priority] Deleted legacy item {item_id} - cache invalidated")
+
     return {"success": success, "message": f"Removed item {item_id}" if success else "Item not found"}
 
 
@@ -148,6 +157,10 @@ def reorder_priority(request: PriorityReorderRequest):
 
     db = get_strategy_db()
     success = db.reorder_priority_items(request.order)
+
+    if success:
+        invalidate_priority_cache()
+        log(f"[Priority] Reordered legacy items - cache invalidated")
 
     return {"success": success, "message": f"Reordered {len(request.order)} items"}
 
@@ -163,6 +176,9 @@ def toggle_priority_item(item_id: int):
 
     if new_status is None:
         raise HTTPException(status_code=404, detail="Item not found")
+
+    invalidate_priority_cache()
+    log(f"[Priority] Toggled legacy item {item_id} - cache invalidated")
 
     return {"success": True, "enabled": new_status}
 
@@ -247,6 +263,9 @@ def clear_priority():
     db = get_strategy_db()
     count = db.clear_priority_items()
 
+    invalidate_priority_cache()
+    log(f"[Priority] Cleared {count} legacy items - cache invalidated")
+
     return {"success": True, "deleted": count}
 
 
@@ -305,6 +324,10 @@ def reorder_priority_list(list_type: str, request: PriorityListReorderRequest):
     db = get_strategy_db()
     success = db.reorder_priority_list_new(list_type, request.order)
 
+    if success:
+        invalidate_priority_cache()
+        log(f"[Priority] Reordered {list_type} - cache invalidated")
+
     return {"success": success}
 
 
@@ -322,6 +345,9 @@ def toggle_priority_list_item(list_type: str, item_id: int):
 
     if new_status is None:
         raise HTTPException(status_code=404, detail="Item not found")
+
+    invalidate_priority_cache()
+    log(f"[Priority] Toggled {list_type} item {item_id} to {new_status} - cache invalidated")
 
     return {"success": True, "enabled": new_status}
 
@@ -352,6 +378,9 @@ def reset_priority_defaults():
     db.reset_priority_timeframes(config["timeframes"])
     db.reset_priority_granularities(config["granularities"])
 
+    invalidate_priority_cache()
+    log("[Priority] Reset to defaults - cache invalidated")
+
     return {"success": True}
 
 
@@ -363,6 +392,10 @@ def enable_all_priority():
 
     db = get_strategy_db()
     db.enable_all_priority_items()
+
+    invalidate_priority_cache()
+    log("[Priority] Enabled all items - cache invalidated")
+
     return {"success": True}
 
 
@@ -374,4 +407,8 @@ def disable_all_priority():
 
     db = get_strategy_db()
     db.disable_all_priority_items()
+
+    invalidate_priority_cache()
+    log("[Priority] Disabled all items - cache invalidated")
+
     return {"success": True}

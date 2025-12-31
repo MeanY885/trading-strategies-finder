@@ -560,6 +560,46 @@ class StrategyDatabase:
             cursor = conn.cursor()
 
             try:
+                # Build set of existing strategy keys for batch duplicate detection
+                existing_keys = set()
+
+                if skip_duplicates and results:
+                    # Pre-extract keys from all results for batch lookup
+                    # Key format: (strategy_name, symbol, timeframe, tp_percent_rounded, sl_percent_rounded,
+                    #              total_trades, win_rate_rounded, total_pnl_rounded, profit_factor_rounded)
+                    strategy_names = set()
+                    for result in results:
+                        strategy_name = getattr(result, 'strategy_name', 'unknown')
+                        strategy_names.add(strategy_name)
+
+                    # Single query to fetch all potentially matching strategies
+                    # We fetch more columns than needed and filter in Python for exact matching
+                    if strategy_names:
+                        cursor.execute('''
+                            SELECT strategy_name, symbol, timeframe, tp_percent, sl_percent,
+                                   total_trades, win_rate, total_pnl, profit_factor
+                            FROM strategies
+                            WHERE strategy_name IN %s
+                              AND symbol = %s
+                              AND timeframe = %s
+                        ''', (tuple(strategy_names), symbol, timeframe))
+
+                        # Build set of existing keys with rounded values for comparison
+                        for row in cursor.fetchall():
+                            # Round to 2 decimal places for comparison (matches ABS() < 0.01 logic)
+                            key = (
+                                row[0],  # strategy_name
+                                row[1],  # symbol
+                                row[2],  # timeframe
+                                round(row[3], 2),  # tp_percent
+                                round(row[4], 2),  # sl_percent
+                                row[5],  # total_trades (int, no rounding)
+                                round(row[6], 2),  # win_rate
+                                round(row[7], 2),  # total_pnl
+                                round(row[8], 2),  # profit_factor
+                            )
+                            existing_keys.add(key)
+
                 # Prepare batch data
                 batch_data = []
 
@@ -576,24 +616,20 @@ class StrategyDatabase:
                         total_pnl = getattr(result, 'total_pnl', 0)
                         profit_factor = getattr(result, 'profit_factor', 0)
 
-                        # Check for duplicate if needed
+                        # Check for duplicate using pre-fetched set (O(1) lookup)
                         if skip_duplicates:
-                            cursor.execute('''
-                                SELECT 1 FROM strategies
-                                WHERE strategy_name = %s
-                                  AND symbol = %s
-                                  AND timeframe = %s
-                                  AND ABS(tp_percent - %s) < 0.01
-                                  AND ABS(sl_percent - %s) < 0.01
-                                  AND total_trades = %s
-                                  AND ABS(win_rate - %s) < 0.01
-                                  AND ABS(total_pnl - %s) < 0.01
-                                  AND ABS(profit_factor - %s) < 0.01
-                                LIMIT 1
-                            ''', (strategy_name, symbol, timeframe, tp_percent, sl_percent,
-                                  total_trades, win_rate, total_pnl, profit_factor))
-
-                            if cursor.fetchone():
+                            result_key = (
+                                strategy_name,
+                                symbol,
+                                timeframe,
+                                round(tp_percent, 2),
+                                round(sl_percent, 2),
+                                total_trades,
+                                round(win_rate, 2),
+                                round(total_pnl, 2),
+                                round(profit_factor, 2),
+                            )
+                            if result_key in existing_keys:
                                 skipped += 1
                                 continue
 
@@ -1395,6 +1431,49 @@ class StrategyDatabase:
         count = cursor.fetchone()[0]
         self._return_connection(conn)
         return count
+
+    def get_finest_completed_granularity(self, pair: str, period_label: str,
+                                          timeframe_label: str) -> int:
+        """
+        Get the finest (highest n_trials) granularity already completed for a combo.
+
+        Returns the highest n_trials value among completed granularities for this
+        (pair, period, timeframe), or 0 if none completed.
+
+        This enables smart deduplication: skip coarser granularities if a finer
+        one has already been run (since finer includes all coarser values).
+        """
+        # Granularity label -> n_trials mapping
+        GRANULARITY_TRIALS = {
+            "0.1%": 10000,
+            "0.2%": 2500,
+            "0.5%": 400,
+            "0.7%": 200,
+            "1.0%": 100,
+        }
+
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute('''
+            SELECT granularity_label FROM completed_optimizations
+            WHERE pair = %s AND period_label = %s AND timeframe_label = %s
+        ''', (pair, period_label, timeframe_label))
+
+        completed_granularities = [row[0] for row in cursor.fetchall()]
+        self._return_connection(conn)
+
+        if not completed_granularities:
+            return 0
+
+        # Find the highest n_trials among completed
+        max_trials = 0
+        for gran_label in completed_granularities:
+            trials = GRANULARITY_TRIALS.get(gran_label, 0)
+            if trials > max_trials:
+                max_trials = trials
+
+        return max_trials
 
     def clear_completed_optimizations(self, pair: str = None, granularity_label: str = None):
         """Clear completed optimization records."""

@@ -72,14 +72,40 @@ async def health_check():
 
 @router.post("/db/clear")
 async def clear_database():
-    """Clear all strategies from the database."""
+    """
+    Complete database NUKE - clears everything and resets to fresh defaults.
+
+    This will:
+    - Delete all strategies
+    - Delete all optimization history
+    - Delete all completed optimization tracking
+    - Reset priority pairs to defaults (from config)
+    - Reset priority periods to defaults
+    - Reset priority timeframes to defaults
+    - Reset priority granularities to defaults
+    """
     from fastapi import HTTPException
     try:
         from strategy_database import get_strategy_db
+        from config import AUTONOMOUS_CONFIG
+
         db = get_strategy_db()
-        # Use efficient SQL DELETE instead of loading all strategies
+
+        # NUKE everything
         deleted = db.clear_all()
-        return {"success": True, "message": f"Deleted {deleted} strategies", "deleted": deleted}
+
+        # Reset priority settings to fresh defaults from config
+        config = AUTONOMOUS_CONFIG
+        db.reset_priority_pairs(config["pairs"].get("binance", []))
+        db.reset_priority_periods(config["periods"])
+        db.reset_priority_timeframes(config["timeframes"])
+        db.reset_priority_granularities(config["granularities"])
+
+        return {
+            "success": True,
+            "message": f"Database nuked: {deleted} strategies deleted, priority settings reset to defaults",
+            "deleted": deleted
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

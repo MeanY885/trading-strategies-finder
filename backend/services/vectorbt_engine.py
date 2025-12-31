@@ -229,6 +229,14 @@ class VectorBTEngine:
         'uo_extreme': {'category': 'Momentum', 'description': 'Ultimate Oscillator < 30 (long) or > 70 (short)'},
         # Volatility strategies
         'chop_trend': {'category': 'Volatility', 'description': 'Choppiness Index < 38.2 indicates trending market'},
+        # Kalman Filter strategies
+        'kalman_trend': {'category': 'Trend', 'description': 'Price crosses Kalman filter line'},
+        'kalman_bb': {'category': 'Mean Reversion', 'description': 'Price touches Kalman-based bands'},
+        'kalman_rsi': {'category': 'Momentum', 'description': 'Kalman-smoothed RSI crosses 30/70'},
+        'kalman_mfi': {'category': 'Momentum', 'description': 'Kalman-smoothed MFI crosses 20/80'},
+        'kalman_adx': {'category': 'Trend', 'description': 'Kalman ADX > 25 with DI dominance'},
+        'kalman_psar': {'category': 'Trend', 'description': 'Price crosses Kalman-smoothed Parabolic SAR'},
+        'kalman_macd': {'category': 'Momentum', 'description': 'Kalman-smoothed MACD signal cross'},
     }
 
     def __init__(
@@ -701,6 +709,78 @@ class VectorBTEngine:
         # === VWAP (Volume Weighted Average Price) ===
         typical_price_vwap = (high + low + close) / 3
         df['vwap'] = (typical_price_vwap * df['volume']).cumsum() / df['volume'].cumsum()
+
+        # === KALMAN FILTER ===
+        # Kalman Filter with velocity tracking for adaptive smoothing
+        kalman_gain = 0.7
+        close_vals = close.values
+        n_bars = len(close_vals)
+        kf = np.full(n_bars, np.nan)
+        velocity = 0.0
+
+        # Find first valid (non-NaN) value for initialization
+        first_valid_idx = 0
+        for idx in range(n_bars):
+            if not np.isnan(close_vals[idx]):
+                first_valid_idx = idx
+                kf[idx] = close_vals[idx]
+                break
+
+        for i in range(first_valid_idx + 1, n_bars):
+            # Handle NaN in current close value
+            if np.isnan(close_vals[i]):
+                kf[i] = kf[i-1]  # Hold previous value
+                continue
+            # Handle NaN in previous Kalman value (shouldn't happen after init, but safety)
+            if np.isnan(kf[i-1]):
+                kf[i] = close_vals[i]
+                velocity = 0.0
+                continue
+            prediction = kf[i-1] + velocity
+            error = close_vals[i] - prediction
+            kf[i] = prediction + kalman_gain * error
+            velocity = velocity + kalman_gain * error
+        df['kalman'] = kf
+
+        # Kalman Bands (Kalman filter as center with standard deviation bands)
+        kalman_std = close.rolling(20).std()
+        df['kalman_upper'] = df['kalman'] + kalman_std * 2.0
+        df['kalman_lower'] = df['kalman'] - kalman_std * 2.0
+
+        # Kalman-smoothed indicators (simplified Kalman smoothing)
+        def kalman_smooth(series, gain=0.5):
+            """Apply simplified Kalman smoothing to a series."""
+            vals = series.values
+            n = len(vals)
+            result = np.full(n, np.nan)
+
+            # Find first valid (non-NaN) value for initialization
+            first_valid_idx = 0
+            for idx in range(n):
+                if not np.isnan(vals[idx]):
+                    first_valid_idx = idx
+                    result[idx] = vals[idx]
+                    break
+
+            for i in range(first_valid_idx + 1, n):
+                if np.isnan(vals[i]):
+                    result[i] = result[i-1]  # Hold previous value
+                elif np.isnan(result[i-1]):
+                    result[i] = vals[i]  # Reset from new value
+                else:
+                    result[i] = result[i-1] + gain * (vals[i] - result[i-1])
+            return pd.Series(result, index=series.index)
+
+        df['kalman_rsi'] = kalman_smooth(df['rsi'])
+        df['kalman_mfi'] = kalman_smooth(df['mfi'])
+        df['kalman_adx'] = kalman_smooth(df['adx'])
+        df['kalman_macd'] = kalman_smooth(df['macd'])
+        df['kalman_macd_signal'] = kalman_smooth(df['macd_signal'])
+        df['kalman_psar'] = kalman_smooth(df['psar'])
+
+        # Also need plus_di and minus_di for kalman_adx strategy
+        df['plus_di'] = df['di_plus']
+        df['minus_di'] = df['di_minus']
 
         vbt_log(f"[VectorBT] Calculated {len([c for c in df.columns if c not in ['open','high','low','close','volume']])} indicators", level='DEBUG')
 
@@ -1354,6 +1434,61 @@ class VectorBTEngine:
                 return cache_and_return(safe_bool((df['close'] > df['dc_upper'].shift(1)) & (df['close'].shift(1) <= df['dc_upper'].shift(2))))
             else:
                 return cache_and_return(safe_bool((df['close'] < df['dc_lower'].shift(1)) & (df['close'].shift(1) >= df['dc_lower'].shift(2))))
+
+        # === KALMAN FILTER STRATEGIES ===
+        elif strategy == 'kalman_trend':
+            # Price crosses Kalman filter line
+            if direction == 'long':
+                return cache_and_return(safe_bool((df['close'] > df['kalman']) & (df['close'].shift(1) <= df['kalman'].shift(1))))
+            else:
+                return cache_and_return(safe_bool((df['close'] < df['kalman']) & (df['close'].shift(1) >= df['kalman'].shift(1))))
+
+        elif strategy == 'kalman_bb':
+            # Price touches Kalman-based bands
+            if direction == 'long':
+                return cache_and_return(safe_bool((df['close'] > df['kalman_lower']) & (df['close'].shift(1) <= df['kalman_lower'].shift(1))))
+            else:
+                return cache_and_return(safe_bool((df['close'] < df['kalman_upper']) & (df['close'].shift(1) >= df['kalman_upper'].shift(1))))
+
+        elif strategy == 'kalman_rsi':
+            # Kalman-smoothed RSI crosses configurable thresholds (default 30/70)
+            lower = df['kalman_rsi_lower'].iloc[0] if 'kalman_rsi_lower' in df.columns else 30
+            upper = df['kalman_rsi_upper'].iloc[0] if 'kalman_rsi_upper' in df.columns else 70
+            if direction == 'long':
+                return cache_and_return(safe_bool((df['kalman_rsi'] > lower) & (df['kalman_rsi'].shift(1) <= lower)))
+            else:
+                return cache_and_return(safe_bool((df['kalman_rsi'] < upper) & (df['kalman_rsi'].shift(1) >= upper)))
+
+        elif strategy == 'kalman_mfi':
+            # Kalman-smoothed MFI crosses configurable thresholds (default 20/80)
+            lower = df['kalman_mfi_lower'].iloc[0] if 'kalman_mfi_lower' in df.columns else 20
+            upper = df['kalman_mfi_upper'].iloc[0] if 'kalman_mfi_upper' in df.columns else 80
+            if direction == 'long':
+                return cache_and_return(safe_bool((df['kalman_mfi'] > lower) & (df['kalman_mfi'].shift(1) <= lower)))
+            else:
+                return cache_and_return(safe_bool((df['kalman_mfi'] < upper) & (df['kalman_mfi'].shift(1) >= upper)))
+
+        elif strategy == 'kalman_adx':
+            # Kalman ADX > configurable threshold (default 25) with DI dominance
+            threshold = df['kalman_adx_threshold'].iloc[0] if 'kalman_adx_threshold' in df.columns else 25
+            if direction == 'long':
+                return cache_and_return(safe_bool((df['kalman_adx'] > threshold) & (df['plus_di'] > df['minus_di'])))
+            else:
+                return cache_and_return(safe_bool((df['kalman_adx'] > threshold) & (df['minus_di'] > df['plus_di'])))
+
+        elif strategy == 'kalman_psar':
+            # Price crosses Kalman-smoothed Parabolic SAR
+            if direction == 'long':
+                return cache_and_return(safe_bool((df['close'] > df['kalman_psar']) & (df['close'].shift(1) <= df['kalman_psar'].shift(1))))
+            else:
+                return cache_and_return(safe_bool((df['close'] < df['kalman_psar']) & (df['close'].shift(1) >= df['kalman_psar'].shift(1))))
+
+        elif strategy == 'kalman_macd':
+            # Kalman-smoothed MACD signal cross
+            if direction == 'long':
+                return cache_and_return(safe_bool((df['kalman_macd'] > df['kalman_macd_signal']) & (df['kalman_macd'].shift(1) <= df['kalman_macd_signal'].shift(1))))
+            else:
+                return cache_and_return(safe_bool((df['kalman_macd'] < df['kalman_macd_signal']) & (df['kalman_macd'].shift(1) >= df['kalman_macd_signal'].shift(1))))
 
         # Default: no signals (also cached)
         return cache_and_return(pd.Series(False, index=df.index))

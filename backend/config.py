@@ -184,8 +184,7 @@ AUTONOMOUS_CONFIG = {
     "pairs": {
         "binance": [
             "BTCUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT",
-            "SOLUSDT", "ADAUSDT", "DOGEUSDT", "DOTUSDT",
-            "MATICUSDT", "LTCUSDT", "AVAXUSDT", "LINKUSDT"
+            "SOLUSDT", "DOGEUSDT", "ADAUSDT"
         ],
     },
 

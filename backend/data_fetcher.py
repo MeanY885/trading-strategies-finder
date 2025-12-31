@@ -76,10 +76,8 @@ class BinanceDataFetcher:
     - Use "BINANCE:" prefix on TradingView (e.g., BINANCE:BTCUSDT)
     - Timeframes map directly to TradingView intervals
 
-    Supported Pairs (subset):
-    - BTCUSDT, ETHUSDT, BNBUSDT, XRPUSDT, SOLUSDT, ADAUSDT
-    - DOGEUSDT, DOTUSDT, MATICUSDT, LTCUSDT, AVAXUSDT
-    - Any pair available on Binance Spot
+    Supported Pairs:
+    - BTCUSDT, ETHUSDT, BNBUSDT, XRPUSDT, SOLUSDT, DOGEUSDT, ADAUSDT
 
     Supported Timeframes:
     - 1m, 3m, 5m, 15m, 30m (minute intervals)
@@ -101,28 +99,15 @@ class BinanceDataFetcher:
     # ==========================================================================
     # EXPANDED TRADING PAIRS - For Portfolio Testing
     # ==========================================================================
-    # Top 20 crypto pairs by volume for diversified strategy testing
+    # Top 7 crypto pairs by volume for diversified strategy testing
     CORE_PAIRS = [
-        'BTCUSDT',   # Bitcoin - Market leader
-        'ETHUSDT',   # Ethereum - DeFi & Smart Contracts
-        'BNBUSDT',   # Binance Coin - Exchange token
-        'SOLUSDT',   # Solana - High performance L1
-        'XRPUSDT',   # Ripple - Payments
-        'ADAUSDT',   # Cardano - Academic blockchain
-        'DOGEUSDT',  # Dogecoin - Meme coin leader
-        'AVAXUSDT',  # Avalanche - Fast finality
-        'DOTUSDT',   # Polkadot - Interoperability
-        'MATICUSDT', # Polygon - Ethereum L2
-        'LINKUSDT',  # Chainlink - Oracle leader
-        'LTCUSDT',   # Litecoin - Digital silver
-        'ATOMUSDT',  # Cosmos - IBC ecosystem
-        'UNIUSDT',   # Uniswap - DEX leader
-        'NEARUSDT',  # Near Protocol - Sharded L1
-        'APTUSDT',   # Aptos - Move-based L1
-        'ARBUSDT',   # Arbitrum - Ethereum L2
-        'OPUSDT',    # Optimism - Ethereum L2
-        'INJUSDT',   # Injective - DeFi derivatives
-        'SUIUSDT',   # Sui - Move-based L1
+        'BTCUSDT',   # Bitcoin
+        'ETHUSDT',   # Ethereum
+        'BNBUSDT',   # Binance Coin
+        'XRPUSDT',   # Ripple
+        'SOLUSDT',   # Solana
+        'DOGEUSDT',  # Dogecoin
+        'ADAUSDT',   # Cardano
     ]
 
     # Recommended timeframes for strategy testing

@@ -31,10 +31,8 @@ router = APIRouter(prefix="/api/udf", tags=["tradingview-udf"])
 # =============================================================================
 
 SUPPORTED_SYMBOLS = [
-    'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT',
-    'ADAUSDT', 'DOGEUSDT', 'AVAXUSDT', 'DOTUSDT', 'MATICUSDT',
-    'LINKUSDT', 'LTCUSDT', 'ATOMUSDT', 'UNIUSDT', 'NEARUSDT',
-    'APTUSDT', 'ARBUSDT', 'OPUSDT', 'INJUSDT', 'SUIUSDT',
+    'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'XRPUSDT',
+    'SOLUSDT', 'DOGEUSDT', 'ADAUSDT',
 ]
 
 # Resolution mapping (TradingView resolution -> minutes)
@@ -112,7 +110,7 @@ async def get_symbol_info(symbol: str):
         pricescale = 100  # $0.01 precision for BTC
     elif symbol.startswith("ETH"):
         pricescale = 100  # $0.01 precision for ETH
-    elif symbol in ["DOGEUSDT", "XRPUSDT", "ADAUSDT", "MATICUSDT"]:
+    elif symbol in ["DOGEUSDT", "XRPUSDT", "ADAUSDT"]:
         pricescale = 100000  # $0.00001 precision for low-price coins
     else:
         pricescale = 1000  # $0.001 precision for mid-range coins

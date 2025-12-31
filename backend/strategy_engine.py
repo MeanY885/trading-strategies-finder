@@ -1248,6 +1248,16 @@ DEFAULT_INDICATOR_PARAMS = {
     'psar_maximum': 0.2,
     # OBV params
     'obv_lookback': 20,
+    # Kalman filter params
+    'kalman_gain': 0.7,           # Main Kalman filter gain (velocity tracking)
+    'kalman_smooth_gain': 0.5,    # Smoothing gain for oscillators (RSI, MFI, ADX, MACD)
+    'kalman_length': 20,          # Period for Kalman bands std calculation
+    'kalman_mult': 2.0,           # Kalman bands multiplier
+    'kalman_rsi_upper': 70,       # Kalman RSI overbought threshold
+    'kalman_rsi_lower': 30,       # Kalman RSI oversold threshold
+    'kalman_mfi_upper': 80,       # Kalman MFI overbought threshold
+    'kalman_mfi_lower': 20,       # Kalman MFI oversold threshold
+    'kalman_adx_threshold': 25,   # Kalman ADX trend strength threshold
 }
 
 # Strategy to tunable parameters mapping
@@ -1652,6 +1662,57 @@ STRATEGY_PARAM_MAP = {
     'elder_ray': {
         'params': [],  # Uses EMA 13 (fixed)
         'ranges': {},
+    },
+
+    # === KALMAN FILTER STRATEGIES ===
+    'kalman_trend': {
+        'params': ['kalman_gain'],
+        'ranges': {
+            'kalman_gain': [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9],
+        },
+    },
+    'kalman_bb': {
+        'params': ['kalman_gain', 'kalman_length', 'kalman_mult'],
+        'ranges': {
+            'kalman_gain': [0.4, 0.5, 0.6, 0.7, 0.8],
+            'kalman_length': [14, 18, 20, 25, 30],
+            'kalman_mult': [1.5, 2.0, 2.5, 3.0],
+        },
+    },
+    'kalman_rsi': {
+        'params': ['kalman_smooth_gain', 'kalman_rsi_upper', 'kalman_rsi_lower'],
+        'ranges': {
+            'kalman_smooth_gain': [0.3, 0.4, 0.5, 0.6, 0.7],
+            'kalman_rsi_upper': [65, 70, 75, 80],
+            'kalman_rsi_lower': [20, 25, 30, 35],
+        },
+    },
+    'kalman_mfi': {
+        'params': ['kalman_smooth_gain', 'kalman_mfi_upper', 'kalman_mfi_lower'],
+        'ranges': {
+            'kalman_smooth_gain': [0.3, 0.4, 0.5, 0.6, 0.7],
+            'kalman_mfi_upper': [75, 80, 85],
+            'kalman_mfi_lower': [15, 20, 25],
+        },
+    },
+    'kalman_adx': {
+        'params': ['kalman_smooth_gain', 'kalman_adx_threshold'],
+        'ranges': {
+            'kalman_smooth_gain': [0.3, 0.4, 0.5, 0.6, 0.7],
+            'kalman_adx_threshold': [20, 25, 30, 35],
+        },
+    },
+    'kalman_psar': {
+        'params': ['kalman_smooth_gain'],
+        'ranges': {
+            'kalman_smooth_gain': [0.3, 0.4, 0.5, 0.6, 0.7],
+        },
+    },
+    'kalman_macd': {
+        'params': ['kalman_smooth_gain'],
+        'ranges': {
+            'kalman_smooth_gain': [0.3, 0.4, 0.5, 0.6, 0.7],
+        },
     },
 }
 
@@ -2289,6 +2350,45 @@ class StrategyEngine:
             'name': 'MACD + Stochastic Combo',
             'category': 'Momentum',
             'description': 'MACD cross + Stochastic confirmation'
+        },
+
+        # === KALMAN FILTER STRATEGIES ===
+        'kalman_trend': {
+            'name': 'Kalman Trend',
+            'category': 'Trend',
+            'description': 'Price crosses Kalman filter line',
+            'pool': 'indicator_exit'
+        },
+        'kalman_bb': {
+            'name': 'Kalman Bollinger Bands',
+            'category': 'Mean Reversion',
+            'description': 'Price touches Kalman-based bands'
+        },
+        'kalman_rsi': {
+            'name': 'Kalman RSI',
+            'category': 'Momentum',
+            'description': 'Kalman-smoothed RSI crosses 30/70'
+        },
+        'kalman_mfi': {
+            'name': 'Kalman MFI',
+            'category': 'Momentum',
+            'description': 'Kalman-smoothed MFI crosses 20/80'
+        },
+        'kalman_adx': {
+            'name': 'Kalman ADX Trend',
+            'category': 'Trend',
+            'description': 'Kalman ADX > 25 with DI dominance'
+        },
+        'kalman_psar': {
+            'name': 'Kalman PSAR',
+            'category': 'Trend',
+            'description': 'Price crosses Kalman-smoothed Parabolic SAR',
+            'pool': 'indicator_exit'
+        },
+        'kalman_macd': {
+            'name': 'Kalman MACD',
+            'category': 'Momentum',
+            'description': 'Kalman-smoothed MACD signal cross'
         },
     }
 
@@ -3754,6 +3854,61 @@ class StrategyEngine:
             else:
                 return safe_bool(macd_cross_down & (df['stoch_k'] > 50))
 
+        # === KALMAN FILTER STRATEGIES ===
+        elif strategy == 'kalman_trend':
+            # Price crosses Kalman filter line
+            if direction == 'long':
+                return safe_bool((df['close'] > df['kalman']) & (df['close'].shift(1) <= df['kalman'].shift(1)))
+            else:
+                return safe_bool((df['close'] < df['kalman']) & (df['close'].shift(1) >= df['kalman'].shift(1)))
+
+        elif strategy == 'kalman_bb':
+            # Price touches Kalman-based bands
+            if direction == 'long':
+                return safe_bool((df['close'] > df['kalman_lower']) & (df['close'].shift(1) <= df['kalman_lower'].shift(1)))
+            else:
+                return safe_bool((df['close'] < df['kalman_upper']) & (df['close'].shift(1) >= df['kalman_upper'].shift(1)))
+
+        elif strategy == 'kalman_rsi':
+            # Kalman-smoothed RSI crosses configurable thresholds (default 30/70)
+            lower = df['kalman_rsi_lower'].iloc[0] if 'kalman_rsi_lower' in df.columns else DEFAULT_INDICATOR_PARAMS['kalman_rsi_lower']
+            upper = df['kalman_rsi_upper'].iloc[0] if 'kalman_rsi_upper' in df.columns else DEFAULT_INDICATOR_PARAMS['kalman_rsi_upper']
+            if direction == 'long':
+                return safe_bool((df['kalman_rsi'] > lower) & (df['kalman_rsi'].shift(1) <= lower))
+            else:
+                return safe_bool((df['kalman_rsi'] < upper) & (df['kalman_rsi'].shift(1) >= upper))
+
+        elif strategy == 'kalman_mfi':
+            # Kalman-smoothed MFI crosses configurable thresholds (default 20/80)
+            lower = df['kalman_mfi_lower'].iloc[0] if 'kalman_mfi_lower' in df.columns else DEFAULT_INDICATOR_PARAMS['kalman_mfi_lower']
+            upper = df['kalman_mfi_upper'].iloc[0] if 'kalman_mfi_upper' in df.columns else DEFAULT_INDICATOR_PARAMS['kalman_mfi_upper']
+            if direction == 'long':
+                return safe_bool((df['kalman_mfi'] > lower) & (df['kalman_mfi'].shift(1) <= lower))
+            else:
+                return safe_bool((df['kalman_mfi'] < upper) & (df['kalman_mfi'].shift(1) >= upper))
+
+        elif strategy == 'kalman_adx':
+            # Kalman ADX > configurable threshold (default 25) with DI dominance
+            threshold = df['kalman_adx_threshold'].iloc[0] if 'kalman_adx_threshold' in df.columns else DEFAULT_INDICATOR_PARAMS['kalman_adx_threshold']
+            if direction == 'long':
+                return safe_bool((df['kalman_adx'] > threshold) & (df['plus_di'] > df['minus_di']))
+            else:
+                return safe_bool((df['kalman_adx'] > threshold) & (df['minus_di'] > df['plus_di']))
+
+        elif strategy == 'kalman_psar':
+            # Price crosses Kalman-smoothed Parabolic SAR
+            if direction == 'long':
+                return safe_bool((df['close'] > df['kalman_psar']) & (df['close'].shift(1) <= df['kalman_psar'].shift(1)))
+            else:
+                return safe_bool((df['close'] < df['kalman_psar']) & (df['close'].shift(1) >= df['kalman_psar'].shift(1)))
+
+        elif strategy == 'kalman_macd':
+            # Kalman-smoothed MACD signal cross
+            if direction == 'long':
+                return safe_bool((df['kalman_macd'] > df['kalman_macd_signal']) & (df['kalman_macd'].shift(1) <= df['kalman_macd_signal'].shift(1)))
+            else:
+                return safe_bool((df['kalman_macd'] < df['kalman_macd_signal']) & (df['kalman_macd'].shift(1) >= df['kalman_macd_signal'].shift(1)))
+
         return pd.Series(False, index=df.index)
 
     def backtest(self, strategy: str, direction: str,
@@ -4844,17 +4999,9 @@ class StrategyEngine:
             from services.vectorbt_engine import VectorBTEngine, is_vectorbt_available
 
             if not is_vectorbt_available():
-                log("[VectorBT] ⚠️ VectorBT not installed - falling back to standard iterative engine")
-                log("[VectorBT] To enable: pip install vectorbt numba")
-                return self.find_strategies(
-                    min_trades=min_trades,
-                    min_win_rate=min_win_rate,
-                    save_to_db=save_to_db,
-                    symbol=symbol,
-                    timeframe=timeframe,
-                    n_trials=n_trials,
-                    mode=mode,
-                    use_vectorbt=False  # Prevent recursion
+                raise RuntimeError(
+                    "VectorBT is required but not installed. "
+                    "Install with: pip install vectorbt numba"
                 )
 
             self._update_status("Initializing VectorBT engine (100x faster)...", 1)
@@ -4958,6 +5105,10 @@ class StrategyEngine:
                         data_end=data_end,
                     )
                     log(f"[VectorBT] Batch saved {batch_result['saved']} strategies ({batch_result['skipped']} duplicates skipped)")
+
+                    # Invalidate caches so frontend sees new strategies immediately
+                    if HAS_CACHE:
+                        invalidate_strategy_caches()
                 except Exception as e:
                     log(f"[VectorBT] Error batch saving strategies: {e}", level='WARNING')
 
@@ -4969,33 +5120,13 @@ class StrategyEngine:
             return results
 
         except ImportError as e:
-            log(f"[VectorBT] ⚠️ Import error: {e}")
-            log(f"[VectorBT] Falling back to standard iterative engine")
-            return self.find_strategies(
-                min_trades=min_trades,
-                min_win_rate=min_win_rate,
-                save_to_db=save_to_db,
-                symbol=symbol,
-                timeframe=timeframe,
-                n_trials=n_trials,
-                mode=mode,
-                use_vectorbt=False
-            )
+            log(f"[VectorBT] ❌ Import error: {e}", level='ERROR')
+            raise RuntimeError(f"VectorBT import failed: {e}. Install with: pip install vectorbt numba")
         except Exception as e:
             log(f"[VectorBT] ❌ Error during VectorBT execution: {e}", level='ERROR')
-            log(f"[VectorBT] Falling back to standard iterative engine", level='WARNING')
             import traceback
             traceback.print_exc()
-            return self.find_strategies(
-                min_trades=min_trades,
-                min_win_rate=min_win_rate,
-                save_to_db=save_to_db,
-                symbol=symbol,
-                timeframe=timeframe,
-                n_trials=n_trials,
-                mode=mode,
-                use_vectorbt=False
-            )
+            raise  # Re-raise - no fallback to Pandas
 
     def get_saved_winners(self, symbol: str = None,
                           min_win_rate: float = 60,
@@ -5387,6 +5518,101 @@ class StrategyEngine:
         # Store OBV lookback for signal function
         if 'obv_lookback' in params:
             df['obv_lookback'] = params['obv_lookback']
+
+        # === KALMAN FILTER RECALCULATION ===
+        # Recalculate Kalman indicators when any Kalman parameter changes
+        kalman_params = ['kalman_gain', 'kalman_smooth_gain', 'kalman_length', 'kalman_mult',
+                         'kalman_rsi_upper', 'kalman_rsi_lower', 'kalman_mfi_upper',
+                         'kalman_mfi_lower', 'kalman_adx_threshold']
+
+        if any(k in params for k in kalman_params):
+            close = df['close']
+
+            # Main Kalman filter (for kalman_trend)
+            if 'kalman_gain' in params:
+                kalman_gain = params['kalman_gain']
+                close_vals = close.values
+                n_bars = len(close_vals)
+                kf = np.full(n_bars, np.nan)
+                velocity = 0.0
+
+                # Find first valid value
+                first_valid_idx = 0
+                for idx in range(n_bars):
+                    if not np.isnan(close_vals[idx]):
+                        first_valid_idx = idx
+                        kf[idx] = close_vals[idx]
+                        break
+
+                for i in range(first_valid_idx + 1, n_bars):
+                    if np.isnan(close_vals[i]):
+                        kf[i] = kf[i-1]
+                        continue
+                    if np.isnan(kf[i-1]):
+                        kf[i] = close_vals[i]
+                        velocity = 0.0
+                        continue
+                    prediction = kf[i-1] + velocity
+                    error = close_vals[i] - prediction
+                    kf[i] = prediction + kalman_gain * error
+                    velocity = velocity + kalman_gain * error
+                df['kalman'] = kf
+
+            # Kalman bands
+            if any(k in params for k in ['kalman_length', 'kalman_mult', 'kalman_gain']):
+                kalman_length = params.get('kalman_length', DEFAULT_INDICATOR_PARAMS['kalman_length'])
+                kalman_mult = params.get('kalman_mult', DEFAULT_INDICATOR_PARAMS['kalman_mult'])
+                kalman_std = close.rolling(kalman_length).std()
+                df['kalman_upper'] = df['kalman'] + kalman_std * kalman_mult
+                df['kalman_lower'] = df['kalman'] - kalman_std * kalman_mult
+
+            # Kalman-smoothed oscillators helper
+            def kalman_smooth(series, gain):
+                vals = series.values
+                n = len(vals)
+                result = np.full(n, np.nan)
+                first_valid_idx = 0
+                for idx in range(n):
+                    if not np.isnan(vals[idx]):
+                        first_valid_idx = idx
+                        result[idx] = vals[idx]
+                        break
+                for i in range(first_valid_idx + 1, n):
+                    if np.isnan(vals[i]):
+                        result[i] = result[i-1]
+                    elif np.isnan(result[i-1]):
+                        result[i] = vals[i]
+                    else:
+                        result[i] = result[i-1] + gain * (vals[i] - result[i-1])
+                return pd.Series(result, index=series.index)
+
+            # Recalculate Kalman-smoothed indicators
+            if 'kalman_smooth_gain' in params:
+                smooth_gain = params['kalman_smooth_gain']
+                if 'rsi' in df.columns:
+                    df['kalman_rsi'] = kalman_smooth(df['rsi'], smooth_gain)
+                if 'mfi' in df.columns:
+                    df['kalman_mfi'] = kalman_smooth(df['mfi'], smooth_gain)
+                if 'adx' in df.columns:
+                    df['kalman_adx'] = kalman_smooth(df['adx'], smooth_gain)
+                if 'macd' in df.columns:
+                    df['kalman_macd'] = kalman_smooth(df['macd'], smooth_gain)
+                if 'macd_signal' in df.columns:
+                    df['kalman_macd_signal'] = kalman_smooth(df['macd_signal'], smooth_gain)
+                if 'psar' in df.columns:
+                    df['kalman_psar'] = kalman_smooth(df['psar'], smooth_gain)
+
+            # Store threshold parameters for signal generation
+            if 'kalman_rsi_upper' in params:
+                df['kalman_rsi_upper'] = params['kalman_rsi_upper']
+            if 'kalman_rsi_lower' in params:
+                df['kalman_rsi_lower'] = params['kalman_rsi_lower']
+            if 'kalman_mfi_upper' in params:
+                df['kalman_mfi_upper'] = params['kalman_mfi_upper']
+            if 'kalman_mfi_lower' in params:
+                df['kalman_mfi_lower'] = params['kalman_mfi_lower']
+            if 'kalman_adx_threshold' in params:
+                df['kalman_adx_threshold'] = params['kalman_adx_threshold']
 
         # Sanitize all indicator columns to prevent None comparison errors
         self._sanitize_df(df)

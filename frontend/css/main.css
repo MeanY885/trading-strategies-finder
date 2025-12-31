@@ -346,18 +346,86 @@
         }
         
         .log-entry {
-            padding: 0.25rem 0;
+            padding: 0.35rem 0.5rem;
             border-bottom: 1px solid var(--border-subtle);
+            border-radius: 3px;
+            margin-bottom: 2px;
         }
-        
+
         .log-entry:last-child {
             border-bottom: none;
         }
-        
+
         .log-time {
             color: var(--text-muted);
             margin-right: 0.5rem;
+            opacity: 0.8;
         }
+
+        /* Log category colors - background highlighting */
+        .log-entry.log-data {
+            background: rgba(59, 130, 246, 0.15);  /* Blue - data fetching */
+            border-left: 3px solid #3b82f6;
+        }
+        .log-entry.log-optimization {
+            background: rgba(34, 197, 94, 0.15);   /* Green - optimization */
+            border-left: 3px solid #22c55e;
+        }
+        .log-entry.log-elite {
+            background: rgba(168, 85, 247, 0.15);  /* Purple - elite validation */
+            border-left: 3px solid #a855f7;
+        }
+        .log-entry.log-autonomous {
+            background: rgba(249, 115, 22, 0.15);  /* Orange - autonomous */
+            border-left: 3px solid #f97316;
+        }
+        .log-entry.log-error {
+            background: rgba(239, 68, 68, 0.25);   /* Red - errors */
+            border-left: 3px solid #ef4444;
+            color: #fca5a5;
+        }
+        .log-entry.log-success {
+            background: rgba(34, 197, 94, 0.25);   /* Green highlight - success */
+            border-left: 3px solid #22c55e;
+            color: #86efac;
+        }
+        .log-entry.log-websocket {
+            background: rgba(6, 182, 212, 0.15);   /* Cyan - websocket */
+            border-left: 3px solid #06b6d4;
+        }
+        .log-entry.log-strategy {
+            background: rgba(234, 179, 8, 0.15);   /* Yellow - strategy */
+            border-left: 3px solid #eab308;
+        }
+        .log-entry.log-system {
+            background: rgba(107, 114, 128, 0.15); /* Gray - system */
+            border-left: 3px solid #6b7280;
+        }
+        .log-entry.log-dedup {
+            background: rgba(236, 72, 153, 0.15);  /* Pink - deduplication */
+            border-left: 3px solid #ec4899;
+        }
+
+        /* Log category badge */
+        .log-category {
+            font-size: 0.7rem;
+            padding: 1px 5px;
+            border-radius: 3px;
+            margin-right: 0.5rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+        }
+        .log-category.data { background: #3b82f6; color: white; }
+        .log-category.optimization { background: #22c55e; color: white; }
+        .log-category.elite { background: #a855f7; color: white; }
+        .log-category.autonomous { background: #f97316; color: white; }
+        .log-category.error { background: #ef4444; color: white; }
+        .log-category.success { background: #22c55e; color: white; }
+        .log-category.websocket { background: #06b6d4; color: white; }
+        .log-category.strategy { background: #eab308; color: black; }
+        .log-category.system { background: #6b7280; color: white; }
+        .log-category.dedup { background: #ec4899; color: white; }
         
         /* Full width card */
         .full-width {
@@ -1625,7 +1693,13 @@
         }
 
         .priority-item-simple.disabled {
-            opacity: 0.4;
+            opacity: 0.5;
+            background: rgba(239, 68, 68, 0.05);
+        }
+
+        .priority-item-simple.disabled .item-label {
+            text-decoration: line-through;
+            color: var(--text-muted);
         }
 
         .priority-item-simple .drag-handle {
@@ -1659,25 +1733,41 @@
         .priority-item-simple .toggle-btn {
             background: none;
             border: none;
-            color: var(--text-muted);
             cursor: pointer;
-            padding: 0.2rem 0.35rem;
+            padding: 0.4rem 0.5rem;
             border-radius: 4px;
-            font-size: 0.8rem;
-            transition: color 0.15s, background 0.15s;
+            font-size: 1rem;
+            transition: all 0.15s ease;
+            min-width: 32px;
+            min-height: 32px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
         }
 
         .priority-item-simple .toggle-btn:hover {
-            color: var(--text-primary);
+            transform: scale(1.15);
             background: var(--bg-secondary);
+        }
+
+        .priority-item-simple .toggle-btn:active {
+            transform: scale(0.95);
         }
 
         .priority-item-simple .toggle-btn.enabled {
             color: var(--success);
         }
 
+        .priority-item-simple .toggle-btn.enabled:hover {
+            background: rgba(34, 197, 94, 0.15);
+        }
+
         .priority-item-simple .toggle-btn.disabled-state {
             color: var(--danger);
+        }
+
+        .priority-item-simple .toggle-btn.disabled-state:hover {
+            background: rgba(239, 68, 68, 0.15);
         }
 
         .priority-summary {

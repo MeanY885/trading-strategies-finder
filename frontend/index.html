@@ -642,6 +642,17 @@
                         <span id="autonomousStatusMessage" style="color: var(--text-secondary); margin-left: 1rem;">Not running</span>
                         <span id="autonomousCycleProgress" style="color: var(--text-muted); margin-left: auto; font-size: 0.85rem;"></span>
                     </div>
+
+                    <!-- OVERALL PROGRESS BAR (never resets) -->
+                    <div id="overallProgressContainer" style="display: none; margin-top: 0.75rem; padding: 0.75rem; background: var(--bg-secondary); border-radius: 8px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+                            <span style="font-size: 0.85rem; color: var(--text-secondary); font-weight: 500;">OVERALL PROGRESS</span>
+                            <span id="overallProgressText" style="font-size: 0.85rem; color: var(--text-primary); font-weight: 600;">0 / 0 (0%)</span>
+                        </div>
+                        <div style="height: 8px; background: var(--bg-tertiary); border-radius: 4px; overflow: hidden;">
+                            <div id="overallProgressBar" style="height: 100%; width: 0%; background: linear-gradient(90deg, var(--success), #22d3ee); transition: width 0.3s ease;"></div>
+                        </div>
+                    </div>
                 </div>
 
                 <!-- Task Queue -->

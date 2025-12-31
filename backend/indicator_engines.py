@@ -990,6 +990,119 @@ class MultiEngineCalculator:
             return pd.Series(0, index=self.df.index, name='LINEARREG_SLOPE')
 
     # =========================================================================
+    # Kalman Filter
+    # =========================================================================
+
+    def kalman_filter(self, source: str = 'close', gain: float = 0.7) -> pd.Series:
+        """
+        Kalman Filter - Adaptive smoothing filter with velocity tracking.
+
+        The Kalman Filter is a recursive algorithm that estimates the true value
+        of a noisy signal. For trading, it provides:
+        - Smoother price tracking than moving averages
+        - Less lag due to velocity prediction
+        - Adaptive response to price changes
+
+        Args:
+            source: Price column to filter ('close', 'high', 'low', 'open')
+            gain: Kalman gain (0.0-1.0), higher = more responsive, lower = smoother
+
+        Returns:
+            pd.Series: Kalman filtered values
+        """
+        src = self.df[source].values
+        n = len(src)
+        kf = np.zeros(n)
+        kf[0] = src[0]
+
+        velocity = 0.0
+        for i in range(1, n):
+            # Predict step
+            prediction = kf[i-1] + velocity
+            # Update step
+            error = src[i] - prediction
+            kf[i] = prediction + gain * error
+            velocity = velocity + gain * error
+
+        return pd.Series(kf, index=self.df.index, name='kalman')
+
+    def kalman_tradingview(self, gain: float = 0.7) -> pd.Series:
+        """Kalman Filter - TradingView compatible"""
+        return self.kalman_filter('close', gain)
+
+    def kalman_native(self, gain: float = 0.7) -> pd.Series:
+        """Kalman Filter - Native implementation (same algorithm)"""
+        return self.kalman_filter('close', gain)
+
+    def kalman_bands(self, length: int = 20, mult: float = 2.0, gain: float = 0.7) -> Tuple[pd.Series, pd.Series, pd.Series]:
+        """
+        Kalman-based Bollinger Bands.
+
+        Uses Kalman filter as the center line instead of SMA,
+        with standard deviation bands.
+
+        Args:
+            length: Period for standard deviation calculation
+            mult: Band multiplier (default 2.0)
+            gain: Kalman gain for center line
+
+        Returns:
+            Tuple of (basis, upper_band, lower_band)
+        """
+        basis = self.kalman_filter('close', gain)
+        std = self.df['close'].rolling(length).std()
+        upper = basis + std * mult
+        lower = basis - std * mult
+
+        upper.name = 'kalman_upper'
+        lower.name = 'kalman_lower'
+
+        return basis, upper, lower
+
+    def kalman_bands_tradingview(self, length: int = 20, mult: float = 2.0, gain: float = 0.7) -> Tuple[pd.Series, pd.Series, pd.Series]:
+        """Kalman Bands - TradingView compatible"""
+        return self.kalman_bands(length, mult, gain)
+
+    def kalman_bands_native(self, length: int = 20, mult: float = 2.0, gain: float = 0.7) -> Tuple[pd.Series, pd.Series, pd.Series]:
+        """Kalman Bands - Native implementation"""
+        return self.kalman_bands(length, mult, gain)
+
+    def kalman_smooth(self, series: pd.Series, gain: float = 0.5) -> pd.Series:
+        """
+        Apply Kalman smoothing to any indicator series.
+
+        This is a simplified Kalman filter (without velocity) that can be
+        applied to any oscillator or indicator to reduce noise.
+
+        Args:
+            series: Input indicator series (e.g., RSI, MFI, ADX)
+            gain: Smoothing factor (0.0-1.0), lower = smoother
+
+        Returns:
+            pd.Series: Smoothed indicator values
+        """
+        src = series.values
+        n = len(src)
+        kf = np.zeros(n)
+
+        # Initialize with first valid value
+        first_valid_idx = 0
+        for i in range(n):
+            if not np.isnan(src[i]):
+                kf[i] = src[i]
+                first_valid_idx = i
+                break
+
+        # Apply Kalman smoothing
+        for i in range(first_valid_idx + 1, n):
+            if np.isnan(src[i]):
+                kf[i] = kf[i-1]  # Hold previous value if NaN
+            else:
+                kf[i] = kf[i-1] + gain * (src[i] - kf[i-1])
+
+        return pd.Series(kf, index=series.index, name=f'kalman_{series.name}')
+
+    # =========================================================================
     # Helper Methods
     # =========================================================================
 
@@ -1064,6 +1177,19 @@ def calculate_indicators(df: pd.DataFrame, engine: IndicatorEngine = IndicatorEn
         result['mcginley'] = calc.mcginley_tradingview()
         result['mcginley_direction'] = calc.mcginley_direction()
 
+        # Kalman Filter
+        result['kalman'] = calc.kalman_tradingview()
+        kalman_basis, kalman_upper, kalman_lower = calc.kalman_bands_tradingview()
+        result['kalman_upper'] = kalman_upper
+        result['kalman_lower'] = kalman_lower
+
+        # Kalman-smoothed indicators
+        result['kalman_rsi'] = calc.kalman_smooth(result['rsi'])
+        result['kalman_mfi'] = calc.kalman_smooth(result['mfi'])
+        result['kalman_adx'] = calc.kalman_smooth(result['adx'])
+        result['kalman_macd'] = calc.kalman_smooth(result['macd'])
+        result['kalman_macd_signal'] = calc.kalman_smooth(result['macd_signal'])
+
     elif engine == IndicatorEngine.NATIVE:
         # Core indicators - TA-Lib (fast)
         result['rsi'] = calc.rsi_native()
@@ -1105,6 +1231,19 @@ def calculate_indicators(df: pd.DataFrame, engine: IndicatorEngine = IndicatorEn
         # McGinley Dynamic
         result['mcginley'] = calc.mcginley_native()
         result['mcginley_direction'] = calc.mcginley_direction()
+
+        # Kalman Filter
+        result['kalman'] = calc.kalman_native()
+        kalman_basis, kalman_upper, kalman_lower = calc.kalman_bands_native()
+        result['kalman_upper'] = kalman_upper
+        result['kalman_lower'] = kalman_lower
+
+        # Kalman-smoothed indicators
+        result['kalman_rsi'] = calc.kalman_smooth(result['rsi'])
+        result['kalman_mfi'] = calc.kalman_smooth(result['mfi'])
+        result['kalman_adx'] = calc.kalman_smooth(result['adx'])
+        result['kalman_macd'] = calc.kalman_smooth(result['macd'])
+        result['kalman_macd_signal'] = calc.kalman_smooth(result['macd_signal'])
 
         # Native-only: Advanced indicators
         result['kama'] = calc.kama_native()

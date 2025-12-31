@@ -20,6 +20,7 @@ from .autonomous_optimizer import (
     build_optimization_combinations,
     has_period_boundary_crossed,
     autonomous_runs_history,
+    shutdown_db_executor,
 )
 from .elite_validator import (
     start_auto_elite_validation,
@@ -47,6 +48,7 @@ __all__ = [
     'build_optimization_combinations',
     'has_period_boundary_crossed',
     'autonomous_runs_history',
+    'shutdown_db_executor',
     # Elite Validator
     'start_auto_elite_validation',
     'stop_elite_validation',

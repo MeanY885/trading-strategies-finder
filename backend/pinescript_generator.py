@@ -1178,6 +1178,73 @@ ema50 = ta.ema(close, 50)
 aligned = {"ema9 > ema21 and ema21 > ema50" if is_long else "ema9 < ema21 and ema21 < ema50"}
 wasNotAligned = {"not (ema9[1] > ema21[1] and ema21[1] > ema50[1])" if is_long else "not (ema9[1] < ema21[1] and ema21[1] < ema50[1])"}
 entrySignal = aligned and wasNotAligned''',
+
+            # === KALMAN FILTER STRATEGIES ===
+            'kalman_trend': f'''// Kalman Filter Trend
+// Kalman Filter with velocity tracking for adaptive smoothing
+var float kalman = na
+var float velocity = 0.0
+kalmanGain = 0.7
+if bar_index == 0
+    kalman := close
+else
+    float prediction = kalman + velocity
+    float error = close - prediction
+    kalman := prediction + kalmanGain * error
+    velocity := velocity + kalmanGain * error
+entrySignal = {"ta.crossover(close, kalman)" if is_long else "ta.crossunder(close, kalman)"}''',
+
+            'kalman_bb': f'''// Kalman Bollinger Bands
+// Kalman Filter as center line with standard deviation bands
+var float kalman = na
+var float velocity = 0.0
+kalmanGain = 0.7
+if bar_index == 0
+    kalman := close
+else
+    float prediction = kalman + velocity
+    float error = close - prediction
+    kalman := prediction + kalmanGain * error
+    velocity := velocity + kalmanGain * error
+kalmanStd = ta.stdev(close, 20)
+kalmanUpper = kalman + kalmanStd * 2.0
+kalmanLower = kalman - kalmanStd * 2.0
+entrySignal = {"ta.crossover(close, kalmanLower)" if is_long else "ta.crossunder(close, kalmanUpper)"}''',
+
+            'kalman_rsi': f'''// Kalman-Smoothed RSI
+// RSI filtered through Kalman for smoother signals
+rsiRaw = ta.rsi(close, 14)
+var float kalmanRsi = na
+kalmanRsi := na(kalmanRsi) ? rsiRaw : kalmanRsi + 0.5 * (rsiRaw - kalmanRsi)
+entrySignal = {"ta.crossover(kalmanRsi, 30)" if is_long else "ta.crossunder(kalmanRsi, 70)"}''',
+
+            'kalman_mfi': f'''// Kalman-Smoothed MFI
+// MFI filtered through Kalman for smoother signals
+mfiRaw = ta.mfi(hlc3, 14)
+var float kalmanMfi = na
+kalmanMfi := na(kalmanMfi) ? mfiRaw : kalmanMfi + 0.5 * (mfiRaw - kalmanMfi)
+entrySignal = {"ta.crossover(kalmanMfi, 20)" if is_long else "ta.crossunder(kalmanMfi, 80)"}''',
+
+            'kalman_adx': f'''// Kalman-Smoothed ADX Trend
+// ADX filtered through Kalman with DI dominance
+[diPlus, diMinus, adxRaw] = ta.dmi(14, 14)
+var float kalmanAdx = na
+kalmanAdx := na(kalmanAdx) ? adxRaw : kalmanAdx + 0.5 * (adxRaw - kalmanAdx)
+entrySignal = {"kalmanAdx > 25 and diPlus > diMinus" if is_long else "kalmanAdx > 25 and diMinus > diPlus"}''',
+
+            'kalman_psar': f'''// Kalman PSAR
+// Parabolic SAR crossover (use standard PSAR)
+psarValue = ta.sar(0.02, 0.02, 0.2)
+entrySignal = {"ta.crossover(close, psarValue)" if is_long else "ta.crossunder(close, psarValue)"}''',
+
+            'kalman_macd': f'''// Kalman-Smoothed MACD
+// MACD filtered through Kalman for smoother signals
+[macdLine, signalLine, histLine] = ta.macd(close, 12, 26, 9)
+var float kalmanMacd = na
+var float kalmanSignal = na
+kalmanMacd := na(kalmanMacd) ? macdLine : kalmanMacd + 0.5 * (macdLine - kalmanMacd)
+kalmanSignal := na(kalmanSignal) ? signalLine : kalmanSignal + 0.5 * (signalLine - kalmanSignal)
+entrySignal = {"ta.crossover(kalmanMacd, kalmanSignal)" if is_long else "ta.crossunder(kalmanMacd, kalmanSignal)"}''',
         }
 
         # Mihakralj entry conditions - uses mathematically rigorous mih_* functions
@@ -1424,6 +1491,66 @@ ema50 = ta.ema(close, 50)
 aligned = {"ema9 > ema21 and ema21 > ema50" if is_long else "ema9 < ema21 and ema21 < ema50"}
 wasNotAligned = {"not (ema9[1] > ema21[1] and ema21[1] > ema50[1])" if is_long else "not (ema9[1] < ema21[1] and ema21[1] < ema50[1])"}
 entrySignal = aligned and wasNotAligned''',
+
+            # === KALMAN FILTER STRATEGIES (mihakralj) ===
+            'kalman_trend': f'''// Kalman Filter Trend (mihakralj)
+var float kalman = na
+var float velocity = 0.0
+kalmanGain = 0.7
+if bar_index == 0
+    kalman := close
+else
+    float prediction = kalman + velocity
+    float error = close - prediction
+    kalman := prediction + kalmanGain * error
+    velocity := velocity + kalmanGain * error
+entrySignal = {"ta.crossover(close, kalman)" if is_long else "ta.crossunder(close, kalman)"}''',
+
+            'kalman_bb': f'''// Kalman Bollinger Bands (mihakralj)
+var float kalman = na
+var float velocity = 0.0
+kalmanGain = 0.7
+if bar_index == 0
+    kalman := close
+else
+    float prediction = kalman + velocity
+    float error = close - prediction
+    kalman := prediction + kalmanGain * error
+    velocity := velocity + kalmanGain * error
+kalmanStd = ta.stdev(close, 20)
+kalmanUpper = kalman + kalmanStd * 2.0
+kalmanLower = kalman - kalmanStd * 2.0
+entrySignal = {"ta.crossover(close, kalmanLower)" if is_long else "ta.crossunder(close, kalmanUpper)"}''',
+
+            'kalman_rsi': f'''// Kalman-Smoothed RSI (mihakralj)
+rsiRaw = mih_rsi(close, 14)
+var float kalmanRsi = na
+kalmanRsi := na(kalmanRsi) ? rsiRaw : kalmanRsi + 0.5 * (rsiRaw - kalmanRsi)
+entrySignal = {"ta.crossover(kalmanRsi, 30)" if is_long else "ta.crossunder(kalmanRsi, 70)"}''',
+
+            'kalman_mfi': f'''// Kalman-Smoothed MFI (mihakralj)
+mfiRaw = ta.mfi(hlc3, 14)
+var float kalmanMfi = na
+kalmanMfi := na(kalmanMfi) ? mfiRaw : kalmanMfi + 0.5 * (mfiRaw - kalmanMfi)
+entrySignal = {"ta.crossover(kalmanMfi, 20)" if is_long else "ta.crossunder(kalmanMfi, 80)"}''',
+
+            'kalman_adx': f'''// Kalman-Smoothed ADX Trend (mihakralj)
+[diPlus, diMinus, adxRaw] = ta.dmi(14, 14)
+var float kalmanAdx = na
+kalmanAdx := na(kalmanAdx) ? adxRaw : kalmanAdx + 0.5 * (adxRaw - kalmanAdx)
+entrySignal = {"kalmanAdx > 25 and diPlus > diMinus" if is_long else "kalmanAdx > 25 and diMinus > diPlus"}''',
+
+            'kalman_psar': f'''// Kalman PSAR (mihakralj)
+psarValue = ta.sar(0.02, 0.02, 0.2)
+entrySignal = {"ta.crossover(close, psarValue)" if is_long else "ta.crossunder(close, psarValue)"}''',
+
+            'kalman_macd': f'''// Kalman-Smoothed MACD (mihakralj)
+[macdLine, signalLine, histLine] = ta.macd(close, 12, 26, 9)
+var float kalmanMacd = na
+var float kalmanSignal = na
+kalmanMacd := na(kalmanMacd) ? macdLine : kalmanMacd + 0.5 * (macdLine - kalmanMacd)
+kalmanSignal := na(kalmanSignal) ? signalLine : kalmanSignal + 0.5 * (signalLine - kalmanSignal)
+entrySignal = {"ta.crossover(kalmanMacd, kalmanSignal)" if is_long else "ta.crossunder(kalmanMacd, kalmanSignal)"}''',
         }
 
         # Bidirectional entry conditions - generates BOTH long and short signals
@@ -1705,6 +1832,73 @@ longWasNotAligned = not (ema9[1] > ema21[1] and ema21[1] > ema50[1])
 shortWasNotAligned = not (ema9[1] < ema21[1] and ema21[1] < ema50[1])
 longEntrySignal = longAligned and longWasNotAligned
 shortEntrySignal = shortAligned and shortWasNotAligned''',
+
+            # === KALMAN FILTER STRATEGIES - BIDIRECTIONAL ===
+            'kalman_trend': f'''// Kalman Filter Trend - BIDIRECTIONAL
+var float kalman = na
+var float velocity = 0.0
+kalmanGain = 0.7
+if bar_index == 0
+    kalman := close
+else
+    float prediction = kalman + velocity
+    float error = close - prediction
+    kalman := prediction + kalmanGain * error
+    velocity := velocity + kalmanGain * error
+longEntrySignal = ta.crossover(close, kalman)
+shortEntrySignal = ta.crossunder(close, kalman)''',
+
+            'kalman_bb': f'''// Kalman Bollinger Bands - BIDIRECTIONAL
+var float kalman = na
+var float velocity = 0.0
+kalmanGain = 0.7
+if bar_index == 0
+    kalman := close
+else
+    float prediction = kalman + velocity
+    float error = close - prediction
+    kalman := prediction + kalmanGain * error
+    velocity := velocity + kalmanGain * error
+kalmanStd = ta.stdev(close, 20)
+kalmanUpper = kalman + kalmanStd * 2.0
+kalmanLower = kalman - kalmanStd * 2.0
+longEntrySignal = ta.crossover(close, kalmanLower)
+shortEntrySignal = ta.crossunder(close, kalmanUpper)''',
+
+            'kalman_rsi': f'''// Kalman-Smoothed RSI - BIDIRECTIONAL
+rsiRaw = ta.rsi(close, 14)
+var float kalmanRsi = na
+kalmanRsi := na(kalmanRsi) ? rsiRaw : kalmanRsi + 0.5 * (rsiRaw - kalmanRsi)
+longEntrySignal = ta.crossover(kalmanRsi, 30)
+shortEntrySignal = ta.crossunder(kalmanRsi, 70)''',
+
+            'kalman_mfi': f'''// Kalman-Smoothed MFI - BIDIRECTIONAL
+mfiRaw = ta.mfi(hlc3, 14)
+var float kalmanMfi = na
+kalmanMfi := na(kalmanMfi) ? mfiRaw : kalmanMfi + 0.5 * (mfiRaw - kalmanMfi)
+longEntrySignal = ta.crossover(kalmanMfi, 20)
+shortEntrySignal = ta.crossunder(kalmanMfi, 80)''',
+
+            'kalman_adx': f'''// Kalman-Smoothed ADX Trend - BIDIRECTIONAL
+[diPlus, diMinus, adxRaw] = ta.dmi(14, 14)
+var float kalmanAdx = na
+kalmanAdx := na(kalmanAdx) ? adxRaw : kalmanAdx + 0.5 * (adxRaw - kalmanAdx)
+longEntrySignal = kalmanAdx > 25 and diPlus > diMinus
+shortEntrySignal = kalmanAdx > 25 and diMinus > diPlus''',
+
+            'kalman_psar': f'''// Kalman PSAR - BIDIRECTIONAL
+psarValue = ta.sar(0.02, 0.02, 0.2)
+longEntrySignal = ta.crossover(close, psarValue)
+shortEntrySignal = ta.crossunder(close, psarValue)''',
+
+            'kalman_macd': f'''// Kalman-Smoothed MACD - BIDIRECTIONAL
+[macdLine, signalLine, histLine] = ta.macd(close, 12, 26, 9)
+var float kalmanMacd = na
+var float kalmanSignal = na
+kalmanMacd := na(kalmanMacd) ? macdLine : kalmanMacd + 0.5 * (macdLine - kalmanMacd)
+kalmanSignal := na(kalmanSignal) ? signalLine : kalmanSignal + 0.5 * (signalLine - kalmanSignal)
+longEntrySignal = ta.crossover(kalmanMacd, kalmanSignal)
+shortEntrySignal = ta.crossunder(kalmanMacd, kalmanSignal)''',
         }
 
         # Select the appropriate entry conditions based on engine and direction
