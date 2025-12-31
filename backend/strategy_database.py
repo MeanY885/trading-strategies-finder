@@ -851,6 +851,16 @@ class StrategyDatabase:
         cursor.execute('SELECT DISTINCT timeframe FROM strategies WHERE timeframe IS NOT NULL')
         timeframes = [row[0] for row in cursor.fetchall()]
 
+        # Elite validation counts
+        cursor.execute("SELECT COUNT(*) FROM strategies WHERE elite_status = 'validated'")
+        elite_validated = cursor.fetchone()[0]
+
+        cursor.execute("SELECT COUNT(*) FROM strategies WHERE elite_status IS NULL OR elite_status = 'pending'")
+        elite_pending = cursor.fetchone()[0]
+
+        cursor.execute("SELECT COUNT(*) FROM strategies WHERE elite_status = 'untestable'")
+        elite_untestable = cursor.fetchone()[0]
+
         self._return_connection(conn)
 
         return {
@@ -860,7 +870,10 @@ class StrategyDatabase:
             'avg_win_rate': round(avg_win_rate, 2),
             'best_composite_score': round(best_score, 4),
             'symbols_tested': symbols,
-            'timeframes_tested': timeframes
+            'timeframes_tested': timeframes,
+            'elite_validated': elite_validated,
+            'elite_pending': elite_pending,
+            'elite_untestable': elite_untestable
         }
 
     def get_filter_options(self) -> Dict:

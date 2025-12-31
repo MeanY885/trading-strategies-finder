@@ -26,6 +26,10 @@
         let autonomousInitialized = false;
         let autonomousPollingInterval = null;
 
+        // Elite validation state tracking for auto-refresh
+        let eliteWasRunning = false;
+        let eliteLastProcessedCount = 0;
+
         // Priority Queue State (3-list system - actual state in priority section)
         let priorityInitialized = false;
 
@@ -296,6 +300,7 @@
                         updateEliteUI(message.status);
                         document.getElementById('validatedCount').textContent = message.status.validated || 0;
                         document.getElementById('pendingCount').textContent = message.status.pending || 0;
+                        document.getElementById('untestableCount').textContent = message.status.untestable || 0;
                     }
                     if (message.strategies) {
                         cachedEliteData = message;
@@ -544,10 +549,27 @@
                 }
             }
 
-            // Refresh elite data periodically (not on every message to avoid overload)
-            if (status.running === false) {
+            // Refresh elite data when validation state changes or new strategies are validated
+            const currentProcessed = status.processed || 0;
+
+            // Refresh when validation transitions from running to stopped
+            if (eliteWasRunning && !status.running) {
                 loadEliteData();
             }
+
+            // Refresh when data_updated flag is set (strategy just finished validation)
+            if (status.data_updated) {
+                loadEliteData();
+            }
+
+            // Fallback: Refresh when a new strategy is validated (processed count increases)
+            if (status.running && currentProcessed > eliteLastProcessedCount && eliteLastProcessedCount > 0) {
+                loadEliteData();
+            }
+
+            // Update tracking state
+            eliteWasRunning = status.running;
+            eliteLastProcessedCount = currentProcessed;
         }
 
         // Render the elite validation queue with progress bars (like Auto Optimizer)
@@ -969,16 +991,12 @@
 
         async function refreshDbStats() {
             try {
-                const response = await fetch('/api/db/strategies');
-                const strategies = await response.json();
+                const response = await fetch('/api/db/stats');
+                const stats = await response.json();
 
-                const total = strategies.length;
-                const validated = strategies.filter(s => s.elite_status && s.elite_status !== 'pending' && s.elite_status !== 'untestable').length;
-                const pending = strategies.filter(s => !s.elite_status || s.elite_status === 'pending').length;
-
-                document.getElementById('dbTotalStrategies').textContent = total;
-                document.getElementById('dbEliteStrategies').textContent = validated;
-                document.getElementById('dbPendingValidation').textContent = pending;
+                document.getElementById('dbTotalStrategies').textContent = stats.total_strategies || 0;
+                document.getElementById('dbEliteStrategies').textContent = stats.elite_validated || 0;
+                document.getElementById('dbPendingValidation').textContent = stats.elite_pending || 0;
             } catch (e) {
                 console.error('Error fetching db stats:', e);
             }
