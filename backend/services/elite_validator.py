@@ -335,6 +335,10 @@ async def validate_strategy(
         "total_periods": total_periods
     }
 
+    # Use extended mode for longer periods (6m+, 1yr, 2yr)
+    # These have more data to process and need higher thresholds
+    has_long_periods = any(vp.get("days", 0) >= 180 for vp in validation_periods)
+
     # Create progress-based watchdog for this validation
     watchdog_task_id = f"elite_{strategy_id}_{symbol}"
     watchdog = ProgressBasedWatchdog(
@@ -343,7 +347,8 @@ async def validate_strategy(
         total_combinations=total_periods,  # Each period is a "combination"
         progress_key="progress",
         abort_key="abort",
-        running_key="running"
+        running_key="running",
+        extended_mode=has_long_periods  # Use extended thresholds for long periods
     )
 
     # Start watchdog in background
@@ -358,9 +363,13 @@ async def validate_strategy(
                 break
 
             # Update progress for watchdog (0-100 scale)
-            progress_pct = (period_idx / total_periods) * 100
+            # Each period has 3 phases: start (0%), data fetch (33%), backtest (66%), complete (100%)
+            # So period progress = (period_idx + phase_fraction) / total_periods * 100
+            phase_fraction = 0.0  # Start of period
+            progress_pct = ((period_idx + phase_fraction) / total_periods) * 100
             watchdog_status["progress"] = progress_pct
             watchdog_status["current_period"] = vp["period"]
+            watchdog_status["current_phase"] = "starting"
             watchdog_status["periods_completed"] = period_idx
 
             # Report progress via callback
@@ -395,11 +404,22 @@ async def validate_strategy(
                 continue
 
             try:
+                # Update progress: data fetch phase (33% of period)
+                phase_fraction = 0.1
+                watchdog_status["progress"] = ((period_idx + phase_fraction) / total_periods) * 100
+                watchdog_status["current_phase"] = "fetching_data"
+
                 # Fetch data - NO timeout wrapper (progress-based watchdog handles stalls)
                 fetcher = BinanceDataFetcher()
 
                 # NO asyncio.wait_for() - progress-based watchdog monitors stalls
                 df = await fetcher.fetch_ohlcv(pair=symbol, interval=tf_minutes, months=vp["months"])
+
+                # Update progress: data fetched (40% of period)
+                phase_fraction = 0.4
+                watchdog_status["progress"] = ((period_idx + phase_fraction) / total_periods) * 100
+                watchdog_status["current_phase"] = "data_ready"
+                watchdog_status["candles_fetched"] = len(df)
 
                 if len(df) < 50:
                     results.append({
@@ -413,6 +433,11 @@ async def validate_strategy(
                 if watchdog_status.get("abort"):
                     log(f"[Elite Validation] Watchdog aborted after data fetch for {strategy_name}", level='WARNING')
                     break
+
+                # Update progress: backtest starting (50% of period)
+                phase_fraction = 0.5
+                watchdog_status["progress"] = ((period_idx + phase_fraction) / total_periods) * 100
+                watchdog_status["current_phase"] = "backtesting"
 
                 # Run backtest - NO timeout wrapper (progress-based watchdog handles stalls)
                 def run_backtest():
@@ -450,6 +475,11 @@ async def validate_strategy(
                 loop = asyncio.get_running_loop()
                 # NO asyncio.wait_for() - progress-based watchdog monitors stalls
                 result = await loop.run_in_executor(None, run_backtest)
+
+                # Update progress: backtest complete (90% of period)
+                phase_fraction = 0.9
+                watchdog_status["progress"] = ((period_idx + phase_fraction) / total_periods) * 100
+                watchdog_status["current_phase"] = "processing_results"
 
                 # Simple profitability check - no comparison to original metrics
                 # A period passes if it made any profit (PnL > 0)
@@ -560,6 +590,9 @@ async def validate_single_strategy_worker(strategy: dict, processed_count: list,
     """
     Worker function to validate a single strategy with resource-aware control.
     Uses a dynamic semaphore that respects other running services.
+
+    FIX: Only add to running_validations AFTER acquiring semaphore slot,
+    so the count reflects actually executing tasks, not waiting ones.
     """
     global running_validations, pending_strategies_list
     from services.websocket_manager import broadcast_elite_status
@@ -575,24 +608,11 @@ async def validate_single_strategy_worker(strategy: dict, processed_count: list,
 
     # Wait for a slot - semaphore is dynamically sized
     async with task_slot:
-        # Additional resource check before starting (with timeout)
-        wait_start = time.time()
-        can_spawn, reason = can_spawn_validation()
-
-        while not can_spawn:
-            # Check timeout
-            if time.time() - wait_start > RESOURCE_WAIT_TIMEOUT:
-                log(f"[Elite Validation] Resource wait timeout after {RESOURCE_WAIT_TIMEOUT}s, skipping {strategy_name}", level='WARNING')
-                return  # Skip this strategy, don't block forever
-
-            log(f"[Elite Validation] Waiting for resources: {reason}")
-            await asyncio.sleep(5)
-            can_spawn, reason = can_spawn_validation()
-
-        # Track start time for ETA calculation
+        # Track start time for ETA calculation (AFTER acquiring slot)
         validation_start_time = time.time()
 
-        # Add to running validations
+        # Add to running validations AFTER acquiring slot (not before)
+        # This fixes the race condition where waiting tasks inflated the count
         async with running_validations_async_lock:
             running_validations[strategy_id] = {
                 "id": strategy_id,

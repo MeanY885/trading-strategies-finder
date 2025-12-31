@@ -156,20 +156,31 @@ class SignalCountStallDetector:
     This is completely time-independent.
     """
 
-    # Consecutive unchanged measurements for warning
-    # VectorBT batch processing can take several minutes between updates
+    # Default thresholds (can be overridden per-instance)
     # At CHECK_INTERVAL=0.5s, 1800 measurements = ~15 minutes
-    UNCHANGED_WARNING = 1800
+    DEFAULT_UNCHANGED_WARNING = 1800
 
-    # Consecutive unchanged measurements for abort
-    # Extended for batch processing: 3600 measurements = ~30 minutes
-    # This gives enough time for large optimizations with 52,800+ combinations
-    UNCHANGED_ABORT = 3600
+    # Default abort: 3600 measurements = ~30 minutes
+    DEFAULT_UNCHANGED_ABORT = 3600
 
-    def __init__(self):
+    # Extended thresholds for longer periods (6m+, 2yr data)
+    # These periods have more data to process (69,000+ candles for 2yr)
+    EXTENDED_UNCHANGED_WARNING = 3600   # ~30 minutes
+    EXTENDED_UNCHANGED_ABORT = 7200     # ~60 minutes
+
+    def __init__(self, extended_mode: bool = False):
         self._last_progress_value = 0.0
         self._consecutive_unchanged = 0
         self._total_measurements = 0
+        self._extended_mode = extended_mode
+
+        # Use extended thresholds for longer periods (2yr data, etc.)
+        if extended_mode:
+            self.UNCHANGED_WARNING = self.EXTENDED_UNCHANGED_WARNING
+            self.UNCHANGED_ABORT = self.EXTENDED_UNCHANGED_ABORT
+        else:
+            self.UNCHANGED_WARNING = self.DEFAULT_UNCHANGED_WARNING
+            self.UNCHANGED_ABORT = self.DEFAULT_UNCHANGED_ABORT
 
     def update(self, progress: float) -> Dict:
         """
@@ -190,7 +201,8 @@ class SignalCountStallDetector:
             "consecutive_unchanged": self._consecutive_unchanged,
             "warning": self._consecutive_unchanged >= self.UNCHANGED_WARNING,
             "should_abort": self._consecutive_unchanged >= self.UNCHANGED_ABORT,
-            "total_measurements": self._total_measurements
+            "total_measurements": self._total_measurements,
+            "thresholds": {"warning": self.UNCHANGED_WARNING, "abort": self.UNCHANGED_ABORT}
         }
 
     def reset(self):
@@ -305,7 +317,8 @@ class ProgressBasedWatchdog:
         running_key: str = "running",
         result_key: str = "report",
         combo_current_key: str = None,
-        combo_total_key: str = None
+        combo_total_key: str = None,
+        extended_mode: bool = False
     ):
         """
         Initialize progress-based watchdog.
@@ -320,6 +333,7 @@ class ProgressBasedWatchdog:
             result_key: Key for result/report object
             combo_current_key: Optional key for current combo count
             combo_total_key: Optional key for total combo count
+            extended_mode: If True, use extended thresholds for longer periods (2yr data)
         """
         self.task_id = task_id
         self.status_dict = status_dict
@@ -330,10 +344,11 @@ class ProgressBasedWatchdog:
         self.result_key = result_key
         self.combo_current_key = combo_current_key
         self.combo_total_key = combo_total_key
+        self.extended_mode = extended_mode
 
         # Detection systems
         self.velocity_tracker = ProgressVelocityTracker()
-        self.stall_detector = SignalCountStallDetector()
+        self.stall_detector = SignalCountStallDetector(extended_mode=extended_mode)
         self.completion_detector = CompletionEventDetector()
 
         # State
@@ -348,8 +363,10 @@ class ProgressBasedWatchdog:
         self._running = True
         self._aborted = False
 
+        mode_str = "EXTENDED" if self.extended_mode else "STANDARD"
         log(f"[ProgressWatchdog] Started monitoring {self.task_id}")
-        log(f"[ProgressWatchdog] Mode: PROGRESS-BASED (no absolute time limits)")
+        log(f"[ProgressWatchdog] Mode: PROGRESS-BASED ({mode_str} thresholds)")
+        log(f"[ProgressWatchdog] Abort threshold: {self.stall_detector.UNCHANGED_ABORT} measurements (~{self.stall_detector.UNCHANGED_ABORT * 0.5 / 60:.0f} min)")
         if self.total_combinations > 0:
             log(f"[ProgressWatchdog] Total combinations: {self.total_combinations:,}")
 
