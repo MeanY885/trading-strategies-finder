@@ -2052,7 +2052,7 @@ class VectorBTEngine:
                                     )
 
                                     results.append(VectorBTResult(
-                                        strategy_name=strategy,
+                                        strategy_name=f"{strategy}_{direction}",
                                         strategy_category=self.ENTRY_STRATEGIES.get(strategy, {}).get('category', 'Unknown'),
                                         direction=direction,
                                         tp_percent=tp,
@@ -2459,7 +2459,7 @@ class VectorBTEngine:
             )
 
             return VectorBTResult(
-                strategy_name=strategy,
+                strategy_name=f"{strategy}_{direction}",
                 strategy_category=self.ENTRY_STRATEGIES.get(strategy, {}).get('category', 'Unknown'),
                 direction=direction,
                 tp_percent=tp_percent,
@@ -2753,7 +2753,7 @@ class VectorBTEngine:
     ) -> VectorBTResult:
         """Return an empty result for no-trade scenarios."""
         return VectorBTResult(
-            strategy_name=strategy,
+            strategy_name=f"{strategy}_{direction}",
             strategy_category=self.ENTRY_STRATEGIES.get(strategy, {}).get('category', 'Unknown'),
             direction=direction,
             tp_percent=tp_percent,
