@@ -6058,8 +6058,15 @@
                 // Populate Pine Script
                 document.getElementById('debugPineScript').textContent = currentDebugPineScript;
 
+                // Show warning if trades weren't stored (old strategy)
+                if (infoData.trades_not_stored) {
+                    document.getElementById('debugOurTradeCount').textContent = `0 (not stored)`;
+                    showToast(infoData.warning || 'Trades not stored for this strategy. Re-run optimization to get trade data.', 'warning');
+                } else {
+                    document.getElementById('debugOurTradeCount').textContent = currentDebugOurTrades.length;
+                }
+
                 // Populate our trades
-                document.getElementById('debugOurTradeCount').textContent = currentDebugOurTrades.length;
                 const tradesBody = document.getElementById('debugOurTradesBody');
                 tradesBody.innerHTML = currentDebugOurTrades.map((t, i) => {
                     const pnlColor = t.pnl >= 0 ? 'var(--success)' : 'var(--danger)';

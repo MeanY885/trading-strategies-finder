@@ -5092,8 +5092,34 @@ class StrategyEngine:
             profitable = [r for r in results if r.total_pnl > 0]
 
             if save_to_db and self.db and profitable:
-                self._update_status("VectorBT: Saving to database...", 95)
+                self._update_status("VectorBT: Populating trade details for top strategies...", 93)
                 to_save = profitable[:50]
+
+                # CRITICAL: Re-run single backtests for top strategies to get trades_list
+                # run_optimization() skips trades_list for performance, but we need it for:
+                # 1. The debugger to show accurate trade data
+                # 2. Comparing with TradingView exports
+                for i, result in enumerate(to_save):
+                    if not result.trades_list:
+                        try:
+                            # Re-run single backtest to get trades_list
+                            detailed_result = vbt_engine.run_single_backtest(
+                                strategy=result.strategy_name,
+                                direction=result.direction,
+                                tp_percent=result.params.get('tp_percent', result.tp_percent) if hasattr(result, 'params') and result.params else result.tp_percent,
+                                sl_percent=result.params.get('sl_percent', result.sl_percent) if hasattr(result, 'params') and result.params else result.sl_percent
+                            )
+                            if detailed_result and detailed_result.trades_list:
+                                result.trades_list = detailed_result.trades_list
+                                result.equity_curve = detailed_result.equity_curve
+                        except Exception as e:
+                            log(f"[VectorBT] Could not get trades_list for {result.strategy_name}: {e}", level='WARNING')
+
+                    # Progress update every 10 strategies
+                    if (i + 1) % 10 == 0:
+                        self._update_status(f"VectorBT: Trade details {i+1}/{len(to_save)}...", 93 + int((i / len(to_save)) * 2))
+
+                self._update_status("VectorBT: Saving to database...", 95)
 
                 # Use batch insert for much better performance (1 commit instead of 50)
                 try:
