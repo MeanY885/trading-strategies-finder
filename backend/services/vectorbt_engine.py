@@ -2007,23 +2007,47 @@ class VectorBTEngine:
 
             for idx, trade in records.iterrows():
                 try:
-                    # Get entry and exit indices
-                    entry_idx = int(trade.get('Entry Index', trade.get('entry_idx', 0)))
-                    exit_idx = int(trade.get('Exit Index', trade.get('exit_idx', entry_idx)))
+                    # VectorBT records_readable provides these columns directly:
+                    # 'Entry Timestamp', 'Exit Timestamp', 'Avg Entry Price', 'Avg Exit Price', 'PnL', 'Return'
 
-                    # Signal bar is one before entry (when signal fired)
-                    signal_idx = max(0, entry_idx - 1)
+                    # Get timestamps directly from VectorBT (not from indices)
+                    entry_bar_time = trade.get('Entry Timestamp', None)
+                    exit_bar_time = trade.get('Exit Timestamp', None)
 
-                    # Get timestamps from DataFrame index
-                    signal_bar_time = self.df.index[signal_idx] if signal_idx < len(self.df) else None
-                    entry_bar_time = self.df.index[entry_idx] if entry_idx < len(self.df) else None
-                    exit_bar_time = self.df.index[exit_idx] if exit_idx < len(self.df) else None
+                    # Convert to string if timestamp object
+                    if hasattr(entry_bar_time, 'strftime'):
+                        entry_bar_time = str(entry_bar_time)
+                    if hasattr(exit_bar_time, 'strftime'):
+                        exit_bar_time = str(exit_bar_time)
 
-                    # Get prices
-                    entry_price = float(trade.get('Avg Entry Price', trade.get('entry_price', 0)))
-                    exit_price = float(trade.get('Avg Exit Price', trade.get('exit_price', 0)))
-                    pnl = float(trade.get('PnL', trade.get('pnl', 0)))
-                    pnl_pct = float(trade.get('Return', trade.get('return_', 0))) * 100
+                    # Get entry/exit indices from timestamps (needed for indicator lookup and exit type)
+                    entry_idx = 0
+                    exit_idx = 0
+                    signal_bar_time = None
+
+                    if entry_bar_time:
+                        try:
+                            entry_ts = pd.Timestamp(entry_bar_time)
+                            if entry_ts in self.df.index:
+                                entry_idx = self.df.index.get_loc(entry_ts)
+                                if entry_idx > 0:
+                                    signal_bar_time = str(self.df.index[entry_idx - 1])
+                        except:
+                            pass
+
+                    if exit_bar_time:
+                        try:
+                            exit_ts = pd.Timestamp(exit_bar_time)
+                            if exit_ts in self.df.index:
+                                exit_idx = self.df.index.get_loc(exit_ts)
+                        except:
+                            pass
+
+                    # Get prices directly from VectorBT
+                    entry_price = float(trade.get('Avg Entry Price', 0) or 0)
+                    exit_price = float(trade.get('Avg Exit Price', 0) or 0)
+                    pnl = float(trade.get('PnL', 0) or 0)
+                    pnl_pct = float(trade.get('Return', 0) or 0) * 100
 
                     # Calculate TP/SL prices based on direction
                     if direction == 'long':
