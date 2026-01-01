@@ -667,15 +667,22 @@ async def debug_strategy(strategy_id: int, file: UploadFile = File(...)):
         if direction == "bidirectional":
             direction = "long"
 
-        # Get entry_rule from params or strategy_name
-        entry_rule = params.get("entry_rule", "")
-        if not entry_rule:
-            strategy_name = strategy.get("strategy_name", "")
-            parts = strategy_name.rsplit(" ", 1)
-            if len(parts) == 2 and parts[1] in ["Long", "Short"]:
-                entry_rule = parts[0]
-            else:
-                entry_rule = strategy_name
+        # Get entry_rule from strategy_name (NOT params.entry_rule which is human-readable description)
+        # CRITICAL: params.entry_rule contains descriptions like "Stochastic extreme levels"
+        # but VectorBT needs the function name like "stoch_extreme"
+        strategy_name = strategy.get("strategy_name", "")
+
+        # Extract function name from strategy_name formats:
+        # - "ichimoku_cross (ADAUSDT 30m)" -> "ichimoku_cross"
+        # - "ichimoku_cross Long" -> "ichimoku_cross"
+        # - "ichimoku_cross" -> "ichimoku_cross"
+        entry_rule = strategy_name
+        if " (" in strategy_name:
+            # Format: "rule_name (SYMBOL TF)"
+            entry_rule = strategy_name.split(" (")[0]
+        elif strategy_name.endswith(" Long") or strategy_name.endswith(" Short"):
+            # Format: "rule_name Long/Short"
+            entry_rule = strategy_name.rsplit(" ", 1)[0]
 
         # Extract strategy details
         strategy_info = {
@@ -901,16 +908,24 @@ async def get_debug_strategy_info(strategy_id: int):
         if direction == "bidirectional":
             direction = "long"  # Default to long for display
 
-        # Get entry_rule from params or strategy_name
-        entry_rule = params.get("entry_rule", "")
-        if not entry_rule:
-            # Try to extract from strategy_name (format: "rule_name Long" or "rule_name Short")
-            strategy_name = strategy.get("strategy_name", "")
-            parts = strategy_name.rsplit(" ", 1)
-            if len(parts) == 2 and parts[1] in ["Long", "Short"]:
-                entry_rule = parts[0]
-            else:
-                entry_rule = strategy_name
+        # Get entry_rule from strategy_name (NOT params.entry_rule which is human-readable description)
+        # CRITICAL: params.entry_rule contains descriptions like "Stochastic extreme levels"
+        # but VectorBT needs the function name like "stoch_extreme"
+        strategy_name = strategy.get("strategy_name", "")
+
+        # Extract function name from strategy_name formats:
+        # - "ichimoku_cross (ADAUSDT 30m)" -> "ichimoku_cross"
+        # - "ichimoku_cross Long" -> "ichimoku_cross"
+        # - "ichimoku_cross" -> "ichimoku_cross"
+        entry_rule = strategy_name
+        if " (" in strategy_name:
+            # Format: "rule_name (SYMBOL TF)"
+            entry_rule = strategy_name.split(" (")[0]
+        elif strategy_name.endswith(" Long") or strategy_name.endswith(" Short"):
+            # Format: "rule_name Long/Short"
+            entry_rule = strategy_name.rsplit(" ", 1)[0]
+
+        print(f"[DEBUG] Extracted entry_rule='{entry_rule}' from strategy_name='{strategy_name}'")
 
         # Extract strategy details
         strategy_info = {
@@ -947,6 +962,8 @@ async def get_debug_strategy_info(strategy_id: int):
                 tp_percent = strategy.get("tp_percent", 2.0)
                 sl_percent = strategy.get("sl_percent", 5.0)
 
+                print(f"[DEBUG] Regenerating trades for {entry_rule} ({symbol} {timeframe}) direction={direction}")
+
                 # Check for supported pairs (Binance USDT pairs only)
                 supported_quotes = ['USDT', 'USDC', 'BUSD']
                 if any(symbol.endswith(q) for q in supported_quotes):
@@ -956,11 +973,13 @@ async def get_debug_strategy_info(strategy_id: int):
                     else:
                         tf_minutes = int(timeframe.replace('m', ''))
 
-                    # Fetch data (use 3 months for trade regeneration)
+                    # Fetch data - use 1 month for faster loading (was 3 months)
+                    print(f"[DEBUG] Fetching 1 month of {symbol} {timeframe} data...")
                     fetcher = BinanceDataFetcher()
-                    df = await fetcher.fetch_ohlcv(symbol, tf_minutes, months=3)
+                    df = await fetcher.fetch_ohlcv(symbol, tf_minutes, months=1)
 
                     if df is not None and len(df) > 100:
+                        print(f"[DEBUG] Got {len(df)} candles, running VectorBT backtest...")
                         # Run VectorBT backtest
                         engine = VectorBTEngine(
                             df=df,
@@ -979,6 +998,19 @@ async def get_debug_strategy_info(strategy_id: int):
                         if result and result.trades_list:
                             our_trades_raw = result.trades_list
                             print(f"[DEBUG] Successfully regenerated {len(our_trades_raw)} trades for GET endpoint")
+
+                            # Save regenerated trades to database for future fast access
+                            try:
+                                db.update_trades_list(strategy_id, our_trades_raw)
+                                print(f"[DEBUG] Saved trades_list to database for strategy {strategy_id}")
+                            except Exception as save_err:
+                                print(f"[DEBUG] Could not save trades to DB: {save_err}")
+                        else:
+                            print(f"[DEBUG] VectorBT returned no trades for entry_rule='{entry_rule}'")
+                    else:
+                        print(f"[DEBUG] Insufficient data: got {len(df) if df is not None else 0} candles")
+                else:
+                    print(f"[DEBUG] Unsupported symbol: {symbol}")
 
             except Exception as regen_error:
                 import traceback

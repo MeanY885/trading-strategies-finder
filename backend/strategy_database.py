@@ -1017,6 +1017,38 @@ class StrategyDatabase:
 
         return updated
 
+    def update_trades_list(self, strategy_id: int, trades_list: List[Dict]) -> bool:
+        """
+        Update trades_list for a strategy (used when regenerating trades for debugger).
+
+        Args:
+            strategy_id: Strategy ID
+            trades_list: List of trade dictionaries
+
+        Returns:
+            True if updated successfully
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        try:
+            trades_json = json.dumps(trades_list) if trades_list else None
+            cursor.execute('''
+                UPDATE strategies
+                SET trades_list = %s
+                WHERE id = %s
+            ''', (trades_json, strategy_id))
+
+            updated = cursor.rowcount > 0
+            conn.commit()
+            return updated
+        except Exception as e:
+            conn.rollback()
+            log(f"[DB] Error updating trades_list for strategy {strategy_id}: {e}", level='ERROR')
+            return False
+        finally:
+            self._return_connection(conn)
+
     def update_elite_status_batch(self, updates: List[Dict]) -> Dict[str, int]:
         """
         Batch update elite validation status for multiple strategies.
