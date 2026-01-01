@@ -754,15 +754,16 @@ async def debug_strategy(strategy_id: int, file: UploadFile = File(...)):
                 print(f"[DEBUG] Trade regeneration failed: {regen_error}")
 
         # Normalize our trades format
+        # VectorBT uses 'entry'/'exit', but we normalize to 'entry_price'/'exit_price'
         our_trades = []
         for i, t in enumerate(our_trades_raw):
             our_trades.append({
                 'trade_num': t.get('trade_num', i + 1),
                 'direction': str(t.get('direction', '')).upper(),
-                'entry_time': str(t.get('entry_time', '')),
-                'exit_time': str(t.get('exit_time', '')),
-                'entry_price': float(t.get('entry_price', 0)),
-                'exit_price': float(t.get('exit_price', 0)),
+                'entry_time': str(t.get('entry_time', t.get('entry_bar_time', ''))),
+                'exit_time': str(t.get('exit_time', t.get('exit_bar_time', ''))),
+                'entry_price': float(t.get('entry_price', t.get('entry', 0))),
+                'exit_price': float(t.get('exit_price', t.get('exit', 0))),
                 'pnl': float(t.get('pnl', 0)),
                 'pnl_pct': float(t.get('pnl_pct', t.get('pnl_percent', 0))),
                 'exit_reason': t.get('exit_reason', t.get('result', '')),
@@ -964,15 +965,16 @@ async def get_debug_strategy_info(strategy_id: int):
         trades_not_stored = not our_trades_raw and strategy.get("total_trades", 0) > 0
 
         # Normalize our trades format
+        # VectorBT uses 'entry'/'exit', but we normalize to 'entry_price'/'exit_price'
         our_trades = []
         for i, t in enumerate(our_trades_raw):
             our_trades.append({
                 'trade_num': t.get('trade_num', i + 1),
                 'direction': str(t.get('direction', '')).upper(),
-                'entry_time': str(t.get('entry_time', '')),
-                'exit_time': str(t.get('exit_time', '')),
-                'entry_price': float(t.get('entry_price', 0)),
-                'exit_price': float(t.get('exit_price', 0)),
+                'entry_time': str(t.get('entry_time', t.get('entry_bar_time', ''))),
+                'exit_time': str(t.get('exit_time', t.get('exit_bar_time', ''))),
+                'entry_price': float(t.get('entry_price', t.get('entry', 0))),
+                'exit_price': float(t.get('exit_price', t.get('exit', 0))),
                 'pnl': float(t.get('pnl', 0)),
                 'pnl_pct': float(t.get('pnl_pct', t.get('pnl_percent', 0))),
                 'exit_reason': t.get('exit_reason', t.get('result', '')),
