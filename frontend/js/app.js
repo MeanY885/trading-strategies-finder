@@ -5990,6 +5990,8 @@
         let currentDebugStrategyId = null;
         let currentDebugPineScript = '';
         let currentDebugOurTrades = [];
+        let currentDebugSymbol = '';
+        let currentDebugTimeframe = '';
 
         async function openDebugModal(strategyId) {
             currentDebugStrategyId = strategyId;
@@ -6032,6 +6034,8 @@
 
                 // Populate strategy info
                 const strategy = infoData.strategy;
+                currentDebugSymbol = strategy.symbol || '';
+                currentDebugTimeframe = strategy.timeframe || '';
                 document.getElementById('debugStrategyName').textContent = `${strategy.name} (${strategy.symbol} ${strategy.timeframe})`;
 
                 const dirBadge = document.getElementById('debugDirectionBadge');
@@ -6087,6 +6091,8 @@
             currentDebugStrategyId = null;
             currentDebugPineScript = '';
             currentDebugOurTrades = [];
+            currentDebugSymbol = '';
+            currentDebugTimeframe = '';
         }
 
         function formatDebugTime(timeStr) {
@@ -6148,6 +6154,48 @@
             document.body.removeChild(a);
             URL.revokeObjectURL(url);
             showToast('Pine Script downloaded!', 'success');
+        }
+
+        async function openDebugInTradingView() {
+            if (!currentDebugSymbol || !currentDebugTimeframe) {
+                showToast('No strategy loaded', 'error');
+                return;
+            }
+
+            try {
+                // Copy Pine Script to clipboard first
+                if (currentDebugPineScript) {
+                    const cleanScript = currentDebugPineScript.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+                    await navigator.clipboard.writeText(cleanScript);
+                    addLog('📋 Pine Script copied to clipboard');
+                }
+
+                // Build TradingView URL
+                // Symbol format: BINANCE:BTCUSDT or similar
+                const symbol = currentDebugSymbol.toUpperCase();
+                const exchange = 'BINANCE';
+                const tvSymbol = `${exchange}:${symbol}`;
+
+                // Convert timeframe to TradingView format
+                const tfMap = {
+                    '1m': '1', '3m': '3', '5m': '5', '15m': '15', '30m': '30',
+                    '1h': '60', '2h': '120', '4h': '240', '6h': '360', '12h': '720',
+                    '1d': 'D', '1w': 'W', '1M': 'M'
+                };
+                const tvTimeframe = tfMap[currentDebugTimeframe] || currentDebugTimeframe;
+
+                const tvUrl = `https://www.tradingview.com/chart/?symbol=${tvSymbol}&interval=${tvTimeframe}`;
+
+                // Open TradingView
+                window.open(tvUrl, '_blank');
+                addLog(`📈 TradingView opened: ${tvSymbol} (${currentDebugTimeframe})`);
+                addLog('💡 Paste Pine Script into Pine Editor (Ctrl+V / Cmd+V)');
+                showToast('Pine Script copied! Paste in TradingView Pine Editor', 'success');
+
+            } catch (error) {
+                console.error('Error opening TradingView:', error);
+                showToast('Failed to open TradingView: ' + error.message, 'error');
+            }
         }
 
         function exportDebugTrades() {
