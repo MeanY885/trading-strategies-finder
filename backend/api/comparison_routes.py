@@ -926,6 +926,8 @@ async def get_debug_strategy_info(strategy_id: int):
             entry_rule = strategy_name.rsplit(" ", 1)[0]
 
         print(f"[DEBUG] Extracted entry_rule='{entry_rule}' from strategy_name='{strategy_name}'")
+        print(f"[DEBUG] Full strategy data: symbol={strategy.get('symbol')}, timeframe={strategy.get('timeframe')}, direction={direction}, tp={strategy.get('tp_percent')}, sl={strategy.get('sl_percent')}")
+        print(f"[DEBUG] trades_list from DB: {type(strategy.get('trades_list'))} = {str(strategy.get('trades_list'))[:100]}")
 
         # Extract strategy details
         strategy_info = {
@@ -991,7 +993,13 @@ async def get_debug_strategy_info(strategy_id: int):
                     except Exception as date_err:
                         print(f"[DEBUG] Could not parse dates, using default 3 months: {date_err}")
 
-                print(f"[DEBUG] Regenerating trades for {entry_rule} ({symbol} {timeframe}) direction={direction}")
+                print(f"[DEBUG] Regenerating trades for entry_rule='{entry_rule}' ({symbol} {timeframe}) direction={direction}")
+
+                # Verify entry_rule is valid
+                from services.vectorbt_engine import VectorBTEngine
+                valid_strategies = list(VectorBTEngine.ENTRY_STRATEGIES.keys()) if hasattr(VectorBTEngine, 'ENTRY_STRATEGIES') else []
+                print(f"[DEBUG] Valid strategies count: {len(valid_strategies)}")
+                print(f"[DEBUG] entry_rule '{entry_rule}' in valid_strategies: {entry_rule in valid_strategies}")
 
                 # Check for supported pairs (Binance USDT pairs only)
                 supported_quotes = ['USDT', 'USDC', 'BUSD']
@@ -1027,11 +1035,16 @@ async def get_debug_strategy_info(strategy_id: int):
                                     sl_percent=sl_percent
                                 )
 
+                                print(f"[DEBUG] VectorBT result: trades_list={len(result.trades_list) if result and hasattr(result, 'trades_list') and result.trades_list else 0}, total_trades={getattr(result, 'total_trades', 'N/A')}")
                                 if result and result.trades_list:
                                     our_trades_raw = result.trades_list
                                     print(f"[DEBUG] VectorBT generated {len(our_trades_raw)} trades")
+                                else:
+                                    print(f"[DEBUG] VectorBT returned no trades - result: {result}")
                             except Exception as vbt_err:
+                                import traceback
                                 print(f"[DEBUG] VectorBT error: {vbt_err}")
+                                traceback.print_exc()
 
                         # Fallback to StrategyEngine if VectorBT returned no trades
                         if not our_trades_raw:
@@ -1048,11 +1061,16 @@ async def get_debug_strategy_info(strategy_id: int):
                                     position_size_pct=100,
                                     commission_pct=0.1
                                 )
+                                print(f"[DEBUG] StrategyEngine result: trades_list={len(result.trades_list) if result and hasattr(result, 'trades_list') and result.trades_list else 0}, total_trades={getattr(result, 'total_trades', 'N/A')}")
                                 if result and hasattr(result, 'trades_list') and result.trades_list:
                                     our_trades_raw = result.trades_list
                                     print(f"[DEBUG] StrategyEngine generated {len(our_trades_raw)} trades")
+                                else:
+                                    print(f"[DEBUG] StrategyEngine returned no trades - result: {result}")
                             except Exception as se_err:
+                                import traceback
                                 print(f"[DEBUG] StrategyEngine error: {se_err}")
+                                traceback.print_exc()
 
                         if our_trades_raw:
                             print(f"[DEBUG] Successfully regenerated {len(our_trades_raw)} trades for GET endpoint")
