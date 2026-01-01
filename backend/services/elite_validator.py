@@ -623,7 +623,7 @@ async def validate_single_strategy_worker(strategy: dict, processed_count: list,
     so the count reflects actually executing tasks, not waiting ones.
     """
     global running_validations, pending_strategies_list
-    from services.websocket_manager import broadcast_elite_status
+    from services.websocket_manager import broadcast_elite_status, broadcast_history_updated
 
     strategy_id = strategy.get('id')
     strategy_name = strategy.get('strategy_name', 'Unknown')
@@ -711,6 +711,8 @@ async def validate_single_strategy_worker(strategy: dict, processed_count: list,
                     raise  # Re-raise to be caught by outer handler
 
                 invalidate_counts_cache()
+                # Notify frontend that history has been updated (elite status changed)
+                broadcast_history_updated(invalidate_cache=True)
                 # Log with detailed reasons for untestable strategies
                 failed_reasons = result.get('failed_reasons', [])
                 if result['elite_status'] == 'untestable' and failed_reasons:
@@ -873,7 +875,7 @@ async def validate_all_strategies():
             message=f"Validating {len(pending)} strategies ({max_concurrent} parallel, resource-aware)..."
         )
 
-        from services.websocket_manager import broadcast_elite_status
+        from services.websocket_manager import broadcast_elite_status, broadcast_history_updated
         _update_queue_status()
         broadcast_elite_status(app_state.get_elite_status())
 
@@ -914,7 +916,7 @@ async def validate_all_strategies():
             pending_queue=[],
             parallel_count=0
         )
-        from services.websocket_manager import broadcast_elite_status
+        from services.websocket_manager import broadcast_elite_status, broadcast_history_updated
         broadcast_elite_status(app_state.get_elite_status())
 
 
@@ -1001,6 +1003,8 @@ async def start_auto_elite_validation():
                     )
                     # Invalidate cache after elite status update
                     invalidate_counts_cache()
+                    # Notify frontend that history has been updated (elite status changed)
+                    broadcast_history_updated(invalidate_cache=True)
 
                     await validate_all_strategies()
                     await asyncio.sleep(10)
@@ -1028,7 +1032,7 @@ async def stop_elite_validation():
         message="Stopped"
     )
 
-    from services.websocket_manager import broadcast_elite_status
+    from services.websocket_manager import broadcast_elite_status, broadcast_history_updated
     broadcast_elite_status(app_state.get_elite_status())
 
     log("[Elite Validation] Stop signal sent")

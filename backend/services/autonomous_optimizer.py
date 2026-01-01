@@ -494,7 +494,7 @@ async def run_single_optimization(
     """
     # NOTE: Uses app_state.running_optimizations and app_state.current_optimization_status
     # to avoid race conditions with abort signaling
-    from services.websocket_manager import ws_manager, _get_queue_data_from_status
+    from services.websocket_manager import ws_manager, _get_queue_data_from_status, broadcast_history_updated
 
     source = combo["source"]
     pair = combo["pair"]
@@ -850,6 +850,11 @@ async def run_single_optimization(
     app_state.add_to_history(history_entry)
 
     log(f"[Autonomous Optimizer] Completed {pair} - {strategies_found} strategies found (status: {status})")
+
+    # Notify frontend that history has been updated
+    if strategies_found > 0:
+        broadcast_history_updated(count=strategies_found)
+
     return "completed", strategies_found
 
 

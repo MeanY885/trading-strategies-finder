@@ -8,6 +8,7 @@
             period: ''
         };
         let historyGroupsCache = {};  // Cache groups for click handler
+        let historyStrategiesRaw = [];  // Source of truth - unfiltered data from server
         let historyInitialized = false;
         let validationInitialized = false;
         let eliteInitialized = false;
@@ -306,6 +307,15 @@
 
                 case 'elite_status':
                     if (message.elite) updateEliteUI(message.elite);
+                    break;
+
+                case 'history_updated':
+                    // New strategies were added - refresh history if tab is visible or initialized
+                    console.log('[WebSocket] History updated notification received');
+                    if (historyInitialized) {
+                        // Refresh raw data and reapply filters
+                        scheduleHistoryLiveUpdate();
+                    }
                     break;
 
                 case 'strategy_result':
@@ -808,27 +818,16 @@
                 }
 
                 // Check if we have new strategies
-                const oldCount = historyStrategies.length;
+                const oldCount = historyStrategiesRaw.length;
                 const newCount = newStrategies.length;
 
-                // Update the historyStrategies array
-                historyStrategies = newStrategies;
+                // Update the raw data and reapply filters
+                historyStrategiesRaw = newStrategies;
+                reapplyHistoryFilters();
 
-                // Sort according to current settings
-                sortStrategiesArray();
-
-                // Update count badge
-                const countEl = document.getElementById('history-count');
-                if (countEl) {
-                    countEl.textContent = `${historyStrategies.length} strategies`;
-                    countEl.className = 'status-badge ' + (historyStrategies.length > 0 ? 'success' : 'neutral');
-                }
-
-                // Only re-render if History tab is visible to avoid unnecessary DOM work
+                // Only log and re-render if History tab is visible to avoid unnecessary DOM work
                 const historyTab = document.getElementById('history-tab');
                 if (historyTab && historyTab.style.display !== 'none') {
-                    renderHistoryTable();
-
                     // Log update if count changed
                     if (newCount !== oldCount) {
                         console.log(`[History Live] Updated: ${oldCount} -> ${newCount} strategies`);
@@ -1002,6 +1001,12 @@
         // PERFORMANCE FIX: Tab switching is now non-blocking
         // Visual feedback happens immediately, data loading happens asynchronously
         function showTab(tabName) {
+            // Cleanup previous tab if it was history
+            const previousHistoryTab = document.getElementById('history-tab');
+            if (previousHistoryTab && previousHistoryTab.style.display !== 'none' && tabName !== 'history') {
+                cleanupHistoryTab();
+            }
+
             // PERFORMANCE: Use single getElementById calls instead of querySelectorAll loops
             // Cache tab elements for faster access
             const tabContent = document.getElementById(tabName + '-tab');
@@ -1412,45 +1417,18 @@
             });
         }
 
-        // Initialize History Tab
-        async function initHistoryTab() {
+        // Load filter options from dedicated API endpoint
+        async function loadFilterOptions() {
             try {
-                // CRITICAL: Reset all filters on init to prevent browser autofill issues
-                // This ensures a clean state on every tab initialization
-                historyFilters = { symbol: '', timeframe: '', period: '' };
-                const periodSelect = document.getElementById('filter-period');
-                if (periodSelect) periodSelect.value = '';
-
-                // Show loading state
-                const loading = document.getElementById('history-loading');
-                if (loading) {
-                    loading.style.display = 'block';
-                    loading.textContent = 'Loading strategies...';
-                }
-
-                // Try WebSocket first (much faster than HTTP polling)
-                // Fall back to HTTP if WebSocket fails
-                try {
-                    historyStrategies = await loadStrategiesViaWs();
-                } catch (wsError) {
-                    console.log('[History] WebSocket failed, falling back to HTTP:', wsError.message);
-                    const response = await fetch('/api/db/strategies?limit=1000');
-                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-                    historyStrategies = await response.json();
-                }
-
-                // Only mark initialized AFTER successful load
-                historyInitialized = true;
-
-                // Extract filter options from strategies
-                const symbols = [...new Set(historyStrategies.map(s => s.symbol).filter(Boolean))].sort();
-                const timeframes = [...new Set(historyStrategies.map(s => s.timeframe).filter(Boolean))].sort();
+                const response = await fetch('/api/db/filter-options');
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const data = await response.json();
 
                 // Populate symbol dropdown
                 const symbolSelect = document.getElementById('filter-symbol');
                 if (symbolSelect) {
                     symbolSelect.innerHTML = '<option value="">All Pairs</option>';
-                    symbols.forEach(symbol => {
+                    (data.symbols || []).forEach(symbol => {
                         symbolSelect.innerHTML += `<option value="${symbol}">${symbol}</option>`;
                     });
                 }
@@ -1459,32 +1437,127 @@
                 const timeframeSelect = document.getElementById('filter-timeframe');
                 if (timeframeSelect) {
                     timeframeSelect.innerHTML = '<option value="">All Timeframes</option>';
-                    timeframes.forEach(tf => {
+                    (data.timeframes || []).forEach(tf => {
                         timeframeSelect.innerHTML += `<option value="${tf}">${tf}</option>`;
                     });
                 }
 
-                // Sort and render (strategies already loaded)
-                sortStrategiesArray();
-                const countEl = document.getElementById('history-count');
-                if (countEl) {
-                    countEl.textContent = `${historyStrategies.length} strategies`;
-                    countEl.className = 'status-badge ' + (historyStrategies.length > 0 ? 'success' : 'neutral');
+                return data;
+            } catch (error) {
+                console.warn('[History] Failed to load filter options:', error);
+                return null;
+            }
+        }
+
+        // Reapply filters to raw data (like Elite pattern)
+        function reapplyHistoryFilters() {
+            // Start with raw data
+            historyStrategies = historyStrategiesRaw.slice();
+
+            // Apply symbol filter
+            if (historyFilters.symbol) {
+                historyStrategies = historyStrategies.filter(s => s.symbol === historyFilters.symbol);
+            }
+
+            // Apply timeframe filter
+            if (historyFilters.timeframe) {
+                historyStrategies = historyStrategies.filter(s => s.timeframe === historyFilters.timeframe);
+            }
+
+            // Apply period filter (date range duration)
+            if (historyFilters.period) {
+                let minDays = 0, maxDays = 0;
+                switch (historyFilters.period) {
+                    case '1w': minDays = 0; maxDays = 10; break;
+                    case '2w': minDays = 11; maxDays = 20; break;
+                    case '1m': minDays = 21; maxDays = 45; break;
+                    case '3m': minDays = 46; maxDays = 100; break;
+                    case '6m': minDays = 101; maxDays = 200; break;
+                    case '9m': minDays = 201; maxDays = 300; break;
+                    case '1y': minDays = 301; maxDays = 400; break;
+                    case '2y': minDays = 401; maxDays = 800; break;
+                    case '3y': minDays = 801; maxDays = 1200; break;
+                    case '5y': minDays = 1201; maxDays = 3650; break;
                 }
 
-                const empty = document.getElementById('history-empty');
-                const table = document.getElementById('history-table');
+                historyStrategies = historyStrategies.filter(s => {
+                    if (!s.data_start || !s.data_end) return false;
+                    if (s.data_start === '0' || s.data_start === 0) return false;
+                    try {
+                        const startDate = new Date(s.data_start);
+                        const endDate = new Date(s.data_end);
+                        if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) return false;
+                        if (startDate.getFullYear() < 2000 || endDate.getFullYear() < 2000) return false;
+                        const durationDays = (endDate - startDate) / (1000 * 60 * 60 * 24);
+                        if (durationDays < 0 || durationDays > 3650) return false;
+                        return durationDays >= minDays && durationDays <= maxDays;
+                    } catch (e) {
+                        return false;
+                    }
+                });
+            }
 
-                if (historyStrategies.length > 0) {
-                    if (loading) loading.style.display = 'none';
-                    if (table) table.style.display = 'table';
-                    // Set up event delegation before rendering
-                    setupHistoryTableDelegation();
-                    renderHistoryTable();
-                } else {
-                    if (loading) loading.style.display = 'none';
-                    if (empty) empty.style.display = 'block';
+            // Update count badge
+            const countEl = document.getElementById('history-count');
+            if (countEl) {
+                countEl.textContent = `${historyStrategies.length} strategies`;
+                countEl.className = 'status-badge ' + (historyStrategies.length > 0 ? 'success' : 'neutral');
+            }
+
+            // Sort and render
+            sortStrategiesArray();
+
+            const empty = document.getElementById('history-empty');
+            const table = document.getElementById('history-table');
+            const loading = document.getElementById('history-loading');
+
+            if (historyStrategies.length > 0) {
+                if (loading) loading.style.display = 'none';
+                if (empty) empty.style.display = 'none';
+                if (table) table.style.display = 'table';
+                renderHistoryTable();
+            } else {
+                if (loading) loading.style.display = 'none';
+                if (table) table.style.display = 'none';
+                if (empty) empty.style.display = 'block';
+            }
+        }
+
+        // Initialize History Tab
+        async function initHistoryTab() {
+            try {
+                // Show loading state
+                const loading = document.getElementById('history-loading');
+                if (loading) {
+                    loading.style.display = 'block';
+                    loading.textContent = 'Loading strategies...';
                 }
+
+                // Load filter options from dedicated API endpoint
+                await loadFilterOptions();
+
+                // Try WebSocket first (much faster than HTTP polling)
+                // Fall back to HTTP if WebSocket fails
+                try {
+                    historyStrategiesRaw = await loadStrategiesViaWs();
+                } catch (wsError) {
+                    console.log('[History] WebSocket failed, falling back to HTTP:', wsError.message);
+                    const response = await fetch('/api/db/strategies?limit=1000');
+                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                    historyStrategiesRaw = await response.json();
+                }
+
+                // Copy raw data to filtered array
+                historyStrategies = historyStrategiesRaw.slice();
+
+                // Only mark initialized AFTER successful load
+                historyInitialized = true;
+
+                // Set up event delegation before rendering
+                setupHistoryTableDelegation();
+
+                // Apply filters and render
+                reapplyHistoryFilters();
             } catch (error) {
                 console.error('Failed to initialize history tab:', error);
                 // Reset flag so user can retry by switching tabs
@@ -1989,7 +2062,7 @@
             historyFilters.timeframe = document.getElementById('filter-timeframe').value;
             historyFilters.period = document.getElementById('filter-period').value;
 
-            loadHistoryStrategies();
+            reapplyHistoryFilters();
         }
 
         // Reset filters
@@ -1999,7 +2072,20 @@
             document.getElementById('filter-period').value = '';
 
             historyFilters = { symbol: '', timeframe: '', period: '' };
-            loadHistoryStrategies();
+            reapplyHistoryFilters();
+        }
+
+        // Cleanup history tab resources when switching away
+        function cleanupHistoryTab() {
+            // Clear any pending debounce timers
+            if (historyLiveUpdateDebounceTimer) {
+                clearTimeout(historyLiveUpdateDebounceTimer);
+                historyLiveUpdateDebounceTimer = null;
+            }
+            if (autonomousHistoryDebounceTimer) {
+                clearTimeout(autonomousHistoryDebounceTimer);
+                autonomousHistoryDebounceTimer = null;
+            }
         }
 
         // ========== ELITE STRATEGIES SORTING & FILTERING ==========

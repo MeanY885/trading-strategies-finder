@@ -89,7 +89,7 @@ class WebSocketManager:
         self._last_broadcast_times: Dict[str, float] = {}  # Per-type throttling (async)
         self._sync_last_broadcast_times: Dict[str, float] = {}  # Per-type throttling (sync)
         self._sync_throttle_lock = threading.Lock()  # Thread-safe lock for sync throttling
-        self._throttled_types = {"autonomous_status", "elite_status", "optimization_status"}  # Types to throttle
+        self._throttled_types = {"autonomous_status", "elite_status", "optimization_status", "history_updated"}  # Types to throttle
         self._main_loop = None  # Store reference to main event loop
 
         # Dirty flag system: track last payload hash per message type to skip redundant broadcasts
@@ -345,3 +345,8 @@ def broadcast_full_state(data: Dict, optimization: Dict, autonomous: Dict, elite
 def broadcast_strategy_result(result: Dict) -> None:
     """Broadcast a single strategy result (SSE replacement)."""
     ws_manager.broadcast_sync("strategy_result", {"strategy": result})
+
+
+def broadcast_history_updated(count: int = 0, invalidate_cache: bool = True) -> None:
+    """Broadcast when strategy history has been updated (new strategies added)."""
+    ws_manager.broadcast_sync("history_updated", {"count": count, "invalidate_cache": invalidate_cache})
