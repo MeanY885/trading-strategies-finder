@@ -927,7 +927,7 @@ class StrategyDatabase:
         }
 
     def get_filter_options(self) -> Dict:
-        """Get distinct symbols, timeframes, and date range for filter dropdowns."""
+        """Get distinct symbols, timeframes, periods, and date range for filter dropdowns."""
         conn = self._get_connection()
         cursor = conn.cursor()
 
@@ -936,6 +936,9 @@ class StrategyDatabase:
 
         cursor.execute("SELECT DISTINCT timeframe FROM strategies WHERE timeframe IS NOT NULL ORDER BY timeframe")
         timeframes = [row[0] for row in cursor.fetchall()]
+
+        cursor.execute("SELECT DISTINCT historical_period FROM strategies WHERE historical_period IS NOT NULL ORDER BY historical_period")
+        periods = [row[0] for row in cursor.fetchall()]
 
         cursor.execute("SELECT MIN(created_at), MAX(created_at) FROM strategies")
         date_row = cursor.fetchone()
@@ -948,6 +951,7 @@ class StrategyDatabase:
         return {
             "symbols": symbols,
             "timeframes": timeframes,
+            "periods": periods,
             "date_range": date_range
         }
 

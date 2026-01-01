@@ -2124,7 +2124,7 @@ class VectorBTEngine:
                         gc.collect()
 
                         current_memory = get_memory_mb()
-                        if current_memory > start_memory * 1.5:  # Memory grew by 50%+
+                        if current_memory > start_memory * 2.5:  # Memory grew by 150%+
                             log(f"[VectorBT] Memory warning: {current_memory:.0f} MB (started at {start_memory:.0f} MB)", level='WARNING')
 
                     except Exception as e:

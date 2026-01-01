@@ -823,6 +823,11 @@
 
                 // Update the raw data and reapply filters
                 historyStrategiesRaw = newStrategies;
+
+                // Reload filter options when count changes (new symbols may have been added)
+                if (newCount !== oldCount) {
+                    await loadFilterOptions();
+                }
                 reapplyHistoryFilters();
 
                 // Only log and re-render if History tab is visible to avoid unnecessary DOM work
@@ -1424,21 +1429,36 @@
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
                 const data = await response.json();
 
-                // Populate symbol dropdown
+                // Populate symbol dropdown (preserve current selection)
                 const symbolSelect = document.getElementById('filter-symbol');
                 if (symbolSelect) {
+                    const currentSymbol = symbolSelect.value;
                     symbolSelect.innerHTML = '<option value="">All Pairs</option>';
                     (data.symbols || []).forEach(symbol => {
-                        symbolSelect.innerHTML += `<option value="${symbol}">${symbol}</option>`;
+                        const selected = symbol === currentSymbol ? ' selected' : '';
+                        symbolSelect.innerHTML += `<option value="${symbol}"${selected}>${symbol}</option>`;
                     });
                 }
 
-                // Populate timeframe dropdown
+                // Populate timeframe dropdown (preserve current selection)
                 const timeframeSelect = document.getElementById('filter-timeframe');
                 if (timeframeSelect) {
+                    const currentTf = timeframeSelect.value;
                     timeframeSelect.innerHTML = '<option value="">All Timeframes</option>';
                     (data.timeframes || []).forEach(tf => {
-                        timeframeSelect.innerHTML += `<option value="${tf}">${tf}</option>`;
+                        const selected = tf === currentTf ? ' selected' : '';
+                        timeframeSelect.innerHTML += `<option value="${tf}"${selected}>${tf}</option>`;
+                    });
+                }
+
+                // Populate period dropdown (preserve current selection)
+                const periodSelect = document.getElementById('filter-period');
+                if (periodSelect && data.periods && data.periods.length > 0) {
+                    const currentPeriod = periodSelect.value;
+                    periodSelect.innerHTML = '<option value="">All Periods</option>';
+                    (data.periods || []).forEach(period => {
+                        const selected = period === currentPeriod ? ' selected' : '';
+                        periodSelect.innerHTML += `<option value="${period}"${selected}>${period}</option>`;
                     });
                 }
 
@@ -1464,36 +1484,11 @@
                 historyStrategies = historyStrategies.filter(s => s.timeframe === historyFilters.timeframe);
             }
 
-            // Apply period filter (date range duration)
+            // Apply period filter - directly match historical_period field from database
             if (historyFilters.period) {
-                let minDays = 0, maxDays = 0;
-                switch (historyFilters.period) {
-                    case '1w': minDays = 0; maxDays = 10; break;
-                    case '2w': minDays = 11; maxDays = 20; break;
-                    case '1m': minDays = 21; maxDays = 45; break;
-                    case '3m': minDays = 46; maxDays = 100; break;
-                    case '6m': minDays = 101; maxDays = 200; break;
-                    case '9m': minDays = 201; maxDays = 300; break;
-                    case '1y': minDays = 301; maxDays = 400; break;
-                    case '2y': minDays = 401; maxDays = 800; break;
-                    case '3y': minDays = 801; maxDays = 1200; break;
-                    case '5y': minDays = 1201; maxDays = 3650; break;
-                }
-
                 historyStrategies = historyStrategies.filter(s => {
-                    if (!s.data_start || !s.data_end) return false;
-                    if (s.data_start === '0' || s.data_start === 0) return false;
-                    try {
-                        const startDate = new Date(s.data_start);
-                        const endDate = new Date(s.data_end);
-                        if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) return false;
-                        if (startDate.getFullYear() < 2000 || endDate.getFullYear() < 2000) return false;
-                        const durationDays = (endDate - startDate) / (1000 * 60 * 60 * 24);
-                        if (durationDays < 0 || durationDays > 3650) return false;
-                        return durationDays >= minDays && durationDays <= maxDays;
-                    } catch (e) {
-                        return false;
-                    }
+                    // Direct match against historical_period field (e.g., "1 week", "1 month")
+                    return s.historical_period === historyFilters.period;
                 });
             }
 
@@ -1597,49 +1592,10 @@
                 const response = await fetch(`/api/db/strategies?${params.toString()}`);
                 historyStrategies = await response.json();
 
-                // Filter by backtest data DURATION if specified (client-side)
-                // Shows only strategies tested on at least X amount of data
+                // Filter by historical_period if specified (client-side)
                 if (historyFilters.period) {
-                    // Filter ranges must match calculatePeriodLabel() display thresholds exactly
-                    let minDays = 0;
-                    let maxDays = 0;
-                    switch (historyFilters.period) {
-                        case '1w': minDays = 0; maxDays = 10; break;      // Display: <= 10
-                        case '2w': minDays = 11; maxDays = 20; break;     // Display: <= 20
-                        case '1m': minDays = 21; maxDays = 45; break;     // Display: <= 45
-                        case '3m': minDays = 46; maxDays = 100; break;    // Display: <= 100
-                        case '6m': minDays = 101; maxDays = 200; break;   // Display: <= 200
-                        case '9m': minDays = 201; maxDays = 300; break;   // Display: <= 300
-                        case '1y': minDays = 301; maxDays = 400; break;   // Display: <= 400
-                        case '2y': minDays = 401; maxDays = 800; break;   // Display: <= 800
-                        case '3y': minDays = 801; maxDays = 1200; break;  // Display: <= 1200
-                        case '5y': minDays = 1201; maxDays = 3650; break; // Display: > 1200
-                    }
-
                     historyStrategies = historyStrategies.filter(s => {
-                        // If no date info, HIDE the strategy when filter is active
-                        if (!s.data_start || !s.data_end) return false;
-                        // Check for invalid data (numeric indices instead of dates)
-                        if (s.data_start === '0' || s.data_start === 0) return false;
-
-                        try {
-                            const startDate = new Date(s.data_start);
-                            const endDate = new Date(s.data_end);
-
-                            // Check for invalid dates
-                            if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) return false;
-                            // Check for epoch dates (indicates invalid data)
-                            if (startDate.getFullYear() < 2000 || endDate.getFullYear() < 2000) return false;
-
-                            const durationDays = (endDate - startDate) / (1000 * 60 * 60 * 24);
-                            // Negative or unreasonable days indicates bad data
-                            if (durationDays < 0 || durationDays > 3650) return false;
-
-                            // Match strategies within the period range
-                            return durationDays >= minDays && durationDays <= maxDays;
-                        } catch (e) {
-                            return false;
-                        }
+                        return s.historical_period === historyFilters.period;
                     });
                 }
 
