@@ -1585,14 +1585,17 @@ class VectorBTEngine:
         try:
             # Run VectorBT with bidirectional support
             # upon_opposite_entry='Reverse' = flip positions on opposite signal
+            # NOTE: Must use size_type='value' (not 'percent') because VectorBT
+            # doesn't support position reversal with percentage-based sizing
+            position_value = self.initial_capital * (self.position_size_pct / 100)
             pf = vbt.Portfolio.from_signals(
                 close=self.df['close'],
                 entries=long_entries_clean,
                 short_entries=short_entries_clean,
                 sl_stop=sl_percent / 100,
                 tp_stop=tp_percent / 100,
-                size=self.position_size_pct / 100,
-                size_type='percent',
+                size=position_value,
+                size_type='value',
                 fees=self.total_fees,
                 init_cash=self.initial_capital,
                 freq=self.data_freq,
@@ -2195,14 +2198,17 @@ class VectorBTEngine:
                     sl_arr = np.array([sl / 100 for tp, sl in col_tuples])
 
                     # Run bidirectional portfolio simulation
+                    # NOTE: Must use size_type='value' (not 'percent') because VectorBT
+                    # doesn't support position reversal with percentage-based sizing
+                    position_value = self.initial_capital * (self.position_size_pct / 100)
                     pf = vbt.Portfolio.from_signals(
                         close=close_tiled,
                         entries=long_entries_tiled,
                         short_entries=short_entries_tiled,
                         sl_stop=sl_arr,
                         tp_stop=tp_arr,
-                        size=self.position_size_pct / 100,
-                        size_type='percent',
+                        size=position_value,
+                        size_type='value',
                         fees=self.total_fees,
                         init_cash=self.initial_capital,
                         freq=self.data_freq,
