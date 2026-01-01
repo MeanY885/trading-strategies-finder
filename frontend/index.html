@@ -1012,6 +1012,7 @@
                         <span id="debugStrategyName" style="color: var(--text-primary); font-weight: 600;"></span>
                     </div>
                     <span id="debugDirectionBadge" style="padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.75rem; font-weight: 600;"></span>
+                    <span id="debugDataPeriod" style="padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.75rem; font-weight: 600; background: rgba(99, 102, 241, 0.2); color: #a5b4fc;"></span>
                     <div style="display: flex; gap: 1rem; flex-wrap: wrap; margin-left: auto;">
                         <div style="text-align: center;">
                             <div style="color: var(--text-muted); font-size: 0.7rem;">TP%</div>
@@ -1040,9 +1041,9 @@
             <!-- Main Content -->
             <div style="padding: 1.5rem; display: flex; flex-direction: column; gap: 1.5rem; max-height: 70vh; overflow-y: auto;">
 
-                <!-- Pine Script Section -->
+                <!-- Pine Script Section (buttons only, no preview) -->
                 <div style="background: var(--bg-secondary); border-radius: 8px; padding: 1rem; border: 1px solid var(--border);">
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
                         <h4 style="margin: 0; color: var(--text-primary); display: flex; align-items: center; gap: 0.5rem;">
                             <span>📜</span> Pine Script
                         </h4>
@@ -1051,9 +1052,8 @@
                             <button onclick="downloadDebugPineScript()" class="btn btn-small" style="font-size: 0.8rem;">⬇️ Download</button>
                         </div>
                     </div>
-                    <div style="max-height: 150px; overflow-y: auto; background: var(--bg-primary); border-radius: 4px; border: 1px solid var(--border);">
-                        <pre id="debugPineScript" style="margin: 0; padding: 0.75rem; font-size: 0.75rem; color: var(--text-primary); white-space: pre-wrap; word-break: break-word;"></pre>
-                    </div>
+                    <!-- Hidden element to store Pine Script content -->
+                    <pre id="debugPineScript" style="display: none;"></pre>
                 </div>
 
                 <!-- Our Trades Section -->

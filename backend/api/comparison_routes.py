@@ -942,6 +942,8 @@ async def get_debug_strategy_info(strategy_id: int):
             "profit_factor": strategy.get("profit_factor", 0),
             "total_pnl": strategy.get("total_pnl", 0),
             "max_drawdown": strategy.get("max_drawdown", 0),
+            "data_start": strategy.get("data_start", ""),
+            "data_end": strategy.get("data_end", ""),
         }
 
         # Get our trades from database

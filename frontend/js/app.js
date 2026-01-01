@@ -6040,6 +6040,11 @@
                 dirBadge.style.background = direction === 'LONG' ? 'rgba(34, 197, 94, 0.2)' : 'rgba(239, 68, 68, 0.2)';
                 dirBadge.style.color = direction === 'LONG' ? 'var(--success)' : 'var(--danger)';
 
+                // Calculate and display data period
+                const periodBadge = document.getElementById('debugDataPeriod');
+                const dataPeriod = calculateDataPeriod(strategy.data_start, strategy.data_end);
+                periodBadge.textContent = dataPeriod;
+
                 document.getElementById('debugTP').textContent = `${strategy.tp_percent?.toFixed(1) || 0}%`;
                 document.getElementById('debugSL').textContent = `${strategy.sl_percent?.toFixed(1) || 0}%`;
                 document.getElementById('debugWinRate').textContent = `${strategy.win_rate?.toFixed(1) || 0}%`;
@@ -6094,6 +6099,28 @@
                 });
             } catch {
                 return timeStr.slice(0, 16);
+            }
+        }
+
+        function calculateDataPeriod(dataStart, dataEnd) {
+            if (!dataStart || !dataEnd) return 'Unknown period';
+            try {
+                const start = new Date(dataStart);
+                const end = new Date(dataEnd);
+                const diffMs = end - start;
+                const diffDays = Math.round(diffMs / (1000 * 60 * 60 * 24));
+
+                // Convert to human-readable period
+                if (diffDays <= 10) return '1 week';
+                if (diffDays <= 21) return '2 weeks';
+                if (diffDays <= 45) return '1 month';
+                if (diffDays <= 100) return '3 months';
+                if (diffDays <= 200) return '6 months';
+                if (diffDays <= 300) return '9 months';
+                if (diffDays <= 400) return '12 months';
+                return '2 years';
+            } catch {
+                return 'Unknown period';
             }
         }
 
