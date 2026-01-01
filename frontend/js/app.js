@@ -1451,16 +1451,7 @@
                     });
                 }
 
-                // Populate period dropdown (preserve current selection)
-                const periodSelect = document.getElementById('filter-period');
-                if (periodSelect && data.periods && data.periods.length > 0) {
-                    const currentPeriod = periodSelect.value;
-                    periodSelect.innerHTML = '<option value="">All Periods</option>';
-                    (data.periods || []).forEach(period => {
-                        const selected = period === currentPeriod ? ' selected' : '';
-                        periodSelect.innerHTML += `<option value="${period}"${selected}>${period}</option>`;
-                    });
-                }
+                // Period dropdown is static (defined in HTML) - no dynamic loading needed
 
                 return data;
             } catch (error) {
@@ -1484,11 +1475,34 @@
                 historyStrategies = historyStrategies.filter(s => s.timeframe === historyFilters.timeframe);
             }
 
-            // Apply period filter - directly match historical_period field from database
+            // Apply period filter (date range duration)
             if (historyFilters.period) {
+                let minDays = 0, maxDays = 0;
+                switch (historyFilters.period) {
+                    case '1w': minDays = 0; maxDays = 10; break;
+                    case '2w': minDays = 11; maxDays = 20; break;
+                    case '1m': minDays = 21; maxDays = 45; break;
+                    case '3m': minDays = 46; maxDays = 100; break;
+                    case '6m': minDays = 101; maxDays = 200; break;
+                    case '9m': minDays = 201; maxDays = 300; break;
+                    case '1y': minDays = 301; maxDays = 400; break;
+                    case '2y': minDays = 401; maxDays = 800; break;
+                }
+
                 historyStrategies = historyStrategies.filter(s => {
-                    // Direct match against historical_period field (e.g., "1 week", "1 month")
-                    return s.historical_period === historyFilters.period;
+                    if (!s.data_start || !s.data_end) return false;
+                    if (s.data_start === '0' || s.data_start === 0) return false;
+                    try {
+                        const startDate = new Date(s.data_start);
+                        const endDate = new Date(s.data_end);
+                        if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) return false;
+                        if (startDate.getFullYear() < 2000 || endDate.getFullYear() < 2000) return false;
+                        const durationDays = (endDate - startDate) / (1000 * 60 * 60 * 24);
+                        if (durationDays < 0 || durationDays > 3650) return false;
+                        return durationDays >= minDays && durationDays <= maxDays;
+                    } catch (e) {
+                        return false;
+                    }
                 });
             }
 
@@ -1592,10 +1606,25 @@
                 const response = await fetch(`/api/db/strategies?${params.toString()}`);
                 historyStrategies = await response.json();
 
-                // Filter by historical_period if specified (client-side)
+                // Filter by period if specified (client-side date range calculation)
                 if (historyFilters.period) {
+                    let minDays = 0, maxDays = Infinity;
+                    switch (historyFilters.period) {
+                        case '1w': minDays = 0; maxDays = 10; break;
+                        case '2w': minDays = 11; maxDays = 20; break;
+                        case '1m': minDays = 21; maxDays = 45; break;
+                        case '3m': minDays = 46; maxDays = 120; break;
+                        case '6m': minDays = 121; maxDays = 200; break;
+                        case '9m': minDays = 201; maxDays = 300; break;
+                        case '1y': minDays = 301; maxDays = 400; break;
+                        case '2y': minDays = 401; maxDays = Infinity; break;
+                    }
                     historyStrategies = historyStrategies.filter(s => {
-                        return s.historical_period === historyFilters.period;
+                        if (!s.data_start || !s.data_end) return false;
+                        const start = new Date(s.data_start);
+                        const end = new Date(s.data_end);
+                        const days = Math.ceil((end - start) / (1000 * 60 * 60 * 24));
+                        return days >= minDays && days <= maxDays;
                     });
                 }
 
