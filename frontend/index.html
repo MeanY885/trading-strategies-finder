@@ -1034,9 +1034,20 @@
                             <div style="color: var(--text-muted); font-size: 0.7rem;">Trades</div>
                             <div id="debugTrades" style="color: var(--text-primary); font-weight: 600;"></div>
                         </div>
+                        <div style="text-align: center;">
+                            <div style="color: var(--text-muted); font-size: 0.7rem;">Total P&L</div>
+                            <div id="debugTotalPnL" style="color: var(--success); font-weight: 600;"></div>
+                        </div>
+                        <div style="text-align: center;">
+                            <div style="color: var(--text-muted); font-size: 0.7rem;">Max DD</div>
+                            <div id="debugMaxDD" style="color: var(--danger); font-weight: 600;"></div>
+                        </div>
                     </div>
                 </div>
             </div>
+
+            <!-- Entry Rule Validation Warning (populated by JS if entry_rule is invalid) -->
+            <div id="debugEntryRuleWarning" style="display: none; padding: 0 1.5rem;"></div>
 
             <!-- Main Content -->
             <div style="padding: 1.5rem; display: flex; flex-direction: column; gap: 1.5rem; max-height: 70vh; overflow-y: auto;">
@@ -1072,10 +1083,11 @@
                                     <th style="padding: 0.5rem; text-align: left; border-bottom: 1px solid var(--border); color: var(--text-muted);">#</th>
                                     <th style="padding: 0.5rem; text-align: left; border-bottom: 1px solid var(--border); color: var(--text-muted);">Dir</th>
                                     <th style="padding: 0.5rem; text-align: left; border-bottom: 1px solid var(--border); color: var(--text-muted);">Entry Time</th>
-                                    <th style="padding: 0.5rem; text-align: right; border-bottom: 1px solid var(--border); color: var(--text-muted);">Entry</th>
-                                    <th style="padding: 0.5rem; text-align: right; border-bottom: 1px solid var(--border); color: var(--text-muted);">Exit</th>
+                                    <th style="padding: 0.5rem; text-align: left; border-bottom: 1px solid var(--border); color: var(--text-muted);">Exit Time</th>
+                                    <th style="padding: 0.5rem; text-align: right; border-bottom: 1px solid var(--border); color: var(--text-muted);">Entry $</th>
+                                    <th style="padding: 0.5rem; text-align: right; border-bottom: 1px solid var(--border); color: var(--text-muted);">Exit $</th>
                                     <th style="padding: 0.5rem; text-align: right; border-bottom: 1px solid var(--border); color: var(--text-muted);">PnL</th>
-                                    <th style="padding: 0.5rem; text-align: left; border-bottom: 1px solid var(--border); color: var(--text-muted);">Exit</th>
+                                    <th style="padding: 0.5rem; text-align: left; border-bottom: 1px solid var(--border); color: var(--text-muted);">Result</th>
                                 </tr>
                             </thead>
                             <tbody id="debugOurTradesBody"></tbody>
@@ -1119,11 +1131,48 @@
                         <div id="debugRecommendations"></div>
                     </div>
 
-                    <!-- Trade Matches -->
+                    <!-- Trade Comparison Table -->
                     <div style="background: var(--bg-secondary); border-radius: 8px; padding: 1rem; border: 1px solid var(--border);">
-                        <h4 style="margin: 0 0 0.75rem 0; color: var(--text-primary);">🔗 Trade Matching Details</h4>
-                        <div id="debugMatchCounts" style="display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 0.75rem;"></div>
-                        <div id="debugTradeMatches" style="max-height: 300px; overflow-y: auto;"></div>
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; flex-wrap: wrap; gap: 0.5rem;">
+                            <h4 style="margin: 0; color: var(--text-primary);">📊 Trade-by-Trade Comparison</h4>
+                            <div style="display: flex; gap: 0.75rem; align-items: center;">
+                                <label style="color: var(--text-muted); font-size: 0.8rem;">
+                                    Time Tolerance:
+                                    <select id="debugTimeTolerance" onchange="updateTradeComparison()" style="margin-left: 0.25rem; padding: 0.2rem 0.4rem; font-size: 0.8rem; background: var(--bg-primary); border: 1px solid var(--border); border-radius: 4px; color: var(--text-primary);">
+                                        <option value="5">5 min</option>
+                                        <option value="15">15 min</option>
+                                        <option value="30" selected>30 min</option>
+                                        <option value="60">1 hour</option>
+                                        <option value="120">2 hours</option>
+                                    </select>
+                                </label>
+                                <label style="color: var(--text-muted); font-size: 0.8rem;">
+                                    PnL Tolerance:
+                                    <select id="debugPnlTolerance" onchange="updateTradeComparison()" style="margin-left: 0.25rem; padding: 0.2rem 0.4rem; font-size: 0.8rem; background: var(--bg-primary); border: 1px solid var(--border); border-radius: 4px; color: var(--text-primary);">
+                                        <option value="1">£1</option>
+                                        <option value="2" selected>£2</option>
+                                        <option value="5">£5</option>
+                                        <option value="10">£10</option>
+                                        <option value="0">Any</option>
+                                    </select>
+                                </label>
+                            </div>
+                        </div>
+
+                        <!-- Match Summary Badges -->
+                        <div id="debugMatchCounts" style="display: flex; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 0.75rem;"></div>
+
+                        <!-- Side-by-Side Comparison Table -->
+                        <div id="debugTradeComparison" style="overflow-x: auto;"></div>
+
+                        <!-- Pagination Controls -->
+                        <div id="debugPagination" style="display: none; margin-top: 0.75rem; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem;">
+                            <span id="debugPageInfo" style="color: var(--text-muted); font-size: 0.8rem;"></span>
+                            <div style="display: flex; gap: 0.5rem;">
+                                <button id="debugPrevPage" onclick="debugChangePage(-1)" class="btn btn-secondary" style="padding: 0.25rem 0.5rem; font-size: 0.75rem;">← Previous</button>
+                                <button id="debugNextPage" onclick="debugChangePage(1)" class="btn btn-secondary" style="padding: 0.25rem 0.5rem; font-size: 0.75rem;">Next →</button>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>

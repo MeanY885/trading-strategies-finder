@@ -1547,6 +1547,314 @@ class VectorBTEngine:
             log(f"[VectorBT] Backtest error for {strategy}/{direction}: {e}", level='WARNING')
             return self._empty_result(strategy, direction, tp_percent, sl_percent)
 
+    def run_bidirectional_backtest(
+        self,
+        strategy: str,
+        tp_percent: float,
+        sl_percent: float,
+    ) -> VectorBTResult:
+        """
+        Run a bidirectional backtest using VectorBT.
+
+        Uses flip-style position handling: opposite signal closes current
+        position and opens new one. Conflicting signals (both fire on same bar)
+        are skipped to match strategy_engine.py behavior.
+
+        Args:
+            strategy: Strategy name
+            tp_percent: Take profit percentage (same for both directions)
+            sl_percent: Stop loss percentage (same for both directions)
+
+        Returns:
+            VectorBTResult with direction='both' and per-direction metrics
+        """
+        # Get BOTH long and short signals upfront
+        long_entries = self._get_signals(strategy, 'long')
+        short_entries = self._get_signals(strategy, 'short')
+
+        # Skip if no signals in either direction
+        if not long_entries.any() and not short_entries.any():
+            return self._empty_result(strategy, 'both', tp_percent, sl_percent)
+
+        # Pre-process signals: set both to False where they conflict
+        # This matches strategy_engine.py backtest_bidirectional() behavior
+        conflict_mask = long_entries & short_entries
+        long_entries_clean = long_entries & ~conflict_mask
+        short_entries_clean = short_entries & ~conflict_mask
+
+        try:
+            # Run VectorBT with bidirectional support
+            # upon_opposite_entry='Reverse' = flip positions on opposite signal
+            pf = vbt.Portfolio.from_signals(
+                close=self.df['close'],
+                entries=long_entries_clean,
+                short_entries=short_entries_clean,
+                sl_stop=sl_percent / 100,
+                tp_stop=tp_percent / 100,
+                size=self.position_size_pct / 100,
+                size_type='percent',
+                fees=self.total_fees,
+                init_cash=self.initial_capital,
+                freq=self.data_freq,
+                upon_opposite_entry='Reverse',  # Flip on opposite signal
+            )
+
+            return self._extract_bidirectional_metrics(
+                pf, strategy, tp_percent, sl_percent,
+                long_entries_clean, short_entries_clean,
+                include_equity_curve=True
+            )
+
+        except Exception as e:
+            log(f"[VectorBT] Bidirectional backtest error for {strategy}: {e}", level='WARNING')
+            return self._empty_result(strategy, 'both', tp_percent, sl_percent)
+
+    def _extract_bidirectional_metrics(
+        self,
+        pf,
+        strategy: str,
+        tp_percent: float,
+        sl_percent: float,
+        long_entries: pd.Series,
+        short_entries: pd.Series,
+        include_equity_curve: bool = False,
+    ) -> VectorBTResult:
+        """
+        Extract metrics from bidirectional VectorBT portfolio.
+
+        Includes per-direction metrics (long_trades, short_trades, etc.) and flip count.
+        """
+        try:
+            trades = pf.trades
+            total_trades = trades.count()
+
+            if total_trades == 0:
+                return self._empty_result(strategy, 'both', tp_percent, sl_percent)
+
+            # Get trade records with direction info
+            records = trades.records_readable
+
+            # Per-direction metrics using VectorBT's Direction column
+            # VectorBT uses 0 for Long, 1 for Short in the direction column
+            if 'Direction' in records.columns:
+                long_mask = records['Direction'] == 'Long'
+                short_mask = records['Direction'] == 'Short'
+            else:
+                # Fallback if Direction column doesn't exist
+                long_mask = pd.Series([False] * len(records))
+                short_mask = pd.Series([False] * len(records))
+
+            long_trades_count = int(long_mask.sum())
+            short_trades_count = int(short_mask.sum())
+
+            # Per-direction wins and PnL
+            pnl_values = trades.pnl.values if hasattr(trades, 'pnl') else np.array([])
+
+            if len(pnl_values) > 0 and len(records) > 0:
+                long_pnl_values = pnl_values[long_mask.values] if long_trades_count > 0 else np.array([])
+                short_pnl_values = pnl_values[short_mask.values] if short_trades_count > 0 else np.array([])
+
+                long_wins = int((long_pnl_values > 0).sum()) if len(long_pnl_values) > 0 else 0
+                short_wins = int((short_pnl_values > 0).sum()) if len(short_pnl_values) > 0 else 0
+
+                long_pnl = float(long_pnl_values.sum()) if len(long_pnl_values) > 0 else 0.0
+                short_pnl = float(short_pnl_values.sum()) if len(short_pnl_values) > 0 else 0.0
+            else:
+                long_wins = short_wins = 0
+                long_pnl = short_pnl = 0.0
+
+            # Flip count: count trades where direction changed from previous
+            flip_count = self._count_flips(records)
+
+            # Standard combined metrics
+            wins = long_wins + short_wins
+            losses = int(total_trades) - wins
+            win_rate = (wins / total_trades * 100) if total_trades > 0 else 0
+
+            total_return = float(pf.total_return()) * 100
+            total_pnl = float(pf.final_value() - self.initial_capital)
+
+            # Profit factor
+            if len(pnl_values) > 0:
+                gross_profits = float(pnl_values[pnl_values > 0].sum())
+                gross_losses = abs(float(pnl_values[pnl_values < 0].sum()))
+            else:
+                gross_profits = gross_losses = 0
+            profit_factor = gross_profits / gross_losses if gross_losses > 0 else (999.0 if gross_profits > 0 else 0)
+
+            # Drawdown
+            max_dd_pct = float(pf.max_drawdown()) * 100
+            max_dd = float(pf.max_drawdown() * self.initial_capital)
+
+            # Average trade
+            avg_trade = total_pnl / total_trades if total_trades > 0 else 0
+            avg_trade_pct = total_return / total_trades if total_trades > 0 else 0
+
+            # Buy & hold comparison
+            buy_hold = float((self.df['close'].iloc[-1] / self.df['close'].iloc[0] - 1) * 100)
+            vs_buy_hold = total_return - buy_hold
+
+            # Equity curve
+            equity = pf.value().values.tolist() if include_equity_curve else []
+
+            # Trades list for bidirectional
+            trades_list = []
+            if include_equity_curve:
+                trades_list = self._build_bidirectional_trades_list(
+                    pf, tp_percent, sl_percent, long_entries, short_entries
+                )
+
+            # Calculate composite score
+            composite = self._calculate_composite_score(
+                win_rate, profit_factor, total_return, max_dd_pct, int(total_trades)
+            )
+
+            # Data range for period display
+            data_start_str = str(self.df.index[0]) if len(self.df) > 0 else None
+            data_end_str = str(self.df.index[-1]) if len(self.df) > 0 else None
+
+            return VectorBTResult(
+                strategy_name=f"{strategy}_both",
+                strategy_category=self.ENTRY_STRATEGIES.get(strategy, {}).get('category', 'Unknown'),
+                direction='both',
+                tp_percent=tp_percent,
+                sl_percent=sl_percent,
+                entry_rule=strategy,
+                total_trades=int(total_trades),
+                wins=wins,
+                losses=losses,
+                win_rate=win_rate,
+                total_pnl=total_pnl,
+                total_pnl_percent=total_return,
+                profit_factor=min(profit_factor, 999.0),
+                max_drawdown=max_dd,
+                max_drawdown_percent=max_dd_pct,
+                avg_trade=avg_trade,
+                avg_trade_percent=avg_trade_pct,
+                buy_hold_return=buy_hold,
+                vs_buy_hold=vs_buy_hold,
+                beats_buy_hold=vs_buy_hold > 0,
+                composite_score=composite,
+                equity_curve=equity,
+                trades_list=trades_list,
+                params={'tp_percent': tp_percent, 'sl_percent': sl_percent, 'direction': 'both'},
+                data_start=data_start_str,
+                data_end=data_end_str,
+                # Bidirectional-specific fields
+                long_trades=long_trades_count,
+                long_wins=long_wins,
+                long_pnl=long_pnl,
+                short_trades=short_trades_count,
+                short_wins=short_wins,
+                short_pnl=short_pnl,
+                flip_count=flip_count,
+            )
+
+        except Exception as e:
+            log(f"[VectorBT] Error extracting bidirectional metrics: {e}", level='WARNING')
+            return self._empty_result(strategy, 'both', tp_percent, sl_percent)
+
+    def _count_flips(self, records: pd.DataFrame) -> int:
+        """Count position flips (consecutive trades with opposite directions)."""
+        if len(records) < 2:
+            return 0
+
+        flip_count = 0
+        prev_direction = None
+
+        for idx, trade in records.iterrows():
+            curr_direction = trade.get('Direction', None)
+            if prev_direction is not None and curr_direction != prev_direction:
+                flip_count += 1
+            prev_direction = curr_direction
+
+        return flip_count
+
+    def _build_bidirectional_trades_list(
+        self,
+        pf,
+        tp_percent: float,
+        sl_percent: float,
+        long_entries: pd.Series,
+        short_entries: pd.Series,
+    ) -> List[Dict]:
+        """Build trades list for bidirectional strategies with per-trade direction."""
+        trades_list = []
+
+        try:
+            trades = pf.trades
+            if trades.count() == 0:
+                return trades_list
+
+            records = trades.records_readable
+
+            for idx, trade in records.iterrows():
+                try:
+                    # Get direction from VectorBT trade record
+                    vbt_direction = trade.get('Direction', 'Long')
+                    direction = 'long' if vbt_direction == 'Long' else 'short'
+
+                    entry_bar_time = trade.get('Entry Timestamp', None)
+                    exit_bar_time = trade.get('Exit Timestamp', None)
+
+                    if hasattr(entry_bar_time, 'strftime'):
+                        entry_bar_time = str(entry_bar_time)
+                    if hasattr(exit_bar_time, 'strftime'):
+                        exit_bar_time = str(exit_bar_time)
+
+                    entry_price = float(trade.get('Avg Entry Price', 0) or 0)
+                    exit_price = float(trade.get('Avg Exit Price', 0) or 0)
+                    pnl = float(trade.get('PnL', 0) or 0)
+                    pnl_pct = float(trade.get('Return', 0) or 0) * 100
+
+                    # Calculate TP/SL prices based on direction
+                    if direction == 'long':
+                        tp_price = entry_price * (1 + tp_percent / 100)
+                        sl_price = entry_price * (1 - sl_percent / 100)
+                    else:
+                        tp_price = entry_price * (1 - tp_percent / 100)
+                        sl_price = entry_price * (1 + sl_percent / 100)
+
+                    # Determine exit type
+                    exit_idx = 0
+                    if exit_bar_time:
+                        try:
+                            exit_ts = pd.Timestamp(exit_bar_time)
+                            if exit_ts in self.df.index:
+                                exit_idx = self.df.index.get_loc(exit_ts)
+                        except:
+                            pass
+
+                    exit_type = self._determine_exit_type(
+                        exit_price, entry_price, tp_price, sl_price, direction, exit_idx, len(self.df)
+                    )
+
+                    trade_record = {
+                        'trade_num': idx + 1,
+                        'direction': direction,
+                        'entry_time': str(entry_bar_time) if entry_bar_time else None,
+                        'exit_time': str(exit_bar_time) if exit_bar_time else None,
+                        'entry': round(entry_price, 2),
+                        'exit': round(exit_price, 2),
+                        'pnl': round(pnl, 2),
+                        'pnl_pct': round(pnl_pct, 2),
+                        'result': 'WIN' if pnl > 0 else 'LOSS',
+                        'tp_price': round(tp_price, 2),
+                        'sl_price': round(sl_price, 2),
+                        'exit_type': exit_type,
+                    }
+
+                    trades_list.append(trade_record)
+
+                except Exception as e:
+                    log(f"[VectorBT] Error processing bidirectional trade {idx}: {e}", level='DEBUG')
+                    continue
+
+        except Exception as e:
+            log(f"[VectorBT] Error building bidirectional trades list: {e}", level='WARNING')
+
+        return trades_list
+
     # Maximum results to keep to prevent OOM on large optimizations
     MAX_RESULTS = 10000
 
@@ -1595,7 +1903,11 @@ class VectorBTEngine:
         self._signal_cache.clear()
 
         results = []
-        total_combos = len(strategies) * len(directions) * len(tp_range) * len(sl_range)
+
+        # Calculate total combinations based on mode
+        separate_combos = len(strategies) * len(directions) * len(tp_range) * len(sl_range) if mode in ['separate', 'all'] else 0
+        bidir_combos = len(strategies) * len(tp_range) * len(sl_range) if mode in ['bidirectional', 'all'] else 0
+        total_combos = separate_combos + bidir_combos
         completed = 0
 
         import time
@@ -1609,86 +1921,308 @@ class VectorBTEngine:
         data_end_str = str(self.df.index[-1]) if len(self.df) > 0 else None
         vbt_log(f"[VectorBT] Data range: {data_start_str} to {data_end_str}", level='DEBUG')
 
-        vbt_log(f"[VectorBT] Starting VECTORIZED optimization", level='DEBUG')
+        mode_desc = "bidirectional only" if mode == "bidirectional" else ("separate + bidirectional" if mode == "all" else "separate (long/short)")
+        vbt_log(f"[VectorBT] Starting VECTORIZED optimization (mode: {mode_desc})", level='DEBUG')
         vbt_log(f"[VectorBT] Parameters: {len(strategies)} strategies x {len(directions)} directions x {len(tp_range)} TPs x {len(sl_range)} SLs", level='DEBUG')
-        vbt_log(f"[VectorBT] Total combinations: {total_combos:,} (using NumPy broadcasting for speed)", level='DEBUG')
+        vbt_log(f"[VectorBT] Total combinations: {total_combos:,} (separate: {separate_combos:,}, bidirectional: {bidir_combos:,})", level='DEBUG')
 
-        # Use VectorBT broadcasting for massive speedup
-        for strategy in strategies:
-            for direction in directions:
-                # Get signals once per strategy/direction
-                entries = self._get_signals(strategy, direction)
+        # ========== PHASE 1: SEPARATE LONG/SHORT STRATEGIES ==========
+        if mode in ['separate', 'all']:
+            # Use VectorBT broadcasting for massive speedup
+            for strategy in strategies:
+                for direction in directions:
+                    # Get signals once per strategy/direction
+                    entries = self._get_signals(strategy, direction)
 
-                if not entries.any():
+                    if not entries.any():
+                        completed += len(tp_range) * len(sl_range)
+                        continue
+
+                    short = direction == 'short'
+
+                    # VectorBT broadcasting: tile close and entries to create multi-column DataFrames
+                    # Each column represents a different TP/SL combination
+                    n_tp = len(tp_range)
+                    n_sl = len(sl_range)
+                    n_combos = n_tp * n_sl
+
+                    try:
+                        # Create column labels for TP/SL combinations
+                        # Format: MultiIndex with (tp_value, sl_value)
+                        col_tuples = [(tp, sl) for tp in tp_range for sl in sl_range]
+                        columns = pd.MultiIndex.from_tuples(col_tuples, names=['tp', 'sl'])
+
+                        # Tile close prices to have n_combos columns
+                        close_tiled = pd.DataFrame(
+                            np.tile(self.df['close'].values.reshape(-1, 1), (1, n_combos)),
+                            index=self.df.index,
+                            columns=columns
+                        )
+
+                        # Tile entries to match
+                        entries_arr = entries.values.reshape(-1, 1)
+                        entries_tiled = pd.DataFrame(
+                            np.tile(entries_arr, (1, n_combos)),
+                            index=self.df.index,
+                            columns=columns
+                        )
+
+                        # Create TP/SL arrays matching the column structure
+                        # Each column gets the same TP/SL value for all rows
+                        tp_arr = np.array([tp / 100 for tp, sl in col_tuples])  # Shape: (n_combos,)
+                        sl_arr = np.array([sl / 100 for tp, sl in col_tuples])  # Shape: (n_combos,)
+
+                        # Run vectorized portfolio simulation across all combinations
+                        pf = vbt.Portfolio.from_signals(
+                            close=close_tiled,
+                            entries=entries_tiled if not short else pd.DataFrame(False, index=self.df.index, columns=columns),
+                            short_entries=entries_tiled if short else pd.DataFrame(False, index=self.df.index, columns=columns),
+                            sl_stop=sl_arr,  # Per-column stop loss
+                            tp_stop=tp_arr,  # Per-column take profit
+                            size=self.position_size_pct / 100,
+                            size_type='percent',
+                            fees=self.total_fees,
+                            init_cash=self.initial_capital,
+                            freq=self.data_freq,
+                        )
+
+                        # VECTORIZED METRIC EXTRACTION - get ALL metrics at once (massive speedup)
+                        # Instead of 52,800 individual calls, we make ~10 vectorized calls
+                        try:
+                            all_returns = pf.total_return() * 100  # Series indexed by (tp, sl)
+                            all_final_values = pf.final_value()
+                            all_max_dd = pf.max_drawdown() * 100
+
+                            # Trade stats - more complex but still vectorized
+                            trades = pf.trades
+                            trade_counts = trades.count()
+
+                            # Get win/loss counts per column
+                            if hasattr(trades, 'pnl') and len(trades.pnl) > 0:
+                                # Group PnL by column and count wins/losses
+                                trade_pnl = trades.pnl.values
+                                trade_cols = trades.col.values
+
+                                # Pre-compute wins/losses/profits per column
+                                n_cols = len(col_tuples)
+                                wins_arr = np.zeros(n_cols)
+                                gross_profit_arr = np.zeros(n_cols)
+                                gross_loss_arr = np.zeros(n_cols)
+
+                                for i in range(len(trade_pnl)):
+                                    col_idx = trade_cols[i]
+                                    pnl = trade_pnl[i]
+                                    if pnl > 0:
+                                        wins_arr[col_idx] += 1
+                                        gross_profit_arr[col_idx] += pnl
+                                    else:
+                                        gross_loss_arr[col_idx] += abs(pnl)
+                            else:
+                                wins_arr = np.zeros(len(col_tuples))
+                                gross_profit_arr = np.zeros(len(col_tuples))
+                                gross_loss_arr = np.zeros(len(col_tuples))
+
+                            # Buy & hold (same for all combinations)
+                            buy_hold = float((self.df['close'].iloc[-1] / self.df['close'].iloc[0] - 1) * 100)
+
+                            # Build results from vectorized data
+                            for idx, (tp, sl) in enumerate(col_tuples):
+                                total_trades = int(trade_counts.iloc[idx]) if idx < len(trade_counts) else 0
+
+                                if total_trades > 0:
+                                    total_return = float(all_returns.iloc[idx])
+                                    total_pnl = float(all_final_values.iloc[idx]) - self.initial_capital
+                                    max_dd_pct = float(all_max_dd.iloc[idx])
+                                    wins = int(wins_arr[idx])
+                                    losses = total_trades - wins
+                                    win_rate = (wins / total_trades * 100)
+                                    gross_profit = gross_profit_arr[idx]
+                                    gross_loss = gross_loss_arr[idx]
+                                    profit_factor = gross_profit / gross_loss if gross_loss > 0 else (999.0 if gross_profit > 0 else 0)
+
+                                    avg_trade = total_pnl / total_trades
+                                    avg_trade_pct = total_return / total_trades
+                                    vs_buy_hold = total_return - buy_hold
+
+                                    composite = self._calculate_composite_score(
+                                        win_rate, profit_factor, total_return, max_dd_pct, total_trades
+                                    )
+
+                                    results.append(VectorBTResult(
+                                        strategy_name=strategy,
+                                        strategy_category=self.ENTRY_STRATEGIES.get(strategy, {}).get('category', 'Unknown'),
+                                        direction=direction,
+                                        tp_percent=tp,
+                                        sl_percent=sl,
+                                        entry_rule=strategy,  # Use strategy KEY, not description
+                                        total_trades=total_trades,
+                                        wins=wins,
+                                        losses=losses,
+                                        win_rate=win_rate,
+                                        total_pnl=total_pnl,
+                                        total_pnl_percent=total_return,
+                                        profit_factor=min(profit_factor, 999.0),
+                                        max_drawdown=max_dd_pct * self.initial_capital / 100,
+                                        max_drawdown_percent=max_dd_pct,
+                                        avg_trade=avg_trade,
+                                        avg_trade_percent=avg_trade_pct,
+                                        buy_hold_return=buy_hold,
+                                        vs_buy_hold=vs_buy_hold,
+                                        beats_buy_hold=vs_buy_hold > 0,
+                                        composite_score=composite,
+                                        equity_curve=[],  # Skip for performance
+                                        params={'tp_percent': tp, 'sl_percent': sl, 'direction': direction},
+                                        data_start=data_start_str,
+                                        data_end=data_end_str,
+                                    ))
+
+                                completed += 1
+
+                                # Progress callback every 50 combinations for better watchdog responsiveness
+                                if progress_callback and completed % 50 == 0:
+                                    progress_callback(completed, total_combos)
+
+                                # Checkpoint every 1000 combinations for crash recovery
+                                if checkpoint_callback and completed % 1000 == 0:
+                                    checkpoint_data = {
+                                        'completed': completed,
+                                        'total': total_combos,
+                                        'current_strategy': strategy,
+                                        'current_direction': direction,
+                                        'results_count': len(results),
+                                    }
+                                    try:
+                                        checkpoint_callback(checkpoint_data)
+                                    except Exception as e:
+                                        log(f"[VectorBT] Checkpoint save failed: {e}", level='DEBUG')
+
+                        except Exception as extract_err:
+                            log(f"[VectorBT] Vectorized extraction failed: {extract_err}, falling back", level='WARNING')
+                            # Fallback to individual extraction
+                            for tp, sl in col_tuples:
+                                try:
+                                    sub_pf = pf[(tp, sl)]
+                                    result = self._extract_metrics(sub_pf, strategy, direction, tp, sl)
+                                    if result.total_trades > 0:
+                                        results.append(result)
+                                except:
+                                    pass
+                                completed += 1
+                                if progress_callback and completed % 50 == 0:
+                                    progress_callback(completed, total_combos)
+
+                        # CRITICAL: Explicitly free large objects to prevent memory leak
+                        del pf
+                        del close_tiled
+                        del entries_tiled
+                        del tp_arr
+                        del sl_arr
+                        import gc
+                        gc.collect()
+
+                        current_memory = get_memory_mb()
+                        if current_memory > start_memory * 1.5:  # Memory grew by 50%+
+                            log(f"[VectorBT] Memory warning: {current_memory:.0f} MB (started at {start_memory:.0f} MB)", level='WARNING')
+
+                    except Exception as e:
+                        log(f"[VectorBT] Broadcast error for {strategy}/{direction}: {e}", level='WARNING')
+                        # Fall back to iterative approach
+                        for tp in tp_range:
+                            for sl in sl_range:
+                                try:
+                                    result = self.run_single_backtest(strategy, direction, tp, sl)
+                                    if result.total_trades > 0:
+                                        results.append(result)
+                                except Exception as inner_e:
+                                    log(f"[VectorBT] Fallback error: {inner_e}", level='DEBUG')
+
+                                completed += 1
+
+                                if progress_callback and completed % 50 == 0:
+                                    progress_callback(completed, total_combos)
+
+        # ========== PHASE 2: BIDIRECTIONAL STRATEGIES ==========
+        if mode in ['bidirectional', 'all']:
+            vbt_log(f"[VectorBT] Starting bidirectional optimization for {len(strategies)} strategies", level='DEBUG')
+
+            for strategy in strategies:
+                # Get both long and short signals
+                long_entries = self._get_signals(strategy, 'long')
+                short_entries = self._get_signals(strategy, 'short')
+
+                # Skip if no signals in either direction
+                if not long_entries.any() and not short_entries.any():
                     completed += len(tp_range) * len(sl_range)
                     continue
 
-                short = direction == 'short'
+                # Pre-filter conflicting signals (where both fire on same bar)
+                conflict_mask = long_entries & short_entries
+                long_entries_clean = long_entries & ~conflict_mask
+                short_entries_clean = short_entries & ~conflict_mask
 
-                # VectorBT broadcasting: tile close and entries to create multi-column DataFrames
-                # Each column represents a different TP/SL combination
                 n_tp = len(tp_range)
                 n_sl = len(sl_range)
                 n_combos = n_tp * n_sl
 
                 try:
                     # Create column labels for TP/SL combinations
-                    # Format: MultiIndex with (tp_value, sl_value)
                     col_tuples = [(tp, sl) for tp in tp_range for sl in sl_range]
                     columns = pd.MultiIndex.from_tuples(col_tuples, names=['tp', 'sl'])
 
-                    # Tile close prices to have n_combos columns
+                    # Tile close prices
                     close_tiled = pd.DataFrame(
                         np.tile(self.df['close'].values.reshape(-1, 1), (1, n_combos)),
                         index=self.df.index,
                         columns=columns
                     )
 
-                    # Tile entries to match
-                    entries_arr = entries.values.reshape(-1, 1)
-                    entries_tiled = pd.DataFrame(
-                        np.tile(entries_arr, (1, n_combos)),
+                    # Tile long entries
+                    long_entries_tiled = pd.DataFrame(
+                        np.tile(long_entries_clean.values.reshape(-1, 1), (1, n_combos)),
                         index=self.df.index,
                         columns=columns
                     )
 
-                    # Create TP/SL arrays matching the column structure
-                    # Each column gets the same TP/SL value for all rows
-                    tp_arr = np.array([tp / 100 for tp, sl in col_tuples])  # Shape: (n_combos,)
-                    sl_arr = np.array([sl / 100 for tp, sl in col_tuples])  # Shape: (n_combos,)
+                    # Tile short entries
+                    short_entries_tiled = pd.DataFrame(
+                        np.tile(short_entries_clean.values.reshape(-1, 1), (1, n_combos)),
+                        index=self.df.index,
+                        columns=columns
+                    )
 
-                    # Run vectorized portfolio simulation across all combinations
+                    # TP/SL arrays
+                    tp_arr = np.array([tp / 100 for tp, sl in col_tuples])
+                    sl_arr = np.array([sl / 100 for tp, sl in col_tuples])
+
+                    # Run bidirectional portfolio simulation
                     pf = vbt.Portfolio.from_signals(
                         close=close_tiled,
-                        entries=entries_tiled if not short else pd.DataFrame(False, index=self.df.index, columns=columns),
-                        short_entries=entries_tiled if short else pd.DataFrame(False, index=self.df.index, columns=columns),
-                        sl_stop=sl_arr,  # Per-column stop loss
-                        tp_stop=tp_arr,  # Per-column take profit
+                        entries=long_entries_tiled,
+                        short_entries=short_entries_tiled,
+                        sl_stop=sl_arr,
+                        tp_stop=tp_arr,
                         size=self.position_size_pct / 100,
                         size_type='percent',
                         fees=self.total_fees,
                         init_cash=self.initial_capital,
                         freq=self.data_freq,
+                        upon_opposite_entry='Reverse',  # Flip on opposite signal
                     )
 
-                    # VECTORIZED METRIC EXTRACTION - get ALL metrics at once (massive speedup)
-                    # Instead of 52,800 individual calls, we make ~10 vectorized calls
+                    # Extract metrics for each TP/SL combination
                     try:
-                        all_returns = pf.total_return() * 100  # Series indexed by (tp, sl)
+                        all_returns = pf.total_return() * 100
                         all_final_values = pf.final_value()
                         all_max_dd = pf.max_drawdown() * 100
 
-                        # Trade stats - more complex but still vectorized
                         trades = pf.trades
                         trade_counts = trades.count()
 
                         # Get win/loss counts per column
                         if hasattr(trades, 'pnl') and len(trades.pnl) > 0:
-                            # Group PnL by column and count wins/losses
                             trade_pnl = trades.pnl.values
                             trade_cols = trades.col.values
 
-                            # Pre-compute wins/losses/profits per column
                             n_cols = len(col_tuples)
                             wins_arr = np.zeros(n_cols)
                             gross_profit_arr = np.zeros(n_cols)
@@ -1707,10 +2241,9 @@ class VectorBTEngine:
                             gross_profit_arr = np.zeros(len(col_tuples))
                             gross_loss_arr = np.zeros(len(col_tuples))
 
-                        # Buy & hold (same for all combinations)
                         buy_hold = float((self.df['close'].iloc[-1] / self.df['close'].iloc[0] - 1) * 100)
 
-                        # Build results from vectorized data
+                        # Build results
                         for idx, (tp, sl) in enumerate(col_tuples):
                             total_trades = int(trade_counts.iloc[idx]) if idx < len(trade_counts) else 0
 
@@ -1734,12 +2267,12 @@ class VectorBTEngine:
                                 )
 
                                 results.append(VectorBTResult(
-                                    strategy_name=strategy,
+                                    strategy_name=f"{strategy}_both",
                                     strategy_category=self.ENTRY_STRATEGIES.get(strategy, {}).get('category', 'Unknown'),
-                                    direction=direction,
+                                    direction='both',
                                     tp_percent=tp,
                                     sl_percent=sl,
-                                    entry_rule=self.ENTRY_STRATEGIES.get(strategy, {}).get('description', ''),
+                                    entry_rule=strategy,
                                     total_trades=total_trades,
                                     wins=wins,
                                     losses=losses,
@@ -1755,39 +2288,23 @@ class VectorBTEngine:
                                     vs_buy_hold=vs_buy_hold,
                                     beats_buy_hold=vs_buy_hold > 0,
                                     composite_score=composite,
-                                    equity_curve=[],  # Skip for performance
-                                    params={'tp_percent': tp, 'sl_percent': sl, 'direction': direction},
+                                    equity_curve=[],
+                                    params={'tp_percent': tp, 'sl_percent': sl, 'direction': 'both'},
                                     data_start=data_start_str,
                                     data_end=data_end_str,
                                 ))
 
                             completed += 1
 
-                            # Progress callback every 50 combinations for better watchdog responsiveness
                             if progress_callback and completed % 50 == 0:
                                 progress_callback(completed, total_combos)
 
-                            # Checkpoint every 1000 combinations for crash recovery
-                            if checkpoint_callback and completed % 1000 == 0:
-                                checkpoint_data = {
-                                    'completed': completed,
-                                    'total': total_combos,
-                                    'current_strategy': strategy,
-                                    'current_direction': direction,
-                                    'results_count': len(results),
-                                }
-                                try:
-                                    checkpoint_callback(checkpoint_data)
-                                except Exception as e:
-                                    log(f"[VectorBT] Checkpoint save failed: {e}", level='DEBUG')
-
                     except Exception as extract_err:
-                        log(f"[VectorBT] Vectorized extraction failed: {extract_err}, falling back", level='WARNING')
-                        # Fallback to individual extraction
+                        log(f"[VectorBT] Bidirectional extraction failed for {strategy}: {extract_err}", level='WARNING')
+                        # Fallback to individual backtests
                         for tp, sl in col_tuples:
                             try:
-                                sub_pf = pf[(tp, sl)]
-                                result = self._extract_metrics(sub_pf, strategy, direction, tp, sl)
+                                result = self.run_bidirectional_backtest(strategy, tp, sl)
                                 if result.total_trades > 0:
                                     results.append(result)
                             except:
@@ -1796,30 +2313,27 @@ class VectorBTEngine:
                             if progress_callback and completed % 50 == 0:
                                 progress_callback(completed, total_combos)
 
-                    # CRITICAL: Explicitly free large objects to prevent memory leak
+                    # Memory cleanup
                     del pf
                     del close_tiled
-                    del entries_tiled
+                    del long_entries_tiled
+                    del short_entries_tiled
                     del tp_arr
                     del sl_arr
                     import gc
                     gc.collect()
 
-                    current_memory = get_memory_mb()
-                    if current_memory > start_memory * 1.5:  # Memory grew by 50%+
-                        log(f"[VectorBT] Memory warning: {current_memory:.0f} MB (started at {start_memory:.0f} MB)", level='WARNING')
-
                 except Exception as e:
-                    log(f"[VectorBT] Broadcast error for {strategy}/{direction}: {e}", level='WARNING')
-                    # Fall back to iterative approach
+                    log(f"[VectorBT] Bidirectional broadcast error for {strategy}: {e}", level='WARNING')
+                    # Fallback to iterative
                     for tp in tp_range:
                         for sl in sl_range:
                             try:
-                                result = self.run_single_backtest(strategy, direction, tp, sl)
+                                result = self.run_bidirectional_backtest(strategy, tp, sl)
                                 if result.total_trades > 0:
                                     results.append(result)
                             except Exception as inner_e:
-                                log(f"[VectorBT] Fallback error: {inner_e}", level='DEBUG')
+                                log(f"[VectorBT] Bidirectional fallback error: {inner_e}", level='DEBUG')
 
                             completed += 1
 
@@ -1944,7 +2458,7 @@ class VectorBTEngine:
                 direction=direction,
                 tp_percent=tp_percent,
                 sl_percent=sl_percent,
-                entry_rule=self.ENTRY_STRATEGIES.get(strategy, {}).get('description', ''),
+                entry_rule=strategy,  # Use strategy KEY, not description
                 total_trades=int(total_trades),
                 wins=wins,
                 losses=losses,
@@ -1966,7 +2480,7 @@ class VectorBTEngine:
                     'tp_percent': tp_percent,
                     'sl_percent': sl_percent,
                     'direction': direction,
-                    'entry_rule': self.ENTRY_STRATEGIES.get(strategy, {}).get('description', ''),
+                    'entry_rule': strategy,  # Use strategy KEY, not description (fixes Pine Script generation)
                 }
             )
 
@@ -2238,7 +2752,7 @@ class VectorBTEngine:
             direction=direction,
             tp_percent=tp_percent,
             sl_percent=sl_percent,
-            entry_rule=self.ENTRY_STRATEGIES.get(strategy, {}).get('description', ''),
+            entry_rule=strategy,  # Use strategy KEY, not description
         )
 
 

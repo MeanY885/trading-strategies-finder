@@ -6010,6 +6010,8 @@
             document.getElementById('debugWinRate').textContent = '-';
             document.getElementById('debugPF').textContent = '-';
             document.getElementById('debugTrades').textContent = '-';
+            document.getElementById('debugTotalPnL').textContent = '-';
+            document.getElementById('debugMaxDD').textContent = '-';
             document.getElementById('debugPineScript').textContent = 'Loading...';
             document.getElementById('debugOurTradesBody').innerHTML = '';
             document.getElementById('debugOurTradeCount').textContent = '0';
@@ -6055,6 +6057,52 @@
                 document.getElementById('debugPF').textContent = strategy.profit_factor?.toFixed(2) || '0';
                 document.getElementById('debugTrades').textContent = strategy.total_trades || 0;
 
+                // Total P&L and Max Drawdown
+                const totalPnL = strategy.total_pnl || 0;
+                const maxDD = strategy.max_drawdown || 0;
+                const pnlEl = document.getElementById('debugTotalPnL');
+                const ddEl = document.getElementById('debugMaxDD');
+                if (pnlEl) {
+                    pnlEl.textContent = `£${totalPnL.toFixed(2)}`;
+                    pnlEl.style.color = totalPnL >= 0 ? 'var(--success)' : 'var(--danger)';
+                }
+                if (ddEl) {
+                    ddEl.textContent = `£${Math.abs(maxDD).toFixed(2)}`;
+                }
+
+                // === CRITICAL: Show entry_rule validation warning ===
+                const entryRuleWarning = document.getElementById('debugEntryRuleWarning');
+                if (entryRuleWarning) {
+                    if (!strategy.entry_rule_valid) {
+                        entryRuleWarning.style.display = 'block';
+                        entryRuleWarning.innerHTML = `
+                            <div style="background: rgba(239, 68, 68, 0.15); border: 1px solid var(--danger); border-radius: 8px; padding: 1rem; margin-bottom: 1rem;">
+                                <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem;">
+                                    <span style="font-size: 1.2rem;">⚠️</span>
+                                    <strong style="color: var(--danger);">CRITICAL: Invalid Entry Rule Detected</strong>
+                                </div>
+                                <p style="color: var(--text-primary); margin: 0.5rem 0;">
+                                    <strong>Issue:</strong> ${strategy.entry_rule_issue || 'Entry rule not recognized'}
+                                </p>
+                                ${strategy.entry_rule_from_params ? `
+                                <p style="color: var(--text-muted); margin: 0.5rem 0; font-family: monospace; font-size: 0.85rem;">
+                                    <strong>Stored value:</strong> "${strategy.entry_rule_from_params}"
+                                </p>` : ''}
+                                <p style="color: var(--warning); margin: 0.5rem 0;">
+                                    <strong>Result:</strong> Pine Script is using EMA 12/26 crossover FALLBACK instead of your intended strategy!
+                                </p>
+                                <p style="color: var(--success); margin: 0.5rem 0;">
+                                    <strong>Fix:</strong> ${strategy.entry_rule_suggestion || 'Re-run optimization to fix this issue.'}
+                                </p>
+                            </div>
+                        `;
+                        addLog(`⚠️ CRITICAL: Entry rule "${strategy.entry_rule_from_params || strategy.entry_rule}" is invalid - Pine Script using fallback!`, 'warning');
+                    } else {
+                        entryRuleWarning.style.display = 'none';
+                        entryRuleWarning.innerHTML = '';
+                    }
+                }
+
                 // Populate Pine Script
                 document.getElementById('debugPineScript').textContent = currentDebugPineScript;
 
@@ -6071,15 +6119,18 @@
                 tradesBody.innerHTML = currentDebugOurTrades.map((t, i) => {
                     const pnlColor = t.pnl >= 0 ? 'var(--success)' : 'var(--danger)';
                     const dirColor = t.direction === 'LONG' ? 'var(--success)' : 'var(--danger)';
+                    const resultColor = t.exit_reason === 'WIN' || t.exit_reason === 'TP_HIT' ? 'var(--success)' :
+                                       t.exit_reason === 'LOSS' || t.exit_reason === 'SL_HIT' ? 'var(--danger)' : 'var(--text-muted)';
                     return `
                         <tr style="border-bottom: 1px solid var(--border);">
                             <td style="padding: 0.4rem 0.5rem; color: var(--text-muted);">${t.trade_num || i + 1}</td>
                             <td style="padding: 0.4rem 0.5rem; color: ${dirColor}; font-weight: 600;">${t.direction}</td>
                             <td style="padding: 0.4rem 0.5rem; color: var(--text-primary);">${formatDebugTime(t.entry_time)}</td>
+                            <td style="padding: 0.4rem 0.5rem; color: var(--text-muted);">${formatDebugTime(t.exit_time)}</td>
                             <td style="padding: 0.4rem 0.5rem; text-align: right; color: var(--text-primary);">${t.entry_price?.toFixed(2) || '-'}</td>
                             <td style="padding: 0.4rem 0.5rem; text-align: right; color: var(--text-primary);">${t.exit_price?.toFixed(2) || '-'}</td>
                             <td style="padding: 0.4rem 0.5rem; text-align: right; color: ${pnlColor}; font-weight: 600;">${t.pnl?.toFixed(2) || '0'}</td>
-                            <td style="padding: 0.4rem 0.5rem; color: var(--text-muted);">${t.exit_reason || '-'}</td>
+                            <td style="padding: 0.4rem 0.5rem; color: ${resultColor}; font-weight: 500;">${t.exit_reason || '-'}</td>
                         </tr>
                     `;
                 }).join('');
@@ -6289,41 +6340,113 @@
             const matchRate = comparison.match_rate || 0;
             const matchColor = matchRate >= 80 ? 'var(--success)' : matchRate >= 50 ? 'var(--warning)' : 'var(--danger)';
 
+            // Calculate color codes for differences
+            const pnlDiffColor = diff.pnl_diff >= 0 ? 'var(--success)' : 'var(--danger)';
+            const wrDiffColor = diff.win_rate_diff >= 0 ? 'var(--success)' : 'var(--danger)';
+            const tradeDiffColor = Math.abs(diff.trade_count_diff) <= 1 ? 'var(--success)' :
+                                   Math.abs(diff.trade_count_diff) <= 3 ? 'var(--warning)' : 'var(--danger)';
+            const tvPnlColor = tv.total_pnl >= 0 ? 'var(--success)' : 'var(--danger)';
+            const ourPnlColor = ours.total_pnl >= 0 ? 'var(--success)' : 'var(--danger)';
+
             summaryDiv.innerHTML = `
-                <div style="background: var(--bg-primary); padding: 0.75rem; border-radius: 6px; text-align: center;">
-                    <div style="color: var(--text-muted); font-size: 0.75rem; margin-bottom: 0.25rem;">TradingView</div>
-                    <div style="color: var(--text-primary); font-weight: 600;">${tv.trade_count} trades</div>
-                    <div style="color: var(--text-muted); font-size: 0.8rem;">WR: ${tv.win_rate?.toFixed(1)}% | PnL: ${tv.total_pnl?.toFixed(2)}</div>
+                <!-- Side-by-side comparison table -->
+                <div style="grid-column: 1 / -1; overflow-x: auto;">
+                    <table style="width: 100%; border-collapse: collapse; font-size: 0.85rem;">
+                        <thead>
+                            <tr style="border-bottom: 2px solid var(--border);">
+                                <th style="text-align: left; padding: 0.5rem; color: var(--text-muted);">Metric</th>
+                                <th style="text-align: center; padding: 0.5rem; color: #2962FF;">TradingView</th>
+                                <th style="text-align: center; padding: 0.5rem; color: var(--accent-primary);">Our System</th>
+                                <th style="text-align: center; padding: 0.5rem; color: var(--text-muted);">Difference</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr style="border-bottom: 1px solid var(--border);">
+                                <td style="padding: 0.5rem; color: var(--text-secondary);">Trade Count</td>
+                                <td style="text-align: center; padding: 0.5rem; color: var(--text-primary); font-weight: 600;">${tv.trade_count}</td>
+                                <td style="text-align: center; padding: 0.5rem; color: var(--text-primary); font-weight: 600;">${ours.trade_count}</td>
+                                <td style="text-align: center; padding: 0.5rem; color: ${tradeDiffColor}; font-weight: 600;">
+                                    ${diff.trade_count_diff > 0 ? '+' : ''}${diff.trade_count_diff}
+                                </td>
+                            </tr>
+                            <tr style="border-bottom: 1px solid var(--border);">
+                                <td style="padding: 0.5rem; color: var(--text-secondary);">Total P&L</td>
+                                <td style="text-align: center; padding: 0.5rem; color: ${tvPnlColor}; font-weight: 600;">£${tv.total_pnl?.toFixed(2)}</td>
+                                <td style="text-align: center; padding: 0.5rem; color: ${ourPnlColor}; font-weight: 600;">£${ours.total_pnl?.toFixed(2)}</td>
+                                <td style="text-align: center; padding: 0.5rem; color: ${pnlDiffColor}; font-weight: 600;">
+                                    ${diff.pnl_diff > 0 ? '+' : ''}£${diff.pnl_diff?.toFixed(2)}
+                                </td>
+                            </tr>
+                            <tr style="border-bottom: 1px solid var(--border);">
+                                <td style="padding: 0.5rem; color: var(--text-secondary);">Win Rate</td>
+                                <td style="text-align: center; padding: 0.5rem; color: var(--text-primary); font-weight: 600;">${tv.win_rate?.toFixed(1)}%</td>
+                                <td style="text-align: center; padding: 0.5rem; color: var(--text-primary); font-weight: 600;">${ours.win_rate?.toFixed(1)}%</td>
+                                <td style="text-align: center; padding: 0.5rem; color: ${wrDiffColor}; font-weight: 600;">
+                                    ${diff.win_rate_diff > 0 ? '+' : ''}${diff.win_rate_diff?.toFixed(1)}%
+                                </td>
+                            </tr>
+                            <tr>
+                                <td style="padding: 0.5rem; color: var(--text-secondary);">Wins / Losses</td>
+                                <td style="text-align: center; padding: 0.5rem;">
+                                    <span style="color: var(--success);">${tv.wins}</span> /
+                                    <span style="color: var(--danger);">${tv.losses}</span>
+                                </td>
+                                <td style="text-align: center; padding: 0.5rem;">
+                                    <span style="color: var(--success);">${ours.wins}</span> /
+                                    <span style="color: var(--danger);">${ours.losses}</span>
+                                </td>
+                                <td style="text-align: center; padding: 0.5rem; color: var(--text-muted);">-</td>
+                            </tr>
+                        </tbody>
+                    </table>
                 </div>
-                <div style="background: var(--bg-primary); padding: 0.75rem; border-radius: 6px; text-align: center;">
-                    <div style="color: var(--text-muted); font-size: 0.75rem; margin-bottom: 0.25rem;">Our System</div>
-                    <div style="color: var(--text-primary); font-weight: 600;">${ours.trade_count} trades</div>
-                    <div style="color: var(--text-muted); font-size: 0.8rem;">WR: ${ours.win_rate?.toFixed(1)}% | PnL: ${ours.total_pnl?.toFixed(2)}</div>
-                </div>
-                <div style="background: var(--bg-primary); padding: 0.75rem; border-radius: 6px; text-align: center;">
-                    <div style="color: var(--text-muted); font-size: 0.75rem; margin-bottom: 0.25rem;">Match Rate</div>
-                    <div style="color: ${matchColor}; font-weight: 600; font-size: 1.2rem;">${matchRate.toFixed(1)}%</div>
-                    <div style="color: var(--text-muted); font-size: 0.8rem;">Trade diff: ${diff.trade_count_diff > 0 ? '+' : ''}${diff.trade_count_diff}</div>
+                <!-- Match Rate Summary -->
+                <div style="grid-column: 1 / -1; display: flex; justify-content: center; gap: 2rem; padding-top: 0.75rem; border-top: 1px solid var(--border); margin-top: 0.5rem;">
+                    <div style="text-align: center;">
+                        <div style="color: var(--text-muted); font-size: 0.75rem;">Match Rate</div>
+                        <div style="color: ${matchColor}; font-weight: 700; font-size: 1.3rem;">${matchRate.toFixed(1)}%</div>
+                    </div>
+                    <div style="text-align: center;">
+                        <div style="color: var(--text-muted); font-size: 0.75rem;">PnL Variance</div>
+                        <div style="color: ${Math.abs(diff.pnl_diff) < 5 ? 'var(--success)' : Math.abs(diff.pnl_diff) < 20 ? 'var(--warning)' : 'var(--danger)'}; font-weight: 700; font-size: 1.3rem;">
+                            £${Math.abs(diff.pnl_diff)?.toFixed(2)}
+                        </div>
+                    </div>
                 </div>
             `;
 
-            // Root Causes
+            // Root Causes - with enhanced display for critical issues
             const rootCausesDiv = document.getElementById('debugRootCauses');
             if (rootCauses.length > 0) {
                 rootCausesDiv.innerHTML = rootCauses.map(rc => {
                     const severityColors = {
-                        high: { bg: 'rgba(239, 68, 68, 0.1)', border: 'var(--danger)' },
-                        medium: { bg: 'rgba(245, 158, 11, 0.1)', border: 'var(--warning)' },
-                        low: { bg: 'rgba(34, 197, 94, 0.1)', border: 'var(--success)' }
+                        critical: { bg: 'rgba(220, 38, 38, 0.2)', border: '#dc2626', icon: '🚨' },
+                        high: { bg: 'rgba(239, 68, 68, 0.1)', border: 'var(--danger)', icon: '⚠️' },
+                        medium: { bg: 'rgba(245, 158, 11, 0.1)', border: 'var(--warning)', icon: '⚡' },
+                        low: { bg: 'rgba(34, 197, 94, 0.1)', border: 'var(--success)', icon: 'ℹ️' }
                     };
                     const colors = severityColors[rc.severity] || severityColors.medium;
+                    const isCritical = rc.severity === 'critical';
+
+                    // Build extra details for critical issues
+                    let extraDetails = '';
+                    if (rc.suggestion) {
+                        extraDetails += `<div style="color: var(--success); font-size: 0.85rem; margin-top: 0.5rem;"><strong>Fix:</strong> ${rc.suggestion}</div>`;
+                    }
+                    if (rc.technical_detail && isCritical) {
+                        extraDetails += `<div style="color: var(--text-muted); font-size: 0.8rem; margin-top: 0.5rem; font-family: monospace; background: rgba(0,0,0,0.2); padding: 0.5rem; border-radius: 4px;">${rc.technical_detail}</div>`;
+                    }
+
                     return `
-                        <div style="background: ${colors.bg}; border-left: 4px solid ${colors.border}; padding: 0.75rem; margin-bottom: 0.5rem; border-radius: 0 6px 6px 0;">
+                        <div style="background: ${colors.bg}; border-left: 4px solid ${colors.border}; padding: 0.75rem; margin-bottom: 0.5rem; border-radius: 0 6px 6px 0; ${isCritical ? 'border: 2px solid ' + colors.border + ';' : ''}">
                             <div style="display: flex; justify-content: space-between; align-items: center;">
-                                <span style="color: var(--text-primary); font-weight: 600;">${rc.cause}</span>
+                                <span style="color: ${isCritical ? colors.border : 'var(--text-primary)'}; font-weight: 600;">
+                                    ${colors.icon} ${rc.cause}
+                                </span>
                                 <span style="color: ${colors.border}; font-size: 0.8rem; font-weight: 600;">${(rc.confidence * 100).toFixed(0)}% confidence</span>
                             </div>
                             <div style="color: var(--text-muted); font-size: 0.85rem; margin-top: 0.25rem;">${rc.evidence}</div>
+                            ${extraDetails}
                         </div>
                     `;
                 }).join('');
@@ -6343,105 +6466,291 @@
                 recsDiv.innerHTML = '<div style="color: var(--text-muted);">No specific recommendations.</div>';
             }
 
-            // Match counts
-            const matchCounts = analysis.match_counts;
-            document.getElementById('debugMatchCounts').innerHTML = `
-                <span style="background: rgba(34, 197, 94, 0.2); color: var(--success); padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.8rem;">
-                    Exact: ${matchCounts.exact}
-                </span>
-                <span style="background: rgba(245, 158, 11, 0.2); color: var(--warning); padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.8rem;">
-                    Close: ${matchCounts.close}
-                </span>
-                <span style="background: rgba(139, 92, 246, 0.2); color: #8b5cf6; padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.8rem;">
-                    Timing: ${matchCounts.timing_mismatch}
-                </span>
-                <span style="background: rgba(239, 68, 68, 0.2); color: var(--danger); padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.8rem;">
-                    Missing in TV: ${matchCounts.missing_in_tv}
-                </span>
-                <span style="background: rgba(236, 72, 153, 0.2); color: #ec4899; padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.8rem;">
-                    Missing in Ours: ${matchCounts.missing_in_ours}
-                </span>
-            `;
+            // Store raw data for re-matching with different tolerances
+            window.debugTradeData = {
+                tvTrades: data.tv_trades || [],
+                ourTrades: data.our_trades || [],
+                analysis: analysis
+            };
+            window.debugCurrentPage = 0;
+            window.debugPageSize = 25;
 
-            // Trade matches detail
-            const matchesDiv = document.getElementById('debugTradeMatches');
-            const exactMatches = analysis.exact_matches || [];
-            const closeMatches = analysis.close_matches || [];
-            const missingInTV = analysis.missing_in_tv || [];
-            const missingInOurs = analysis.missing_in_ours || [];
-
-            let matchesHtml = '';
-
-            if (exactMatches.length > 0 || closeMatches.length > 0) {
-                matchesHtml += `
-                    <div style="margin-bottom: 1rem;">
-                        <h5 style="margin: 0 0 0.5rem 0; color: var(--success);">✅ Matched Trades (${exactMatches.length + closeMatches.length})</h5>
-                        <table style="width: 100%; font-size: 0.75rem; border-collapse: collapse;">
-                            <thead>
-                                <tr style="background: var(--bg-primary);">
-                                    <th style="padding: 0.4rem; text-align: left;">TV Entry</th>
-                                    <th style="padding: 0.4rem; text-align: left;">Our Entry</th>
-                                    <th style="padding: 0.4rem; text-align: right;">Time Diff</th>
-                                    <th style="padding: 0.4rem; text-align: right;">PnL Diff</th>
-                                    <th style="padding: 0.4rem; text-align: center;">Quality</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                ${[...exactMatches, ...closeMatches].slice(0, 20).map(m => `
-                                    <tr style="border-bottom: 1px solid var(--border);">
-                                        <td style="padding: 0.4rem;">${formatDebugTime(m.tv_trade?.entry_time)}</td>
-                                        <td style="padding: 0.4rem;">${formatDebugTime(m.our_trade?.entry_time)}</td>
-                                        <td style="padding: 0.4rem; text-align: right;">${m.time_diff_hours?.toFixed(2) || 0}h</td>
-                                        <td style="padding: 0.4rem; text-align: right; color: ${Math.abs(m.pnl_diff || 0) < 1 ? 'var(--success)' : 'var(--warning)'};">${m.pnl_diff?.toFixed(2) || 0}</td>
-                                        <td style="padding: 0.4rem; text-align: center;">
-                                            <span style="padding: 0.1rem 0.3rem; border-radius: 4px; font-size: 0.7rem; ${m.time_diff_seconds < 60 ? 'background: rgba(34, 197, 94, 0.2); color: var(--success);' : 'background: rgba(245, 158, 11, 0.2); color: var(--warning);'}">
-                                                ${m.time_diff_seconds < 60 ? 'Exact' : 'Close'}
-                                            </span>
-                                        </td>
-                                    </tr>
-                                `).join('')}
-                            </tbody>
-                        </table>
-                    </div>
-                `;
-            }
-
-            if (missingInOurs.length > 0) {
-                matchesHtml += `
-                    <div style="margin-bottom: 1rem;">
-                        <h5 style="margin: 0 0 0.5rem 0; color: var(--danger);">❌ TradingView Only (${missingInOurs.length} - we missed these)</h5>
-                        <div style="display: flex; flex-wrap: wrap; gap: 0.5rem;">
-                            ${missingInOurs.slice(0, 10).map(t => `
-                                <span style="background: rgba(239, 68, 68, 0.1); padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.75rem; color: var(--text-primary);">
-                                    ${formatDebugTime(t.entry_time)} | ${t.direction} | ${t.pnl?.toFixed(2) || 0}
-                                </span>
-                            `).join('')}
-                            ${missingInOurs.length > 10 ? `<span style="color: var(--text-muted); font-size: 0.75rem;">...and ${missingInOurs.length - 10} more</span>` : ''}
-                        </div>
-                    </div>
-                `;
-            }
-
-            if (missingInTV.length > 0) {
-                matchesHtml += `
-                    <div>
-                        <h5 style="margin: 0 0 0.5rem 0; color: #ec4899;">🎯 Our System Only (${missingInTV.length} - extra trades)</h5>
-                        <div style="display: flex; flex-wrap: wrap; gap: 0.5rem;">
-                            ${missingInTV.slice(0, 10).map(t => `
-                                <span style="background: rgba(236, 72, 153, 0.1); padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.75rem; color: var(--text-primary);">
-                                    ${formatDebugTime(t.entry_time)} | ${t.direction} | ${t.pnl?.toFixed(2) || 0}
-                                </span>
-                            `).join('')}
-                            ${missingInTV.length > 10 ? `<span style="color: var(--text-muted); font-size: 0.75rem;">...and ${missingInTV.length - 10} more</span>` : ''}
-                        </div>
-                    </div>
-                `;
-            }
-
-            matchesDiv.innerHTML = matchesHtml || '<div style="color: var(--text-muted);">No trade matching data available.</div>';
+            // Initial render with default tolerances
+            updateTradeComparison();
 
             // Scroll to results
             document.getElementById('debugResultsSection').scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+
+        // =====================================================================
+        // TRADE COMPARISON WITH TOLERANCE-BASED MATCHING
+        // =====================================================================
+
+        function updateTradeComparison() {
+            if (!window.debugTradeData) return;
+
+            const timeToleranceMin = parseInt(document.getElementById('debugTimeTolerance')?.value || 30);
+            const pnlTolerance = parseFloat(document.getElementById('debugPnlTolerance')?.value || 2);
+            const timeToleranceSec = timeToleranceMin * 60;
+
+            const tvTrades = window.debugTradeData.tvTrades;
+            const ourTrades = window.debugTradeData.ourTrades;
+
+            // Match trades with configurable tolerance
+            const matchResults = matchTradesWithTolerance(tvTrades, ourTrades, timeToleranceSec, pnlTolerance);
+            window.debugMatchResults = matchResults;
+            window.debugCurrentPage = 0;
+
+            // Update match counts display
+            updateMatchCountsDisplay(matchResults);
+
+            // Render the comparison table
+            renderComparisonTable();
+        }
+
+        function matchTradesWithTolerance(tvTrades, ourTrades, timeToleranceSec, pnlTolerance) {
+            const matched = [];
+            const unmatchedTV = [];
+            const unmatchedOurs = [...ourTrades];
+            const usedOursIndices = new Set();
+
+            // Sort both by entry time
+            const sortedTV = [...tvTrades].sort((a, b) => new Date(a.entry_time) - new Date(b.entry_time));
+
+            for (const tvTrade of sortedTV) {
+                const tvTime = new Date(tvTrade.entry_time);
+                let bestMatch = null;
+                let bestMatchIdx = -1;
+                let bestTimeDiff = Infinity;
+
+                for (let i = 0; i < ourTrades.length; i++) {
+                    if (usedOursIndices.has(i)) continue;
+
+                    const ourTrade = ourTrades[i];
+                    const ourTime = new Date(ourTrade.entry_time);
+                    const timeDiffSec = Math.abs((tvTime - ourTime) / 1000);
+
+                    if (timeDiffSec <= timeToleranceSec && timeDiffSec < bestTimeDiff) {
+                        // Check direction matches
+                        const tvDir = (tvTrade.direction || '').toUpperCase();
+                        const ourDir = (ourTrade.direction || '').toUpperCase();
+                        if (tvDir === ourDir || !tvDir || !ourDir) {
+                            bestMatch = ourTrade;
+                            bestMatchIdx = i;
+                            bestTimeDiff = timeDiffSec;
+                        }
+                    }
+                }
+
+                if (bestMatch !== null) {
+                    const pnlDiff = Math.abs((tvTrade.pnl || 0) - (bestMatch.pnl || 0));
+                    const pnlMatches = pnlTolerance === 0 || pnlDiff <= pnlTolerance;
+
+                    matched.push({
+                        tvTrade,
+                        ourTrade: bestMatch,
+                        timeDiffSec: bestTimeDiff,
+                        timeDiffMin: bestTimeDiff / 60,
+                        pnlDiff: (tvTrade.pnl || 0) - (bestMatch.pnl || 0),
+                        timeMatches: true,
+                        pnlMatches
+                    });
+                    usedOursIndices.add(bestMatchIdx);
+                } else {
+                    unmatchedTV.push(tvTrade);
+                }
+            }
+
+            // Remaining unmatched from our system
+            const finalUnmatchedOurs = ourTrades.filter((_, i) => !usedOursIndices.has(i));
+
+            return { matched, unmatchedTV, unmatchedOurs: finalUnmatchedOurs };
+        }
+
+        function updateMatchCountsDisplay(results) {
+            const exactMatches = results.matched.filter(m => m.timeDiffMin < 5 && m.pnlMatches).length;
+            const closeMatches = results.matched.filter(m => m.timeDiffMin >= 5 && m.pnlMatches).length;
+            const pnlMismatches = results.matched.filter(m => !m.pnlMatches).length;
+            const missingInOurs = results.unmatchedTV.length;
+            const extraInOurs = results.unmatchedOurs.length;
+
+            document.getElementById('debugMatchCounts').innerHTML = `
+                <span style="background: rgba(34, 197, 94, 0.2); color: var(--success); padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.8rem; font-weight: 600;">
+                    ✓ Exact: ${exactMatches}
+                </span>
+                <span style="background: rgba(245, 158, 11, 0.2); color: var(--warning); padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.8rem; font-weight: 600;">
+                    ~ Close: ${closeMatches}
+                </span>
+                <span style="background: rgba(139, 92, 246, 0.2); color: #8b5cf6; padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.8rem; font-weight: 600;">
+                    £ PnL Diff: ${pnlMismatches}
+                </span>
+                <span style="background: rgba(239, 68, 68, 0.2); color: var(--danger); padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.8rem; font-weight: 600;">
+                    ✗ TV Only: ${missingInOurs}
+                </span>
+                <span style="background: rgba(236, 72, 153, 0.2); color: #ec4899; padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.8rem; font-weight: 600;">
+                    + Ours Only: ${extraInOurs}
+                </span>
+            `;
+        }
+
+        function renderComparisonTable() {
+            if (!window.debugMatchResults) return;
+
+            const results = window.debugMatchResults;
+            const pageSize = window.debugPageSize || 25;
+            const currentPage = window.debugCurrentPage || 0;
+
+            // Build unified list: all TV trades with their matches (or lack thereof)
+            const allRows = [];
+
+            // Add matched trades
+            for (const match of results.matched) {
+                allRows.push({
+                    type: 'matched',
+                    tv: match.tvTrade,
+                    ours: match.ourTrade,
+                    timeDiffMin: match.timeDiffMin,
+                    pnlDiff: match.pnlDiff,
+                    pnlMatches: match.pnlMatches
+                });
+            }
+
+            // Add TV-only trades
+            for (const tv of results.unmatchedTV) {
+                allRows.push({ type: 'tv_only', tv, ours: null });
+            }
+
+            // Add Our-only trades
+            for (const ours of results.unmatchedOurs) {
+                allRows.push({ type: 'ours_only', tv: null, ours });
+            }
+
+            // Sort by entry time (use TV time if available, otherwise ours)
+            allRows.sort((a, b) => {
+                const timeA = new Date(a.tv?.entry_time || a.ours?.entry_time);
+                const timeB = new Date(b.tv?.entry_time || b.ours?.entry_time);
+                return timeA - timeB;
+            });
+
+            const totalRows = allRows.length;
+            const totalPages = Math.ceil(totalRows / pageSize);
+            const startIdx = currentPage * pageSize;
+            const endIdx = Math.min(startIdx + pageSize, totalRows);
+            const pageRows = allRows.slice(startIdx, endIdx);
+
+            // Build table HTML
+            let html = `
+                <table style="width: 100%; font-size: 0.75rem; border-collapse: collapse; min-width: 800px;">
+                    <thead>
+                        <tr style="background: var(--bg-primary);">
+                            <th style="padding: 0.5rem; text-align: center; width: 50px;">Match</th>
+                            <th colspan="4" style="padding: 0.5rem; text-align: center; background: rgba(41, 98, 255, 0.1); border-right: 2px solid var(--border);">TradingView</th>
+                            <th colspan="4" style="padding: 0.5rem; text-align: center; background: rgba(139, 92, 246, 0.1);">Our System</th>
+                            <th style="padding: 0.5rem; text-align: center; width: 80px;">Time Δ</th>
+                            <th style="padding: 0.5rem; text-align: center; width: 80px;">PnL Δ</th>
+                        </tr>
+                        <tr style="background: var(--bg-primary); border-bottom: 2px solid var(--border);">
+                            <th style="padding: 0.3rem;"></th>
+                            <th style="padding: 0.3rem; text-align: left; color: #2962FF;">Entry</th>
+                            <th style="padding: 0.3rem; text-align: left; color: #2962FF;">Exit</th>
+                            <th style="padding: 0.3rem; text-align: center; color: #2962FF;">Dir</th>
+                            <th style="padding: 0.3rem; text-align: right; color: #2962FF; border-right: 2px solid var(--border);">PnL</th>
+                            <th style="padding: 0.3rem; text-align: left; color: #8b5cf6;">Entry</th>
+                            <th style="padding: 0.3rem; text-align: left; color: #8b5cf6;">Exit</th>
+                            <th style="padding: 0.3rem; text-align: center; color: #8b5cf6;">Dir</th>
+                            <th style="padding: 0.3rem; text-align: right; color: #8b5cf6;">PnL</th>
+                            <th style="padding: 0.3rem;"></th>
+                            <th style="padding: 0.3rem;"></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+            `;
+
+            for (const row of pageRows) {
+                const isMatched = row.type === 'matched';
+                const isTvOnly = row.type === 'tv_only';
+                const isOursOnly = row.type === 'ours_only';
+
+                // Determine match icon and row styling
+                let matchIcon, rowBg;
+                if (isMatched && row.timeDiffMin < 5 && row.pnlMatches) {
+                    matchIcon = '<span style="color: var(--success); font-size: 1.1rem;">✓</span>';
+                    rowBg = 'rgba(34, 197, 94, 0.05)';
+                } else if (isMatched && row.pnlMatches) {
+                    matchIcon = '<span style="color: var(--warning); font-size: 1rem;">~</span>';
+                    rowBg = 'rgba(245, 158, 11, 0.05)';
+                } else if (isMatched) {
+                    matchIcon = '<span style="color: #8b5cf6; font-size: 1rem;">£</span>';
+                    rowBg = 'rgba(139, 92, 246, 0.05)';
+                } else if (isTvOnly) {
+                    matchIcon = '<span style="color: var(--danger); font-size: 1rem;">✗</span>';
+                    rowBg = 'rgba(239, 68, 68, 0.08)';
+                } else {
+                    matchIcon = '<span style="color: #ec4899; font-size: 1rem;">+</span>';
+                    rowBg = 'rgba(236, 72, 153, 0.08)';
+                }
+
+                // TV columns
+                const tvEntry = row.tv ? formatDebugTime(row.tv.entry_time) : '-';
+                const tvExit = row.tv ? formatDebugTime(row.tv.exit_time) : '-';
+                const tvDir = row.tv?.direction || '-';
+                const tvPnl = row.tv ? `£${(row.tv.pnl || 0).toFixed(2)}` : '-';
+                const tvPnlColor = row.tv ? ((row.tv.pnl || 0) >= 0 ? 'var(--success)' : 'var(--danger)') : 'var(--text-muted)';
+
+                // Our columns
+                const ourEntry = row.ours ? formatDebugTime(row.ours.entry_time) : '-';
+                const ourExit = row.ours ? formatDebugTime(row.ours.exit_time) : '-';
+                const ourDir = row.ours?.direction || '-';
+                const ourPnl = row.ours ? `£${(row.ours.pnl || 0).toFixed(2)}` : '-';
+                const ourPnlColor = row.ours ? ((row.ours.pnl || 0) >= 0 ? 'var(--success)' : 'var(--danger)') : 'var(--text-muted)';
+
+                // Variance columns
+                const timeDelta = isMatched ? `${row.timeDiffMin.toFixed(0)}m` : '-';
+                const timeDeltaColor = isMatched ? (row.timeDiffMin < 5 ? 'var(--success)' : 'var(--warning)') : 'var(--text-muted)';
+                const pnlDelta = isMatched ? `£${row.pnlDiff.toFixed(2)}` : '-';
+                const pnlDeltaColor = isMatched ? (row.pnlMatches ? 'var(--success)' : 'var(--danger)') : 'var(--text-muted)';
+
+                html += `
+                    <tr style="border-bottom: 1px solid var(--border); background: ${rowBg};">
+                        <td style="padding: 0.4rem; text-align: center;">${matchIcon}</td>
+                        <td style="padding: 0.4rem; color: ${isTvOnly || isMatched ? 'var(--text-primary)' : 'var(--text-muted)'};">${tvEntry}</td>
+                        <td style="padding: 0.4rem; color: ${isTvOnly || isMatched ? 'var(--text-secondary)' : 'var(--text-muted)'};">${tvExit}</td>
+                        <td style="padding: 0.4rem; text-align: center;">${tvDir}</td>
+                        <td style="padding: 0.4rem; text-align: right; color: ${tvPnlColor}; border-right: 2px solid var(--border); font-weight: 600;">${tvPnl}</td>
+                        <td style="padding: 0.4rem; color: ${isOursOnly || isMatched ? 'var(--text-primary)' : 'var(--text-muted)'};">${ourEntry}</td>
+                        <td style="padding: 0.4rem; color: ${isOursOnly || isMatched ? 'var(--text-secondary)' : 'var(--text-muted)'};">${ourExit}</td>
+                        <td style="padding: 0.4rem; text-align: center;">${ourDir}</td>
+                        <td style="padding: 0.4rem; text-align: right; color: ${ourPnlColor}; font-weight: 600;">${ourPnl}</td>
+                        <td style="padding: 0.4rem; text-align: center; color: ${timeDeltaColor};">${timeDelta}</td>
+                        <td style="padding: 0.4rem; text-align: center; color: ${pnlDeltaColor};">${pnlDelta}</td>
+                    </tr>
+                `;
+            }
+
+            html += '</tbody></table>';
+
+            document.getElementById('debugTradeComparison').innerHTML = html;
+
+            // Update pagination
+            const paginationDiv = document.getElementById('debugPagination');
+            if (totalRows > pageSize) {
+                paginationDiv.style.display = 'flex';
+                document.getElementById('debugPageInfo').textContent = `Showing ${startIdx + 1}-${endIdx} of ${totalRows} trades`;
+                document.getElementById('debugPrevPage').disabled = currentPage === 0;
+                document.getElementById('debugNextPage').disabled = currentPage >= totalPages - 1;
+            } else {
+                paginationDiv.style.display = 'none';
+            }
+        }
+
+        function debugChangePage(delta) {
+            if (!window.debugMatchResults) return;
+            const totalRows = window.debugMatchResults.matched.length +
+                              window.debugMatchResults.unmatchedTV.length +
+                              window.debugMatchResults.unmatchedOurs.length;
+            const totalPages = Math.ceil(totalRows / window.debugPageSize);
+            window.debugCurrentPage = Math.max(0, Math.min(totalPages - 1, window.debugCurrentPage + delta));
+            renderComparisonTable();
         }
 
         // =====================================================================

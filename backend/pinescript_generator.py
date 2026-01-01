@@ -1245,6 +1245,203 @@ var float kalmanSignal = na
 kalmanMacd := na(kalmanMacd) ? macdLine : kalmanMacd + 0.5 * (macdLine - kalmanMacd)
 kalmanSignal := na(kalmanSignal) ? signalLine : kalmanSignal + 0.5 * (signalLine - kalmanSignal)
 entrySignal = {"ta.crossover(kalmanMacd, kalmanSignal)" if is_long else "ta.crossunder(kalmanMacd, kalmanSignal)"}''',
+
+            # === MISSING ENTRY RULES (ported from VectorBT) ===
+            'ao_twin_peaks': f'''// Awesome Oscillator Twin Peaks Pattern
+// AO = SMA(hl2, 5) - SMA(hl2, 34)
+ao = ta.sma(hl2, 5) - ta.sma(hl2, 34)
+aoLow = ta.lowest(ao, 20)
+aoHigh = ta.highest(ao, 20)
+aoRising = ao > ao[1]
+aoFalling = ao < ao[1]
+// Long: Twin peaks below zero (AO < 0, above recent low, turning up)
+// Short: Twin peaks above zero (AO > 0, below recent high, turning down)
+entrySignal = {"ao < 0 and ao > aoLow and aoRising" if is_long else "ao > 0 and ao < aoHigh and aoFalling"}''',
+
+            'ao_zero_cross': f'''// Awesome Oscillator Zero Cross
+ao = ta.sma(hl2, 5) - ta.sma(hl2, 34)
+entrySignal = {"ta.crossover(ao, 0)" if is_long else "ta.crossunder(ao, 0)"}''',
+
+            'mfi_extreme': f'''// Money Flow Index Extreme
+mfiValue = ta.mfi(hlc3, 14)
+entrySignal = {"ta.crossover(mfiValue, 20)" if is_long else "ta.crossunder(mfiValue, 80)"}''',
+
+            'cmf_cross': f'''// Chaikin Money Flow Zero Cross
+// CMF = sum(mfm * volume, 20) / sum(volume, 20)
+mfm = ((close - low) - (high - close)) / (high - low)
+mfv = mfm * volume
+cmfValue = ta.sma(mfv, 20) / ta.sma(volume, 20)
+entrySignal = {"ta.crossover(cmfValue, 0)" if is_long else "ta.crossunder(cmfValue, 0)"}''',
+
+            'obv_trend': f'''// On-Balance Volume Trend
+obvValue = ta.obv
+obvHigh = ta.highest(obvValue, 14)
+obvLow = ta.lowest(obvValue, 14)
+priceHigh = ta.highest(close, 14)
+priceLow = ta.lowest(close, 14)
+entrySignal = {"obvValue == obvHigh and close >= priceHigh * 0.98" if is_long else "obvValue == obvLow and close <= priceLow * 1.02"}''',
+
+            'ppo_cross': f'''// Percentage Price Oscillator Cross
+// PPO = (EMA12 - EMA26) / EMA26 * 100
+emaFastPPO = ta.ema(close, 12)
+emaSlowPPO = ta.ema(close, 26)
+ppoValue = (emaFastPPO - emaSlowPPO) / emaSlowPPO * 100
+ppoSignal = ta.ema(ppoValue, 9)
+entrySignal = {"ta.crossover(ppoValue, ppoSignal)" if is_long else "ta.crossunder(ppoValue, ppoSignal)"}''',
+
+            'fisher_cross': f'''// Fisher Transform Cross
+// Fisher Transform of normalized price
+highestHigh = ta.highest(hl2, 10)
+lowestLow = ta.lowest(hl2, 10)
+rawValue = 2 * ((hl2 - lowestLow) / (highestHigh - lowestLow) - 0.5)
+var float smoothed = 0.0
+smoothed := 0.33 * rawValue + 0.67 * nz(smoothed[1])
+clampedValue = math.max(-0.999, math.min(0.999, smoothed))
+var float fisherValue = 0.0
+fisherValue := 0.5 * math.log((1 + clampedValue) / (1 - clampedValue)) + 0.5 * nz(fisherValue[1])
+fisherSignal = fisherValue[1]
+entrySignal = {"ta.crossover(fisherValue, fisherSignal)" if is_long else "ta.crossunder(fisherValue, fisherSignal)"}''',
+
+            'tsi_cross': f'''// True Strength Index Signal Cross
+// TSI = 100 * Double EMA(momentum) / Double EMA(abs(momentum))
+momentum = close - close[1]
+smoothMom = ta.ema(ta.ema(momentum, 25), 13)
+smoothAbsMom = ta.ema(ta.ema(math.abs(momentum), 25), 13)
+tsiValue = 100 * smoothMom / smoothAbsMom
+tsiSignal = ta.ema(tsiValue, 7)
+entrySignal = {"ta.crossover(tsiValue, tsiSignal)" if is_long else "ta.crossunder(tsiValue, tsiSignal)"}''',
+
+            'tsi_zero': f'''// True Strength Index Zero Cross
+momentum = close - close[1]
+smoothMom = ta.ema(ta.ema(momentum, 25), 13)
+smoothAbsMom = ta.ema(ta.ema(math.abs(momentum), 25), 13)
+tsiValue = 100 * smoothMom / smoothAbsMom
+entrySignal = {"ta.crossover(tsiValue, 0)" if is_long else "ta.crossunder(tsiValue, 0)"}''',
+
+            'rsi_macd_combo': f'''// RSI + MACD Combo
+rsiValue = ta.rsi(close, {rsi_len})
+[macdLine, signalLine, histLine] = ta.macd(close, {macd_fast}, {macd_slow}, {macd_signal})
+histogram = macdLine - signalLine
+histRising = histogram > histogram[1]
+histFalling = histogram < histogram[1]
+entrySignal = {"rsiValue < 30 and histRising" if is_long else "rsiValue > 70 and histFalling"}''',
+
+            'macd_stoch_combo': f'''// MACD + Stochastic Combo
+[macdLine, signalLine, histLine] = ta.macd(close, {macd_fast}, {macd_slow}, {macd_signal})
+k = ta.sma(ta.stoch(close, high, low, {stoch_k}), {stoch_smooth})
+d = ta.sma(k, {stoch_d})
+macdBullish = macdLine > signalLine
+macdBearish = macdLine < signalLine
+stochOversold = k < 20
+stochOverbought = k > 80
+entrySignal = {"macdBullish and stochOversold" if is_long else "macdBearish and stochOverbought"}''',
+
+            'hull_ma_cross': f'''// Hull Moving Average Cross
+// Hull MA = WMA(2*WMA(n/2) - WMA(n), sqrt(n))
+hullLen = 20
+halfLen = math.round(hullLen / 2)
+sqrtLen = math.round(math.sqrt(hullLen))
+wma1 = ta.wma(close, halfLen)
+wma2 = ta.wma(close, hullLen)
+hullMa = ta.wma(2 * wma1 - wma2, sqrtLen)
+entrySignal = {"ta.crossover(close, hullMa)" if is_long else "ta.crossunder(close, hullMa)"}''',
+
+            'hull_ma_turn': f'''// Hull Moving Average Direction Change
+hullLen = 20
+halfLen = math.round(hullLen / 2)
+sqrtLen = math.round(math.sqrt(hullLen))
+wma1 = ta.wma(close, halfLen)
+wma2 = ta.wma(close, hullLen)
+hullMa = ta.wma(2 * wma1 - wma2, sqrtLen)
+hullSlope = hullMa - hullMa[1]
+hullSlopePrev = hullMa[1] - hullMa[2]
+entrySignal = {"hullSlope > 0 and hullSlopePrev <= 0" if is_long else "hullSlope < 0 and hullSlopePrev >= 0"}''',
+
+            'zlema_cross': f'''// Zero-Lag EMA Cross
+// ZLEMA = EMA(close + (close - close[lag]), length)
+zlemaLen = 20
+lag = math.round((zlemaLen - 1) / 2)
+zlema = ta.ema(close + (close - close[lag]), zlemaLen)
+entrySignal = {"ta.crossover(close, zlema)" if is_long else "ta.crossunder(close, zlema)"}''',
+
+            'mcginley_cross': f'''// McGinley Dynamic Cross
+// McGinley Dynamic adapts to price speed
+var float mcginley = na
+mcginley := na(mcginley[1]) ? close : mcginley[1] + (close - mcginley[1]) / (10 * math.pow(close / mcginley[1], 4))
+entrySignal = {"ta.crossover(close, mcginley)" if is_long else "ta.crossunder(close, mcginley)"}''',
+
+            'mcginley_trend': f'''// McGinley Dynamic Trend Change
+var float mcginley = na
+mcginley := na(mcginley[1]) ? close : mcginley[1] + (close - mcginley[1]) / (10 * math.pow(close / mcginley[1], 4))
+mcgSlope = mcginley - mcginley[1]
+mcgSlopePrev = mcginley[1] - mcginley[2]
+entrySignal = {"mcgSlope > 0 and mcgSlopePrev <= 0" if is_long else "mcgSlope < 0 and mcgSlopePrev >= 0"}''',
+
+            'linreg_channel': f'''// Linear Regression Channel Breakout
+linregLen = 20
+linregMid = ta.linreg(close, linregLen, 0)
+linregDev = ta.stdev(close, linregLen)
+linregUpper = linregMid + linregDev * 2
+linregLower = linregMid - linregDev * 2
+entrySignal = {"ta.crossover(close, linregLower)" if is_long else "ta.crossunder(close, linregUpper)"}''',
+
+            'bb_rsi_combo': f'''// Bollinger Bands + RSI Combo
+[bbMiddle, bbUpper, bbLower] = ta.bb(close, {bb_len}, {bb_mult})
+rsiValue = ta.rsi(close, {rsi_len})
+entrySignal = {"close < bbLower and rsiValue < 30" if is_long else "close > bbUpper and rsiValue > 70"}''',
+
+            'squeeze_momentum': f'''// Squeeze Momentum (BB inside Keltner)
+[bbMiddle, bbUpper, bbLower] = ta.bb(close, 20, 2.0)
+[kcMiddle, kcUpper, kcLower] = ta.kc(close, 20, 1.5)
+squeeze = bbLower > kcLower and bbUpper < kcUpper
+squeezeFired = squeeze[1] and not squeeze
+mom = close - close[20]
+entrySignal = {"squeezeFired and mom > 0" if is_long else "squeezeFired and mom < 0"}''',
+
+            'chandelier_entry': f'''// Chandelier Exit Entry
+atrValue = ta.atr({atr_len})
+highestHigh = ta.highest(high, 22)
+lowestLow = ta.lowest(low, 22)
+chandelierLong = highestHigh - atrValue * 3
+chandelierShort = lowestLow + atrValue * 3
+entrySignal = {"ta.crossover(close, chandelierLong)" if is_long else "ta.crossunder(close, chandelierShort)"}''',
+
+            'ema_rsi_combo': f'''// EMA + RSI Combo
+emaFast = ta.ema(close, {ema_fast})
+emaSlow = ta.ema(close, {ema_slow})
+rsiValue = ta.rsi(close, {rsi_len})
+emaBullish = emaFast > emaSlow
+emaBearish = emaFast < emaSlow
+entrySignal = {"emaBullish and rsiValue < 40" if is_long else "emaBearish and rsiValue > 60"}''',
+
+            'supertrend_adx_combo': f'''// SuperTrend + ADX Combo
+[supertrendValue, supertrendDir] = ta.supertrend({st_factor}, {st_atr})
+[diPlus, diMinus, adxValue] = ta.dmi({adx_len}, {adx_len})
+strongTrend = adxValue > 25
+stBullish = close > supertrendValue
+stBearish = close < supertrendValue
+entrySignal = {"strongTrend and stBullish and diPlus > diMinus" if is_long else "strongTrend and stBearish and diMinus > diPlus"}''',
+
+            'pivot_bounce': f'''// Pivot Point Bounce
+// Standard floor trader pivots
+pivotPoint = (high[1] + low[1] + close[1]) / 3
+r1 = 2 * pivotPoint - low[1]
+s1 = 2 * pivotPoint - high[1]
+nearS1 = low <= s1 * 1.005 and low >= s1 * 0.995
+nearR1 = high >= r1 * 0.995 and high <= r1 * 1.005
+greenCandle = close > open
+redCandle = close < open
+entrySignal = {"nearS1 and greenCandle" if is_long else "nearR1 and redCandle"}''',
+
+            'elder_ray': f'''// Elder Ray (Bull/Bear Power)
+ema13 = ta.ema(close, 13)
+bullPower = high - ema13
+bearPower = low - ema13
+emaRising = ema13 > ema13[1]
+emaFalling = ema13 < ema13[1]
+bearRising = bearPower > bearPower[1]
+bullFalling = bullPower < bullPower[1]
+entrySignal = {"emaRising and bearPower < 0 and bearRising" if is_long else "emaFalling and bullPower > 0 and bullFalling"}''',
         }
 
         # Mihakralj entry conditions - uses mathematically rigorous mih_* functions
@@ -1551,6 +1748,191 @@ var float kalmanSignal = na
 kalmanMacd := na(kalmanMacd) ? macdLine : kalmanMacd + 0.5 * (macdLine - kalmanMacd)
 kalmanSignal := na(kalmanSignal) ? signalLine : kalmanSignal + 0.5 * (signalLine - kalmanSignal)
 entrySignal = {"ta.crossover(kalmanMacd, kalmanSignal)" if is_long else "ta.crossunder(kalmanMacd, kalmanSignal)"}''',
+
+            # === MISSING ENTRY RULES (ported from VectorBT - mihakralj) ===
+            'ao_twin_peaks': f'''// Awesome Oscillator Twin Peaks Pattern (mihakralj)
+ao = ta.sma(hl2, 5) - ta.sma(hl2, 34)
+aoLow = ta.lowest(ao, 20)
+aoHigh = ta.highest(ao, 20)
+aoRising = ao > ao[1]
+aoFalling = ao < ao[1]
+entrySignal = {"ao < 0 and ao > aoLow and aoRising" if is_long else "ao > 0 and ao < aoHigh and aoFalling"}''',
+
+            'ao_zero_cross': f'''// Awesome Oscillator Zero Cross (mihakralj)
+ao = ta.sma(hl2, 5) - ta.sma(hl2, 34)
+entrySignal = {"ta.crossover(ao, 0)" if is_long else "ta.crossunder(ao, 0)"}''',
+
+            'mfi_extreme': f'''// Money Flow Index Extreme (mihakralj)
+mfiValue = ta.mfi(hlc3, 14)
+entrySignal = {"ta.crossover(mfiValue, 20)" if is_long else "ta.crossunder(mfiValue, 80)"}''',
+
+            'cmf_cross': f'''// Chaikin Money Flow Zero Cross (mihakralj)
+mfm = ((close - low) - (high - close)) / (high - low)
+mfv = mfm * volume
+cmfValue = ta.sma(mfv, 20) / ta.sma(volume, 20)
+entrySignal = {"ta.crossover(cmfValue, 0)" if is_long else "ta.crossunder(cmfValue, 0)"}''',
+
+            'obv_trend': f'''// On-Balance Volume Trend (mihakralj)
+obvValue = ta.obv
+obvHigh = ta.highest(obvValue, 14)
+obvLow = ta.lowest(obvValue, 14)
+priceHigh = ta.highest(close, 14)
+priceLow = ta.lowest(close, 14)
+entrySignal = {"obvValue == obvHigh and close >= priceHigh * 0.98" if is_long else "obvValue == obvLow and close <= priceLow * 1.02"}''',
+
+            'ppo_cross': f'''// Percentage Price Oscillator Cross (mihakralj)
+emaFastPPO = mih_ema(close, 12)
+emaSlowPPO = mih_ema(close, 26)
+ppoValue = (emaFastPPO - emaSlowPPO) / emaSlowPPO * 100
+ppoSignal = mih_ema(ppoValue, 9)
+entrySignal = {"ta.crossover(ppoValue, ppoSignal)" if is_long else "ta.crossunder(ppoValue, ppoSignal)"}''',
+
+            'fisher_cross': f'''// Fisher Transform Cross (mihakralj)
+highestHigh = ta.highest(hl2, 10)
+lowestLow = ta.lowest(hl2, 10)
+rawValue = 2 * ((hl2 - lowestLow) / (highestHigh - lowestLow) - 0.5)
+var float smoothed = 0.0
+smoothed := 0.33 * rawValue + 0.67 * nz(smoothed[1])
+clampedValue = math.max(-0.999, math.min(0.999, smoothed))
+var float fisherValue = 0.0
+fisherValue := 0.5 * math.log((1 + clampedValue) / (1 - clampedValue)) + 0.5 * nz(fisherValue[1])
+fisherSignal = fisherValue[1]
+entrySignal = {"ta.crossover(fisherValue, fisherSignal)" if is_long else "ta.crossunder(fisherValue, fisherSignal)"}''',
+
+            'tsi_cross': f'''// True Strength Index Signal Cross (mihakralj)
+momentum = close - close[1]
+smoothMom = mih_ema(mih_ema(momentum, 25), 13)
+smoothAbsMom = mih_ema(mih_ema(math.abs(momentum), 25), 13)
+tsiValue = 100 * smoothMom / smoothAbsMom
+tsiSignal = mih_ema(tsiValue, 7)
+entrySignal = {"ta.crossover(tsiValue, tsiSignal)" if is_long else "ta.crossunder(tsiValue, tsiSignal)"}''',
+
+            'tsi_zero': f'''// True Strength Index Zero Cross (mihakralj)
+momentum = close - close[1]
+smoothMom = mih_ema(mih_ema(momentum, 25), 13)
+smoothAbsMom = mih_ema(mih_ema(math.abs(momentum), 25), 13)
+tsiValue = 100 * smoothMom / smoothAbsMom
+entrySignal = {"ta.crossover(tsiValue, 0)" if is_long else "ta.crossunder(tsiValue, 0)"}''',
+
+            'rsi_macd_combo': f'''// RSI + MACD Combo (mihakralj)
+rsiValue = mih_rsi(close, 14)
+[macdLine, signalLine, histLine] = mih_macd(close, 12, 26, 9)
+histogram = macdLine - signalLine
+histRising = histogram > histogram[1]
+histFalling = histogram < histogram[1]
+entrySignal = {"rsiValue < 30 and histRising" if is_long else "rsiValue > 70 and histFalling"}''',
+
+            'macd_stoch_combo': f'''// MACD + Stochastic Combo (mihakralj)
+[macdLine, signalLine, histLine] = mih_macd(close, 12, 26, 9)
+[k, d] = mih_stoch(14, 3, 3)
+macdBullish = macdLine > signalLine
+macdBearish = macdLine < signalLine
+stochOversold = k < 20
+stochOverbought = k > 80
+entrySignal = {"macdBullish and stochOversold" if is_long else "macdBearish and stochOverbought"}''',
+
+            'hull_ma_cross': f'''// Hull Moving Average Cross (mihakralj)
+hullLen = 20
+halfLen = math.round(hullLen / 2)
+sqrtLen = math.round(math.sqrt(hullLen))
+wma1 = ta.wma(close, halfLen)
+wma2 = ta.wma(close, hullLen)
+hullMa = ta.wma(2 * wma1 - wma2, sqrtLen)
+entrySignal = {"ta.crossover(close, hullMa)" if is_long else "ta.crossunder(close, hullMa)"}''',
+
+            'hull_ma_turn': f'''// Hull Moving Average Direction Change (mihakralj)
+hullLen = 20
+halfLen = math.round(hullLen / 2)
+sqrtLen = math.round(math.sqrt(hullLen))
+wma1 = ta.wma(close, halfLen)
+wma2 = ta.wma(close, hullLen)
+hullMa = ta.wma(2 * wma1 - wma2, sqrtLen)
+hullSlope = hullMa - hullMa[1]
+hullSlopePrev = hullMa[1] - hullMa[2]
+entrySignal = {"hullSlope > 0 and hullSlopePrev <= 0" if is_long else "hullSlope < 0 and hullSlopePrev >= 0"}''',
+
+            'zlema_cross': f'''// Zero-Lag EMA Cross (mihakralj)
+zlemaLen = 20
+lag = math.round((zlemaLen - 1) / 2)
+zlema = mih_ema(close + (close - close[lag]), zlemaLen)
+entrySignal = {"ta.crossover(close, zlema)" if is_long else "ta.crossunder(close, zlema)"}''',
+
+            'mcginley_cross': f'''// McGinley Dynamic Cross (mihakralj)
+var float mcginley = na
+mcginley := na(mcginley[1]) ? close : mcginley[1] + (close - mcginley[1]) / (10 * math.pow(close / mcginley[1], 4))
+entrySignal = {"ta.crossover(close, mcginley)" if is_long else "ta.crossunder(close, mcginley)"}''',
+
+            'mcginley_trend': f'''// McGinley Dynamic Trend Change (mihakralj)
+var float mcginley = na
+mcginley := na(mcginley[1]) ? close : mcginley[1] + (close - mcginley[1]) / (10 * math.pow(close / mcginley[1], 4))
+mcgSlope = mcginley - mcginley[1]
+mcgSlopePrev = mcginley[1] - mcginley[2]
+entrySignal = {"mcgSlope > 0 and mcgSlopePrev <= 0" if is_long else "mcgSlope < 0 and mcgSlopePrev >= 0"}''',
+
+            'linreg_channel': f'''// Linear Regression Channel Breakout (mihakralj)
+linregLen = 20
+linregMid = ta.linreg(close, linregLen, 0)
+linregDev = ta.stdev(close, linregLen)
+linregUpper = linregMid + linregDev * 2
+linregLower = linregMid - linregDev * 2
+entrySignal = {"ta.crossover(close, linregLower)" if is_long else "ta.crossunder(close, linregUpper)"}''',
+
+            'bb_rsi_combo': f'''// Bollinger Bands + RSI Combo (mihakralj)
+[bbMiddle, bbUpper, bbLower] = mih_bbands(close, 20, 2.0)
+rsiValue = mih_rsi(close, 14)
+entrySignal = {"close < bbLower and rsiValue < 30" if is_long else "close > bbUpper and rsiValue > 70"}''',
+
+            'squeeze_momentum': f'''// Squeeze Momentum (mihakralj)
+[bbMiddle, bbUpper, bbLower] = mih_bbands(close, 20, 2.0)
+[kcMiddle, kcUpper, kcLower] = ta.kc(close, 20, 1.5)
+squeeze = bbLower > kcLower and bbUpper < kcUpper
+squeezeFired = squeeze[1] and not squeeze
+mom = close - close[20]
+entrySignal = {"squeezeFired and mom > 0" if is_long else "squeezeFired and mom < 0"}''',
+
+            'chandelier_entry': f'''// Chandelier Exit Entry (mihakralj)
+atrValue = mih_atr(14)
+highestHigh = ta.highest(high, 22)
+lowestLow = ta.lowest(low, 22)
+chandelierLong = highestHigh - atrValue * 3
+chandelierShort = lowestLow + atrValue * 3
+entrySignal = {"ta.crossover(close, chandelierLong)" if is_long else "ta.crossunder(close, chandelierShort)"}''',
+
+            'ema_rsi_combo': f'''// EMA + RSI Combo (mihakralj)
+emaFast = mih_ema(close, 9)
+emaSlow = mih_ema(close, 21)
+rsiValue = mih_rsi(close, 14)
+emaBullish = emaFast > emaSlow
+emaBearish = emaFast < emaSlow
+entrySignal = {"emaBullish and rsiValue < 40" if is_long else "emaBearish and rsiValue > 60"}''',
+
+            'supertrend_adx_combo': f'''// SuperTrend + ADX Combo (mihakralj)
+[supertrendValue, supertrendDir] = ta.supertrend(3, 10)
+[diPlus, diMinus, adxValue] = ta.dmi(14, 14)
+strongTrend = adxValue > 25
+stBullish = close > supertrendValue
+stBearish = close < supertrendValue
+entrySignal = {"strongTrend and stBullish and diPlus > diMinus" if is_long else "strongTrend and stBearish and diMinus > diPlus"}''',
+
+            'pivot_bounce': f'''// Pivot Point Bounce (mihakralj)
+pivotPoint = (high[1] + low[1] + close[1]) / 3
+r1 = 2 * pivotPoint - low[1]
+s1 = 2 * pivotPoint - high[1]
+nearS1 = low <= s1 * 1.005 and low >= s1 * 0.995
+nearR1 = high >= r1 * 0.995 and high <= r1 * 1.005
+greenCandle = close > open
+redCandle = close < open
+entrySignal = {"nearS1 and greenCandle" if is_long else "nearR1 and redCandle"}''',
+
+            'elder_ray': f'''// Elder Ray (mihakralj)
+ema13 = mih_ema(close, 13)
+bullPower = high - ema13
+bearPower = low - ema13
+emaRising = ema13 > ema13[1]
+emaFalling = ema13 < ema13[1]
+bearRising = bearPower > bearPower[1]
+bullFalling = bullPower < bullPower[1]
+entrySignal = {"emaRising and bearPower < 0 and bearRising" if is_long else "emaFalling and bullPower > 0 and bullFalling"}''',
         }
 
         # Bidirectional entry conditions - generates BOTH long and short signals
@@ -1899,6 +2281,216 @@ kalmanMacd := na(kalmanMacd) ? macdLine : kalmanMacd + 0.5 * (macdLine - kalmanM
 kalmanSignal := na(kalmanSignal) ? signalLine : kalmanSignal + 0.5 * (signalLine - kalmanSignal)
 longEntrySignal = ta.crossover(kalmanMacd, kalmanSignal)
 shortEntrySignal = ta.crossunder(kalmanMacd, kalmanSignal)''',
+
+            # === MISSING ENTRY RULES (ported from VectorBT - BIDIRECTIONAL) ===
+            'ao_twin_peaks': f'''// Awesome Oscillator Twin Peaks - BIDIRECTIONAL
+ao = ta.sma(hl2, 5) - ta.sma(hl2, 34)
+aoLow = ta.lowest(ao, 20)
+aoHigh = ta.highest(ao, 20)
+aoRising = ao > ao[1]
+aoFalling = ao < ao[1]
+longEntrySignal = ao < 0 and ao > aoLow and aoRising
+shortEntrySignal = ao > 0 and ao < aoHigh and aoFalling''',
+
+            'ao_zero_cross': f'''// Awesome Oscillator Zero Cross - BIDIRECTIONAL
+ao = ta.sma(hl2, 5) - ta.sma(hl2, 34)
+longEntrySignal = ta.crossover(ao, 0)
+shortEntrySignal = ta.crossunder(ao, 0)''',
+
+            'mfi_extreme': f'''// Money Flow Index Extreme - BIDIRECTIONAL
+mfiValue = ta.mfi(hlc3, 14)
+longEntrySignal = ta.crossover(mfiValue, 20)
+shortEntrySignal = ta.crossunder(mfiValue, 80)''',
+
+            'cmf_cross': f'''// Chaikin Money Flow Zero Cross - BIDIRECTIONAL
+mfm = ((close - low) - (high - close)) / (high - low)
+mfv = mfm * volume
+cmfValue = ta.sma(mfv, 20) / ta.sma(volume, 20)
+longEntrySignal = ta.crossover(cmfValue, 0)
+shortEntrySignal = ta.crossunder(cmfValue, 0)''',
+
+            'obv_trend': f'''// On-Balance Volume Trend - BIDIRECTIONAL
+obvValue = ta.obv
+obvHigh = ta.highest(obvValue, 14)
+obvLow = ta.lowest(obvValue, 14)
+priceHigh = ta.highest(close, 14)
+priceLow = ta.lowest(close, 14)
+longEntrySignal = obvValue == obvHigh and close >= priceHigh * 0.98
+shortEntrySignal = obvValue == obvLow and close <= priceLow * 1.02''',
+
+            'ppo_cross': f'''// Percentage Price Oscillator Cross - BIDIRECTIONAL
+emaFastPPO = ta.ema(close, 12)
+emaSlowPPO = ta.ema(close, 26)
+ppoValue = (emaFastPPO - emaSlowPPO) / emaSlowPPO * 100
+ppoSignal = ta.ema(ppoValue, 9)
+longEntrySignal = ta.crossover(ppoValue, ppoSignal)
+shortEntrySignal = ta.crossunder(ppoValue, ppoSignal)''',
+
+            'fisher_cross': f'''// Fisher Transform Cross - BIDIRECTIONAL
+highestHigh = ta.highest(hl2, 10)
+lowestLow = ta.lowest(hl2, 10)
+rawValue = 2 * ((hl2 - lowestLow) / (highestHigh - lowestLow) - 0.5)
+var float smoothed = 0.0
+smoothed := 0.33 * rawValue + 0.67 * nz(smoothed[1])
+clampedValue = math.max(-0.999, math.min(0.999, smoothed))
+var float fisherValue = 0.0
+fisherValue := 0.5 * math.log((1 + clampedValue) / (1 - clampedValue)) + 0.5 * nz(fisherValue[1])
+fisherSignal = fisherValue[1]
+longEntrySignal = ta.crossover(fisherValue, fisherSignal)
+shortEntrySignal = ta.crossunder(fisherValue, fisherSignal)''',
+
+            'tsi_cross': f'''// True Strength Index Signal Cross - BIDIRECTIONAL
+momentum = close - close[1]
+smoothMom = ta.ema(ta.ema(momentum, 25), 13)
+smoothAbsMom = ta.ema(ta.ema(math.abs(momentum), 25), 13)
+tsiValue = 100 * smoothMom / smoothAbsMom
+tsiSignal = ta.ema(tsiValue, 7)
+longEntrySignal = ta.crossover(tsiValue, tsiSignal)
+shortEntrySignal = ta.crossunder(tsiValue, tsiSignal)''',
+
+            'tsi_zero': f'''// True Strength Index Zero Cross - BIDIRECTIONAL
+momentum = close - close[1]
+smoothMom = ta.ema(ta.ema(momentum, 25), 13)
+smoothAbsMom = ta.ema(ta.ema(math.abs(momentum), 25), 13)
+tsiValue = 100 * smoothMom / smoothAbsMom
+longEntrySignal = ta.crossover(tsiValue, 0)
+shortEntrySignal = ta.crossunder(tsiValue, 0)''',
+
+            'rsi_macd_combo': f'''// RSI + MACD Combo - BIDIRECTIONAL
+rsiValue = ta.rsi(close, {rsi_len})
+[macdLine, signalLine, histLine] = ta.macd(close, {macd_fast}, {macd_slow}, {macd_signal})
+histogram = macdLine - signalLine
+histRising = histogram > histogram[1]
+histFalling = histogram < histogram[1]
+longEntrySignal = rsiValue < 30 and histRising
+shortEntrySignal = rsiValue > 70 and histFalling''',
+
+            'macd_stoch_combo': f'''// MACD + Stochastic Combo - BIDIRECTIONAL
+[macdLine, signalLine, histLine] = ta.macd(close, {macd_fast}, {macd_slow}, {macd_signal})
+k = ta.sma(ta.stoch(close, high, low, {stoch_k}), {stoch_smooth})
+d = ta.sma(k, {stoch_d})
+macdBullish = macdLine > signalLine
+macdBearish = macdLine < signalLine
+stochOversold = k < 20
+stochOverbought = k > 80
+longEntrySignal = macdBullish and stochOversold
+shortEntrySignal = macdBearish and stochOverbought''',
+
+            'hull_ma_cross': f'''// Hull Moving Average Cross - BIDIRECTIONAL
+hullLen = 20
+halfLen = math.round(hullLen / 2)
+sqrtLen = math.round(math.sqrt(hullLen))
+wma1 = ta.wma(close, halfLen)
+wma2 = ta.wma(close, hullLen)
+hullMa = ta.wma(2 * wma1 - wma2, sqrtLen)
+longEntrySignal = ta.crossover(close, hullMa)
+shortEntrySignal = ta.crossunder(close, hullMa)''',
+
+            'hull_ma_turn': f'''// Hull Moving Average Direction Change - BIDIRECTIONAL
+hullLen = 20
+halfLen = math.round(hullLen / 2)
+sqrtLen = math.round(math.sqrt(hullLen))
+wma1 = ta.wma(close, halfLen)
+wma2 = ta.wma(close, hullLen)
+hullMa = ta.wma(2 * wma1 - wma2, sqrtLen)
+hullSlope = hullMa - hullMa[1]
+hullSlopePrev = hullMa[1] - hullMa[2]
+longEntrySignal = hullSlope > 0 and hullSlopePrev <= 0
+shortEntrySignal = hullSlope < 0 and hullSlopePrev >= 0''',
+
+            'zlema_cross': f'''// Zero-Lag EMA Cross - BIDIRECTIONAL
+zlemaLen = 20
+lag = math.round((zlemaLen - 1) / 2)
+zlema = ta.ema(close + (close - close[lag]), zlemaLen)
+longEntrySignal = ta.crossover(close, zlema)
+shortEntrySignal = ta.crossunder(close, zlema)''',
+
+            'mcginley_cross': f'''// McGinley Dynamic Cross - BIDIRECTIONAL
+var float mcginley = na
+mcginley := na(mcginley[1]) ? close : mcginley[1] + (close - mcginley[1]) / (10 * math.pow(close / mcginley[1], 4))
+longEntrySignal = ta.crossover(close, mcginley)
+shortEntrySignal = ta.crossunder(close, mcginley)''',
+
+            'mcginley_trend': f'''// McGinley Dynamic Trend Change - BIDIRECTIONAL
+var float mcginley = na
+mcginley := na(mcginley[1]) ? close : mcginley[1] + (close - mcginley[1]) / (10 * math.pow(close / mcginley[1], 4))
+mcgSlope = mcginley - mcginley[1]
+mcgSlopePrev = mcginley[1] - mcginley[2]
+longEntrySignal = mcgSlope > 0 and mcgSlopePrev <= 0
+shortEntrySignal = mcgSlope < 0 and mcgSlopePrev >= 0''',
+
+            'linreg_channel': f'''// Linear Regression Channel Breakout - BIDIRECTIONAL
+linregLen = 20
+linregMid = ta.linreg(close, linregLen, 0)
+linregDev = ta.stdev(close, linregLen)
+linregUpper = linregMid + linregDev * 2
+linregLower = linregMid - linregDev * 2
+longEntrySignal = ta.crossover(close, linregLower)
+shortEntrySignal = ta.crossunder(close, linregUpper)''',
+
+            'bb_rsi_combo': f'''// Bollinger Bands + RSI Combo - BIDIRECTIONAL
+[bbMiddle, bbUpper, bbLower] = ta.bb(close, {bb_len}, {bb_mult})
+rsiValue = ta.rsi(close, {rsi_len})
+longEntrySignal = close < bbLower and rsiValue < 30
+shortEntrySignal = close > bbUpper and rsiValue > 70''',
+
+            'squeeze_momentum': f'''// Squeeze Momentum - BIDIRECTIONAL
+[bbMiddle, bbUpper, bbLower] = ta.bb(close, 20, 2.0)
+[kcMiddle, kcUpper, kcLower] = ta.kc(close, 20, 1.5)
+squeeze = bbLower > kcLower and bbUpper < kcUpper
+squeezeFired = squeeze[1] and not squeeze
+mom = close - close[20]
+longEntrySignal = squeezeFired and mom > 0
+shortEntrySignal = squeezeFired and mom < 0''',
+
+            'chandelier_entry': f'''// Chandelier Exit Entry - BIDIRECTIONAL
+atrValue = ta.atr({atr_len})
+highestHigh = ta.highest(high, 22)
+lowestLow = ta.lowest(low, 22)
+chandelierLong = highestHigh - atrValue * 3
+chandelierShort = lowestLow + atrValue * 3
+longEntrySignal = ta.crossover(close, chandelierLong)
+shortEntrySignal = ta.crossunder(close, chandelierShort)''',
+
+            'ema_rsi_combo': f'''// EMA + RSI Combo - BIDIRECTIONAL
+emaFast = ta.ema(close, {ema_fast})
+emaSlow = ta.ema(close, {ema_slow})
+rsiValue = ta.rsi(close, {rsi_len})
+emaBullish = emaFast > emaSlow
+emaBearish = emaFast < emaSlow
+longEntrySignal = emaBullish and rsiValue < 40
+shortEntrySignal = emaBearish and rsiValue > 60''',
+
+            'supertrend_adx_combo': f'''// SuperTrend + ADX Combo - BIDIRECTIONAL
+[supertrendValue, supertrendDir] = ta.supertrend({st_factor}, {st_atr})
+[diPlus, diMinus, adxValue] = ta.dmi({adx_len}, {adx_len})
+strongTrend = adxValue > 25
+stBullish = close > supertrendValue
+stBearish = close < supertrendValue
+longEntrySignal = strongTrend and stBullish and diPlus > diMinus
+shortEntrySignal = strongTrend and stBearish and diMinus > diPlus''',
+
+            'pivot_bounce': f'''// Pivot Point Bounce - BIDIRECTIONAL
+pivotPoint = (high[1] + low[1] + close[1]) / 3
+r1 = 2 * pivotPoint - low[1]
+s1 = 2 * pivotPoint - high[1]
+nearS1 = low <= s1 * 1.005 and low >= s1 * 0.995
+nearR1 = high >= r1 * 0.995 and high <= r1 * 1.005
+greenCandle = close > open
+redCandle = close < open
+longEntrySignal = nearS1 and greenCandle
+shortEntrySignal = nearR1 and redCandle''',
+
+            'elder_ray': f'''// Elder Ray - BIDIRECTIONAL
+ema13 = ta.ema(close, 13)
+bullPower = high - ema13
+bearPower = low - ema13
+emaRising = ema13 > ema13[1]
+emaFalling = ema13 < ema13[1]
+bearRising = bearPower > bearPower[1]
+bullFalling = bullPower < bullPower[1]
+longEntrySignal = emaRising and bearPower < 0 and bearRising
+shortEntrySignal = emaFalling and bullPower > 0 and bullFalling''',
         }
 
         # Select the appropriate entry conditions based on engine and direction

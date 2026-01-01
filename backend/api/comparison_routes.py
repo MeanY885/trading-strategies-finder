@@ -16,6 +16,107 @@ from strategy_database import get_strategy_db
 
 router = APIRouter(prefix="/api", tags=["comparison"])
 
+# =============================================================================
+# VALID PINE SCRIPT STRATEGY KEYS
+# =============================================================================
+# These are the valid entry_rule keys that the Pine Script generator recognizes.
+# If entry_rule doesn't match one of these, Pine Script will fall back to EMA crossover.
+VALID_PINESCRIPT_STRATEGIES = {
+    # Momentum
+    'rsi_extreme', 'stoch_extreme', 'williams_r', 'cci_extreme', 'rsi_divergence',
+    'momentum_zero', 'roc_extreme', 'uo_extreme', 'mfi_extreme',
+    'ao_twin_peaks', 'ao_zero_cross',  # Awesome Oscillator
+    'cmf_cross', 'obv_trend', 'ppo_cross', 'fisher_cross',  # Volume/Momentum
+    'tsi_cross', 'tsi_zero',  # True Strength Index
+    'rsi_macd_combo', 'macd_stoch_combo',  # Combo strategies
+    # Trend
+    'bb_touch', 'bb_squeeze_breakout', 'price_vs_sma', 'vwap_bounce', 'vwap_cross',
+    'vwma_cross', 'vwma_trend', 'ema_cross', 'sma_cross', 'macd_cross', 'price_above_sma',
+    'supertrend', 'adx_strong_trend', 'psar_reversal',
+    'hull_ma_cross', 'hull_ma_turn',  # Hull MA
+    'zlema_cross',  # Zero-Lag EMA
+    'mcginley_cross', 'mcginley_trend',  # McGinley Dynamic
+    'linreg_channel',  # Linear Regression
+    # Mean Reversion
+    'bb_rsi_combo',  # Bollinger + RSI combo
+    # Volatility
+    'squeeze_momentum',  # Squeeze Momentum
+    'chandelier_entry',  # Chandelier Exit
+    'low_volatility_breakout', 'atr_breakout',
+    # Price Action
+    'consecutive_candles', 'big_candle', 'doji_reversal', 'engulfing',
+    'inside_bar', 'outside_bar', 'higher_low', 'support_resistance',
+    'ema_rsi_combo',  # EMA + RSI combo
+    'supertrend_adx_combo',  # SuperTrend + ADX combo
+    'pivot_bounce',  # Pivot Point
+    'elder_ray',  # Elder Ray
+    # Baseline
+    'always',
+    # Additional
+    'keltner_breakout', 'donchian_breakout', 'ichimoku_cross', 'ichimoku_cloud',
+    'aroon_cross', 'chop_trend', 'double_ema_cross', 'triple_ema',
+    'kalman_trend', 'kalman_bb', 'kalman_rsi', 'kalman_mfi', 'kalman_adx',
+    'kalman_psar', 'kalman_macd', 'rsi_cross_50',
+    'candle_ratio_momentum', 'volume_spike', 'obv_divergence',
+}
+
+
+def validate_entry_rule(entry_rule: str) -> dict:
+    """
+    Validate if entry_rule is a recognized Pine Script strategy key.
+
+    Returns:
+        dict with 'valid', 'issue', and 'suggestion' keys
+    """
+    if not entry_rule:
+        return {
+            'valid': False,
+            'issue': 'Entry rule is empty or None',
+            'suggestion': 'Check strategy params - entry_rule not set'
+        }
+
+    # Check if it's a valid strategy key
+    if entry_rule in VALID_PINESCRIPT_STRATEGIES:
+        return {'valid': True, 'issue': None, 'suggestion': None}
+
+    # Check if it looks like a description (contains spaces or is too long)
+    if ' ' in entry_rule or len(entry_rule) > 30:
+        # Try to find a matching strategy key
+        entry_lower = entry_rule.lower()
+        possible_matches = []
+
+        # Common description-to-key mappings
+        description_hints = {
+            'momentum': 'momentum_zero',
+            'rsi': 'rsi_extreme',
+            'macd': 'macd_cross',
+            'bollinger': 'bb_touch',
+            'stochastic': 'stoch_extreme',
+            'ema': 'ema_cross',
+            'sma': 'sma_cross',
+            'supertrend': 'supertrend',
+            'ichimoku': 'ichimoku_cross',
+            'engulfing': 'engulfing',
+        }
+
+        for hint, key in description_hints.items():
+            if hint in entry_lower:
+                possible_matches.append(key)
+
+        return {
+            'valid': False,
+            'issue': f'Entry rule "{entry_rule}" looks like a description, not a strategy key',
+            'suggestion': f'Expected format: "{possible_matches[0] if possible_matches else "strategy_name"}" (no spaces). Possible match: {possible_matches[0] if possible_matches else "unknown"}'
+        }
+
+    # Unknown but valid format
+    return {
+        'valid': False,
+        'issue': f'Entry rule "{entry_rule}" not found in Pine Script generator',
+        'suggestion': f'Pine Script will use EMA crossover fallback. Valid keys include: momentum_zero, rsi_extreme, macd_cross, etc.'
+    }
+
+
 # Store comparison results
 comparison_data = {
     "tv_trades": None,
@@ -193,11 +294,14 @@ def categorize_matches_by_tolerance(tv_trades: list, our_trades: list) -> dict:
     }
 
 
-def detect_root_causes(analysis: dict, tv_trades: list, our_trades: list) -> list:
+def detect_root_causes(analysis: dict, tv_trades: list, our_trades: list,
+                       entry_rule: str = None, strategy_name: str = None) -> list:
     """
     Analyze patterns to detect root causes of discrepancies.
 
     Detects:
+        - Entry rule validation issues (description vs key bug)
+        - Pine Script fallback usage (EMA crossover instead of intended strategy)
         - Heikin Ashi/Renko chart usage (PnL inflated 30%+)
         - 1-bar timing offset (execution timing issue)
         - Commission mismatch (small consistent PnL diff)
@@ -207,15 +311,56 @@ def detect_root_causes(analysis: dict, tv_trades: list, our_trades: list) -> lis
     import numpy as np
 
     root_causes = []
+
+    # === 0. ENTRY RULE VALIDATION (CRITICAL - Check first!) ===
+    # This was the root cause of the momentum_zero bug we debugged
+    if entry_rule:
+        validation = validate_entry_rule(entry_rule)
+        if not validation['valid']:
+            root_causes.append({
+                'cause': 'Invalid entry_rule - Pine Script using fallback',
+                'confidence': 1.0,
+                'evidence': validation['issue'],
+                'severity': 'critical',
+                'suggestion': validation['suggestion'],
+                'technical_detail': f'entry_rule="{entry_rule}" is not in VALID_PINESCRIPT_STRATEGIES. Pine Script generator will use EMA 12/26 crossover as fallback, which produces completely different trade signals.'
+            })
+
+    # === 0b. Check if entry_rule looks like it was extracted from strategy_name ===
+    if strategy_name and entry_rule:
+        # If entry_rule contains spaces or matches description patterns, it's likely the bug
+        if ' ' in entry_rule:
+            root_causes.append({
+                'cause': 'Entry rule contains description instead of key',
+                'confidence': 1.0,
+                'evidence': f'entry_rule="{entry_rule}" contains spaces - this is a strategy description, not a key',
+                'severity': 'critical',
+                'suggestion': 'The database stored the strategy DESCRIPTION instead of the strategy KEY. Re-run optimization to fix.',
+                'technical_detail': 'Bug location: VectorBT was storing ENTRY_STRATEGIES.get(strategy).get("description") instead of just the strategy key.'
+            })
+
     all_matches = analysis['exact_matches'] + analysis['close_matches']
 
     if not all_matches:
-        root_causes.append({
-            'cause': 'No matching trades found',
-            'confidence': 1.0,
-            'evidence': 'Unable to match any trades between systems',
-            'severity': 'high'
-        })
+        # Check if entry_rule issue already found - that's likely the cause
+        entry_rule_issue = any(c['cause'].startswith('Invalid entry_rule') or
+                              c['cause'].startswith('Entry rule contains')
+                              for c in root_causes)
+
+        if entry_rule_issue:
+            root_causes.append({
+                'cause': 'No matching trades found',
+                'confidence': 1.0,
+                'evidence': 'Unable to match any trades between systems - likely due to entry_rule mismatch above',
+                'severity': 'high'
+            })
+        else:
+            root_causes.append({
+                'cause': 'No matching trades found',
+                'confidence': 1.0,
+                'evidence': 'Unable to match any trades between systems',
+                'severity': 'high'
+            })
         return root_causes
 
     # === 1. Heikin Ashi / Renko Detection ===
@@ -360,6 +505,24 @@ def generate_recommendations(root_causes: list) -> list:
     recommendations = []
 
     cause_to_recommendations = {
+        # === CRITICAL: Entry Rule Issues (most common cause of complete mismatch) ===
+        'Invalid entry_rule': [
+            'RE-RUN THE OPTIMIZATION - this strategy was saved with a bug that stored the description instead of the key',
+            'The Pine Script is using EMA 12/26 crossover fallback instead of your intended strategy',
+            'After re-running, the entry_rule should be a snake_case key like "momentum_zero", not a description'
+        ],
+        'Entry rule contains description': [
+            'This strategy was saved before the entry_rule bug was fixed',
+            'RE-RUN THE OPTIMIZATION to regenerate with the correct entry_rule key',
+            'Check vectorbt_engine.py line 1969 - should store strategy key, not description'
+        ],
+        'Pine Script using fallback': [
+            'The generated Pine Script is NOT using your intended entry strategy',
+            'It fell back to EMA 12/26 crossover because entry_rule was not recognized',
+            'RE-RUN OPTIMIZATION or manually fix the Pine Script entry conditions'
+        ],
+
+        # === Standard causes ===
         'Heikin Ashi or Renko chart detected': [
             'Switch TradingView chart to standard candlesticks (not Heikin Ashi or Renko)',
             'Verify Pine Script strategy uses regular OHLC values, not smoothed candles',
@@ -474,16 +637,66 @@ async def upload_tv_comparison(rank: int, file: UploadFile = File(...)):
             # Extract direction from Signal or Type
             direction = 'long' if 'long' in str(entry_row.get('Signal', '')).lower() or 'long' in str(entry_row.get('Type', '')).lower() else 'short'
 
+            # Get timestamps - TradingView uses various column names
+            entry_time = ''
+            exit_time = ''
+            for time_col in ['Date and time', 'Date/Time', 'Date', 'Time']:
+                if time_col in entry_row.index and entry_row.get(time_col):
+                    entry_time = str(entry_row.get(time_col, ''))
+                    break
+            for time_col in ['Date and time', 'Date/Time', 'Date', 'Time']:
+                if time_col in exit_row.index and exit_row.get(time_col):
+                    exit_time = str(exit_row.get(time_col, ''))
+                    break
+
+            # Get prices - try multiple column names
+            entry_price = 0
+            exit_price = 0
+            for price_col in ['Price USDT', 'Price GBP', 'Price USD', 'Price']:
+                if price_col in entry_row.index:
+                    try:
+                        entry_price = float(entry_row.get(price_col, 0))
+                        exit_price = float(exit_row.get(price_col, 0))
+                        break
+                    except (ValueError, TypeError):
+                        continue
+
+            # Get PnL - try multiple column names
+            pnl = 0
+            pnl_pct = 0
+            cumulative_pnl = 0
+            for pnl_col in ['Net P&L USDT', 'Net P&L GBP', 'Net P&L USD', 'Net P&L', 'Profit']:
+                if pnl_col in exit_row.index:
+                    try:
+                        pnl = float(exit_row.get(pnl_col, 0))
+                        break
+                    except (ValueError, TypeError):
+                        continue
+            for pct_col in ['Net P&L %', 'Profit %', 'Return %']:
+                if pct_col in exit_row.index:
+                    try:
+                        pnl_pct = float(str(exit_row.get(pct_col, '0')).replace('%', ''))
+                        break
+                    except (ValueError, TypeError):
+                        continue
+            for cum_col in ['Cumulative P&L USDT', 'Cumulative P&L GBP', 'Cumulative P&L USD', 'Cumulative P&L']:
+                if cum_col in exit_row.index:
+                    try:
+                        cumulative_pnl = float(exit_row.get(cum_col, 0))
+                        break
+                    except (ValueError, TypeError):
+                        continue
+
             tv_trades.append({
                 'trade_num': int(trade_num),
                 'direction': direction.upper(),
-                'entry_time': str(entry_row.get('Date/Time', '')),
-                'exit_time': str(exit_row.get('Date/Time', '')),
-                'entry_price': float(entry_row.get('Price GBP', 0)),
-                'exit_price': float(exit_row.get('Price GBP', 0)),
-                'pnl': float(exit_row.get('Net P&L GBP', 0)),
-                'pnl_pct': float(str(exit_row.get('Net P&L %', '0')).replace('%', '')),
-                'cumulative_pnl': float(exit_row.get('Cumulative P&L GBP', 0))
+                'entry_time': entry_time,
+                'exit_time': exit_time,
+                'entry_price': entry_price,
+                'exit_price': exit_price,
+                'pnl': pnl,
+                'pnl_pct': pnl_pct,
+                'cumulative_pnl': cumulative_pnl
             })
 
         # Get our trades for this strategy
@@ -665,7 +878,7 @@ async def debug_strategy(strategy_id: int, file: UploadFile = File(...)):
         # Get direction from params or trade_mode
         direction = params.get("direction", strategy.get("trade_mode", "long"))
         if direction == "bidirectional":
-            direction = "long"
+            direction = "both"  # Normalize to 'both' for bidirectional strategies
 
         # Get entry_rule from strategy_name (NOT params.entry_rule which is human-readable description)
         # CRITICAL: params.entry_rule contains descriptions like "Stochastic extreme levels"
@@ -684,6 +897,16 @@ async def debug_strategy(strategy_id: int, file: UploadFile = File(...)):
             # Format: "rule_name Long/Short"
             entry_rule = strategy_name.rsplit(" ", 1)[0]
 
+        # Handle _both suffix for bidirectional strategies
+        if entry_rule.endswith("_both"):
+            entry_rule = entry_rule[:-5]  # Remove "_both" suffix
+
+        # Validate entry_rule BEFORE building strategy_info
+        # Check both the extracted entry_rule AND params.entry_rule
+        params_entry_rule = params.get('entry_rule', '')
+        rule_to_validate = params_entry_rule if params_entry_rule else entry_rule
+        entry_rule_validation = validate_entry_rule(rule_to_validate)
+
         # Extract strategy details
         strategy_info = {
             "id": strategy_id,
@@ -692,6 +915,9 @@ async def debug_strategy(strategy_id: int, file: UploadFile = File(...)):
             "timeframe": strategy.get("timeframe", ""),
             "direction": direction.upper(),
             "entry_rule": entry_rule,
+            "entry_rule_from_params": params_entry_rule,  # What was stored in DB (might be buggy)
+            "entry_rule_valid": entry_rule_validation['valid'],
+            "entry_rule_issue": entry_rule_validation['issue'],
             "tp_percent": strategy.get("tp_percent", 0),
             "sl_percent": strategy.get("sl_percent", 0),
             "total_trades": strategy.get("total_trades", 0),
@@ -826,11 +1052,23 @@ async def debug_strategy(strategy_id: int, file: UploadFile = File(...)):
                     except (ValueError, TypeError):
                         continue
 
+            # Get timestamps - TradingView uses various column names
+            entry_time = ''
+            exit_time = ''
+            for time_col in ['Date and time', 'Date/Time', 'Date', 'Time']:
+                if time_col in entry_row.index and entry_row.get(time_col):
+                    entry_time = str(entry_row.get(time_col, ''))
+                    break
+            for time_col in ['Date and time', 'Date/Time', 'Date', 'Time']:
+                if time_col in exit_row.index and exit_row.get(time_col):
+                    exit_time = str(exit_row.get(time_col, ''))
+                    break
+
             tv_trades.append({
                 'trade_num': int(trade_num),
                 'direction': direction,
-                'entry_time': str(entry_row.get('Date/Time', '')),
-                'exit_time': str(exit_row.get('Date/Time', '')),
+                'entry_time': entry_time,
+                'exit_time': exit_time,
                 'entry_price': entry_price,
                 'exit_price': exit_price,
                 'pnl': pnl,
@@ -844,7 +1082,12 @@ async def debug_strategy(strategy_id: int, file: UploadFile = File(...)):
         analysis = categorize_matches_by_tolerance(tv_trades, our_trades)
 
         # 5. Detect root causes of discrepancies
-        root_causes = detect_root_causes(analysis, tv_trades, our_trades)
+        # Pass entry_rule and strategy_name for validation (params_entry_rule defined earlier)
+        root_causes = detect_root_causes(
+            analysis, tv_trades, our_trades,
+            entry_rule=rule_to_validate,  # Use the same rule we validated earlier
+            strategy_name=strategy_info["name"]
+        )
 
         # 6. Generate actionable recommendations
         recommendations = generate_recommendations(root_causes)
@@ -907,7 +1150,7 @@ async def get_debug_strategy_info(strategy_id: int):
         # Get direction from params or trade_mode
         direction = params.get("direction", strategy.get("trade_mode", "long"))
         if direction == "bidirectional":
-            direction = "long"  # Default to long for display
+            direction = "both"  # Normalize to 'both' for bidirectional strategies
 
         # Get entry_rule from strategy_name (NOT params.entry_rule which is human-readable description)
         # CRITICAL: params.entry_rule contains descriptions like "Stochastic extreme levels"
@@ -917,6 +1160,7 @@ async def get_debug_strategy_info(strategy_id: int):
         # Extract function name from strategy_name formats:
         # - "ichimoku_cross (ADAUSDT 30m)" -> "ichimoku_cross"
         # - "ichimoku_cross Long" -> "ichimoku_cross"
+        # - "ichimoku_cross_both" -> "ichimoku_cross"
         # - "ichimoku_cross" -> "ichimoku_cross"
         entry_rule = strategy_name
         if " (" in strategy_name:
@@ -926,9 +1170,20 @@ async def get_debug_strategy_info(strategy_id: int):
             # Format: "rule_name Long/Short"
             entry_rule = strategy_name.rsplit(" ", 1)[0]
 
+        # Handle _both suffix for bidirectional strategies
+        if entry_rule.endswith("_both"):
+            entry_rule = entry_rule[:-5]  # Remove "_both" suffix
+
         print(f"[DEBUG] Extracted entry_rule='{entry_rule}' from strategy_name='{strategy_name}'")
         print(f"[DEBUG] Full strategy data: symbol={strategy.get('symbol')}, timeframe={strategy.get('timeframe')}, direction={direction}, tp={strategy.get('tp_percent')}, sl={strategy.get('sl_percent')}")
         print(f"[DEBUG] trades_list from DB: {type(strategy.get('trades_list'))} = {str(strategy.get('trades_list'))[:100]}")
+
+        # Validate entry_rule - check both extracted and params version
+        params_entry_rule = params.get('entry_rule', '')
+        rule_to_validate = params_entry_rule if params_entry_rule else entry_rule
+        entry_rule_validation = validate_entry_rule(rule_to_validate)
+
+        print(f"[DEBUG] Entry rule validation: valid={entry_rule_validation['valid']}, issue={entry_rule_validation['issue']}")
 
         # Extract strategy details
         strategy_info = {
@@ -938,6 +1193,10 @@ async def get_debug_strategy_info(strategy_id: int):
             "timeframe": strategy.get("timeframe", ""),
             "direction": direction.upper(),
             "entry_rule": entry_rule,
+            "entry_rule_from_params": params_entry_rule,  # What was stored in DB (might be buggy)
+            "entry_rule_valid": entry_rule_validation['valid'],
+            "entry_rule_issue": entry_rule_validation['issue'],
+            "entry_rule_suggestion": entry_rule_validation.get('suggestion'),
             "tp_percent": strategy.get("tp_percent", 0),
             "sl_percent": strategy.get("sl_percent", 0),
             "total_trades": strategy.get("total_trades", 0),
