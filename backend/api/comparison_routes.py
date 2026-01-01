@@ -956,13 +956,40 @@ async def get_debug_strategy_info(strategy_id: int):
             except json.JSONDecodeError:
                 our_trades_raw = []
 
-        # If trades_list is empty, regenerate trades using VectorBT
-        if not our_trades_raw and is_vectorbt_available():
+        # If trades_list is empty, regenerate trades using VectorBT (same approach as /api/export-trades)
+        if not our_trades_raw:
             try:
                 symbol = strategy.get("symbol", "BTCUSDT")
                 timeframe = strategy.get("timeframe", "15m")
                 tp_percent = strategy.get("tp_percent", 2.0)
                 sl_percent = strategy.get("sl_percent", 5.0)
+
+                # Calculate months from data_start and data_end to match original optimization period
+                data_start = strategy.get("data_start", "")
+                data_end = strategy.get("data_end", "")
+                months_to_fetch = 3  # default fallback
+
+                if data_start and data_end:
+                    try:
+                        from datetime import datetime
+                        # Parse dates - handle various formats
+                        for fmt in ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%Y-%m-%dT%H:%M:%S"]:
+                            try:
+                                start_date = datetime.strptime(str(data_start)[:19], fmt)
+                                end_date = datetime.strptime(str(data_end)[:19], fmt)
+                                break
+                            except ValueError:
+                                continue
+                        else:
+                            start_date = end_date = None
+
+                        if start_date and end_date:
+                            # Calculate months between dates
+                            days_diff = (end_date - start_date).days
+                            months_to_fetch = max(1, int(days_diff / 30) + 1)  # Round up
+                            print(f"[DEBUG] Original data period: {data_start} to {data_end} = {days_diff} days = {months_to_fetch} months")
+                    except Exception as date_err:
+                        print(f"[DEBUG] Could not parse dates, using default 3 months: {date_err}")
 
                 print(f"[DEBUG] Regenerating trades for {entry_rule} ({symbol} {timeframe}) direction={direction}")
 
@@ -975,32 +1002,60 @@ async def get_debug_strategy_info(strategy_id: int):
                     else:
                         tf_minutes = int(timeframe.replace('m', ''))
 
-                    # Fetch data - use 1 month for faster loading (was 3 months)
-                    print(f"[DEBUG] Fetching 1 month of {symbol} {timeframe} data...")
+                    # Fetch data matching the original optimization period
+                    print(f"[DEBUG] Fetching {months_to_fetch} months of {symbol} {timeframe} data...")
                     fetcher = BinanceDataFetcher()
-                    df = await fetcher.fetch_ohlcv(symbol, tf_minutes, months=1)
+                    df = await fetcher.fetch_ohlcv(symbol, tf_minutes, months=months_to_fetch)
 
                     if df is not None and len(df) > 100:
                         print(f"[DEBUG] Got {len(df)} candles, running VectorBT backtest...")
-                        # Run VectorBT backtest
-                        engine = VectorBTEngine(
-                            df=df,
-                            initial_capital=10000,
-                            position_size_pct=100,
-                            total_fees=0.001
-                        )
 
-                        result = engine.run_single_backtest(
-                            strategy=entry_rule,
-                            direction=direction.lower(),
-                            tp_percent=tp_percent,
-                            sl_percent=sl_percent
-                        )
+                        # Try VectorBT first
+                        if is_vectorbt_available():
+                            try:
+                                engine = VectorBTEngine(
+                                    df=df,
+                                    initial_capital=10000,
+                                    position_size_pct=100,
+                                    total_fees=0.001
+                                )
 
-                        if result and result.trades_list:
-                            our_trades_raw = result.trades_list
+                                result = engine.run_single_backtest(
+                                    strategy=entry_rule,
+                                    direction=direction.lower(),
+                                    tp_percent=tp_percent,
+                                    sl_percent=sl_percent
+                                )
+
+                                if result and result.trades_list:
+                                    our_trades_raw = result.trades_list
+                                    print(f"[DEBUG] VectorBT generated {len(our_trades_raw)} trades")
+                            except Exception as vbt_err:
+                                print(f"[DEBUG] VectorBT error: {vbt_err}")
+
+                        # Fallback to StrategyEngine if VectorBT returned no trades
+                        if not our_trades_raw:
+                            print(f"[DEBUG] Falling back to StrategyEngine...")
+                            try:
+                                from strategy_engine import StrategyEngine
+                                se_engine = StrategyEngine(df)
+                                result = se_engine.backtest(
+                                    strategy=entry_rule,
+                                    direction=direction.lower(),
+                                    tp_percent=tp_percent,
+                                    sl_percent=sl_percent,
+                                    initial_capital=10000,
+                                    position_size_pct=100,
+                                    commission_pct=0.1
+                                )
+                                if result and hasattr(result, 'trades_list') and result.trades_list:
+                                    our_trades_raw = result.trades_list
+                                    print(f"[DEBUG] StrategyEngine generated {len(our_trades_raw)} trades")
+                            except Exception as se_err:
+                                print(f"[DEBUG] StrategyEngine error: {se_err}")
+
+                        if our_trades_raw:
                             print(f"[DEBUG] Successfully regenerated {len(our_trades_raw)} trades for GET endpoint")
-
                             # Save regenerated trades to database for future fast access
                             try:
                                 db.update_trades_list(strategy_id, our_trades_raw)
@@ -1008,7 +1063,7 @@ async def get_debug_strategy_info(strategy_id: int):
                             except Exception as save_err:
                                 print(f"[DEBUG] Could not save trades to DB: {save_err}")
                         else:
-                            print(f"[DEBUG] VectorBT returned no trades for entry_rule='{entry_rule}'")
+                            print(f"[DEBUG] No trades generated for entry_rule='{entry_rule}'")
                     else:
                         print(f"[DEBUG] Insufficient data: got {len(df) if df is not None else 0} candles")
                 else:
