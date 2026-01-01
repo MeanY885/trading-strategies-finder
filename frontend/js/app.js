@@ -6024,10 +6024,10 @@
                 }
 
                 const infoData = await infoResponse.json();
-                const pineData = pineResponse.ok ? await pineResponse.json() : { pine_script: 'Failed to load Pine Script' };
+                const pineData = pineResponse.ok ? await pineResponse.json() : { pinescript: 'Failed to load Pine Script' };
 
                 // Store data for later use
-                currentDebugPineScript = pineData.pine_script || '';
+                currentDebugPineScript = pineData.pinescript || '';
                 currentDebugOurTrades = infoData.our_trades || [];
 
                 // Populate strategy info

@@ -220,7 +220,10 @@ class StrategyDatabase:
                 avg_trade REAL DEFAULT 0,
                 buy_hold_return REAL DEFAULT 0,
                 vs_buy_hold REAL DEFAULT 0,
-                consistency_score REAL DEFAULT 0
+                consistency_score REAL DEFAULT 0,
+
+                -- Trade details for debugger
+                trades_list TEXT
             )
         ''')
 
@@ -274,6 +277,9 @@ class StrategyDatabase:
         ]
         for stmt in vectorbt_columns:
             cursor.execute(stmt)
+
+        # Add trades_list column for debugger (for existing databases)
+        cursor.execute("ALTER TABLE strategies ADD COLUMN IF NOT EXISTS trades_list TEXT")
 
         # Optimization checkpoints table for crash recovery
         cursor.execute('''
@@ -443,6 +449,9 @@ class StrategyDatabase:
         # Convert equity curve to JSON
         equity_curve = json.dumps(result.equity_curve) if hasattr(result, 'equity_curve') else '[]'
 
+        # Convert trades_list to JSON for debugger
+        trades_list = json.dumps(result.trades_list) if hasattr(result, 'trades_list') and result.trades_list else None
+
         # Convert indicator_params to JSON
         indicator_params_json = json.dumps(indicator_params) if indicator_params else None
 
@@ -470,8 +479,8 @@ class StrategyDatabase:
              val_pnl, val_profit_factor, val_win_rate, found_by, data_source, symbol,
              timeframe, data_start, data_end, optimization_run_id, equity_curve,
              trade_mode, long_trades, long_wins, long_pnl, short_trades, short_wins, short_pnl, flip_count,
-             total_pnl_percent, avg_trade, buy_hold_return, vs_buy_hold, consistency_score)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+             total_pnl_percent, avg_trade, buy_hold_return, vs_buy_hold, consistency_score, trades_list)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
         ''', (
             getattr(result, 'strategy_name', 'unknown'),
@@ -516,7 +525,8 @@ class StrategyDatabase:
             getattr(result, 'avg_trade', 0.0),
             getattr(result, 'buy_hold_return', 0.0),
             getattr(result, 'vs_buy_hold', 0.0),
-            getattr(result, 'consistency_score', 0.0)
+            getattr(result, 'consistency_score', 0.0),
+            trades_list
         ))
 
         strategy_id = cursor.fetchone()[0]
@@ -639,6 +649,9 @@ class StrategyDatabase:
                         # Convert equity curve to JSON
                         equity_curve = json.dumps(result.equity_curve) if hasattr(result, 'equity_curve') else '[]'
 
+                        # Convert trades_list to JSON for debugger
+                        trades_list = json.dumps(result.trades_list) if hasattr(result, 'trades_list') and result.trades_list else None
+
                         # Determine trade mode from direction
                         direction = getattr(result, 'direction', 'long')
                         trade_mode = 'bidirectional' if direction == 'both' else direction
@@ -682,7 +695,8 @@ class StrategyDatabase:
                             getattr(result, 'avg_trade', 0.0),
                             getattr(result, 'buy_hold_return', 0.0),
                             getattr(result, 'vs_buy_hold', 0.0),
-                            getattr(result, 'consistency_score', 0.0)
+                            getattr(result, 'consistency_score', 0.0),
+                            trades_list
                         )
                         batch_data.append(row_data)
 
@@ -700,8 +714,8 @@ class StrategyDatabase:
                          val_pnl, val_profit_factor, val_win_rate, found_by, data_source, symbol,
                          timeframe, data_start, data_end, optimization_run_id, equity_curve,
                          trade_mode, long_trades, long_wins, long_pnl, short_trades, short_wins, short_pnl, flip_count,
-                         total_pnl_percent, avg_trade, buy_hold_return, vs_buy_hold, consistency_score)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                         total_pnl_percent, avg_trade, buy_hold_return, vs_buy_hold, consistency_score, trades_list)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     '''
 
                     cursor.executemany(insert_sql, batch_data)
@@ -961,6 +975,15 @@ class StrategyDatabase:
                 d['equity_curve'] = []
         elif not parse_equity_curve:
             d['equity_curve'] = []
+
+        # Parse trades_list JSON for debugger
+        if d.get('trades_list'):
+            try:
+                d['trades_list'] = json.loads(d['trades_list'])
+            except json.JSONDecodeError:
+                d['trades_list'] = []
+        else:
+            d['trades_list'] = []
 
         # Convert datetime to string if needed
         if d.get('created_at') and hasattr(d['created_at'], 'isoformat'):

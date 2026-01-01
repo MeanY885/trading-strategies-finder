@@ -731,15 +731,15 @@ async def debug_strategy(strategy_id: int, file: UploadFile = File(...)):
                         )
 
                         result = engine.run_single_backtest(
-                            strategy_name=entry_rule,
+                            strategy=entry_rule,
                             direction=direction.lower(),
                             tp_percent=tp_percent,
-                            sl_percent=sl_percent,
-                            include_trades=True
+                            sl_percent=sl_percent
                         )
 
                         if result and result.trades_list:
                             our_trades_raw = result.trades_list
+                            print(f"[DEBUG] Successfully regenerated {len(our_trades_raw)} trades")
 
             except Exception as regen_error:
                 import traceback
@@ -970,15 +970,15 @@ async def get_debug_strategy_info(strategy_id: int):
                         )
 
                         result = engine.run_single_backtest(
-                            strategy_name=entry_rule,
+                            strategy=entry_rule,
                             direction=direction.lower(),
                             tp_percent=tp_percent,
-                            sl_percent=sl_percent,
-                            include_trades=True
+                            sl_percent=sl_percent
                         )
 
                         if result and result.trades_list:
                             our_trades_raw = result.trades_list
+                            print(f"[DEBUG] Successfully regenerated {len(our_trades_raw)} trades for GET endpoint")
 
             except Exception as regen_error:
                 import traceback
