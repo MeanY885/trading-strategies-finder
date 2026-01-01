@@ -1025,7 +1025,7 @@ async def get_debug_strategy_info(strategy_id: int):
                                     df=df,
                                     initial_capital=10000,
                                     position_size_pct=100,
-                                    total_fees=0.001
+                                    commission_pct=0.1
                                 )
 
                                 result = engine.run_single_backtest(
