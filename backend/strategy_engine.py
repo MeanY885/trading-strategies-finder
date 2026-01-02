@@ -5102,13 +5102,32 @@ class StrategyEngine:
                 for i, result in enumerate(to_save):
                     if not result.trades_list:
                         try:
-                            # Re-run single backtest to get trades_list
-                            detailed_result = vbt_engine.run_single_backtest(
-                                strategy=result.strategy_name,
-                                direction=result.direction,
-                                tp_percent=result.params.get('tp_percent', result.tp_percent) if hasattr(result, 'params') and result.params else result.tp_percent,
-                                sl_percent=result.params.get('sl_percent', result.sl_percent) if hasattr(result, 'params') and result.params else result.sl_percent
-                            )
+                            # Extract base strategy name (remove _long/_short/_both suffix)
+                            # e.g., "rsi_extreme_long" -> "rsi_extreme"
+                            base_strategy = result.strategy_name
+                            for suffix in ['_long', '_short', '_both']:
+                                if base_strategy.endswith(suffix):
+                                    base_strategy = base_strategy[:-len(suffix)]
+                                    break
+
+                            tp = result.params.get('tp_percent', result.tp_percent) if hasattr(result, 'params') and result.params else result.tp_percent
+                            sl = result.params.get('sl_percent', result.sl_percent) if hasattr(result, 'params') and result.params else result.sl_percent
+
+                            # Use appropriate backtest function based on direction
+                            if result.direction == 'both':
+                                detailed_result = vbt_engine.run_bidirectional_backtest(
+                                    strategy=base_strategy,
+                                    tp_percent=tp,
+                                    sl_percent=sl
+                                )
+                            else:
+                                detailed_result = vbt_engine.run_single_backtest(
+                                    strategy=base_strategy,
+                                    direction=result.direction,
+                                    tp_percent=tp,
+                                    sl_percent=sl
+                                )
+
                             if detailed_result and detailed_result.trades_list:
                                 result.trades_list = detailed_result.trades_list
                                 result.equity_curve = detailed_result.equity_curve

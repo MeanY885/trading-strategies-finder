@@ -267,7 +267,12 @@ async def validate_strategy(
     # CRITICAL: Use strategy_name (function name like 'stoch_extreme') NOT params.entry_rule
     # params.entry_rule contains human-readable description like "Stochastic extreme levels"
     # which the backtest engine doesn't recognize
-    entry_rule = strategy_name  # strategy_name is the actual function name
+    # Also strip _long/_short/_both suffix since _get_signals expects base name only
+    entry_rule = strategy_name
+    for suffix in ['_long', '_short', '_both']:
+        if entry_rule.endswith(suffix):
+            entry_rule = entry_rule[:-len(suffix)]
+            break
     direction = params.get('direction', strategy.get('trade_mode', 'long'))
 
     # Debug: Log what we're using for backtest

@@ -492,6 +492,15 @@ mih_atr(simple int length) =>
     else
         na
 
+// Ultimate Oscillator
+mih_uo(simple int fast, simple int medium, simple int slow) =>
+    float bp = close - math.min(low, nz(close[1], close))
+    float tr = math.max(high, nz(close[1], close)) - math.min(low, nz(close[1], close))
+    float avgFast = ta.sum(bp, fast) / ta.sum(tr, fast)
+    float avgMedium = ta.sum(bp, medium) / ta.sum(tr, medium)
+    float avgSlow = ta.sum(bp, slow) / ta.sum(tr, slow)
+    100 * ((4 * avgFast) + (2 * avgMedium) + avgSlow) / 7
+
 '''
 
     def _generate_professional_visuals(self, tp_percent: float, sl_percent: float) -> str:
@@ -1157,7 +1166,7 @@ rocUpper = ta.percentile_linear_interpolation(rocValue, 100, 95)
 entrySignal = {"rocValue < rocLower" if is_long else "rocValue > rocUpper"}''',
 
             'uo_extreme': f'''// Ultimate Oscillator Extreme
-uoValue = ta.uo(7, 14, 28)
+uoValue = mih_uo(7, 14, 28)
 entrySignal = {"uoValue < 30" if is_long else "uoValue > 70"}''',
 
             'chop_trend': f'''// Choppiness Index Trend Detection
@@ -1667,7 +1676,7 @@ rocUpper = ta.percentile_linear_interpolation(rocValue, 100, 95)
 entrySignal = {"rocValue < rocLower" if is_long else "rocValue > rocUpper"}''',
 
             'uo_extreme': f'''// Ultimate Oscillator Extreme (mihakralj)
-uoValue = ta.uo(7, 14, 28)
+uoValue = mih_uo(7, 14, 28)
 entrySignal = {"uoValue < 30" if is_long else "uoValue > 70"}''',
 
             'chop_trend': f'''// Choppiness Index Trend Detection (mihakralj)
@@ -2187,7 +2196,7 @@ longEntrySignal = rocValue < rocLower
 shortEntrySignal = rocValue > rocUpper''',
 
             'uo_extreme': f'''// Ultimate Oscillator Extreme - BIDIRECTIONAL
-uoValue = ta.uo(7, 14, 28)
+uoValue = mih_uo(7, 14, 28)
 longEntrySignal = uoValue < 30
 shortEntrySignal = uoValue > 70''',
 
