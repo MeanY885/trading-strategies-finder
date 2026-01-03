@@ -601,7 +601,7 @@
                 </div>
 
                 <!-- Elite Strategies Table -->
-                <div style="overflow-x: auto; margin-top: 1rem;">
+                <div style="margin-top: 1rem;">
                     <!-- Table header (fixed, outside scroll container) -->
                     <table class="history-table elite-table" id="eliteTableHeader" style="margin-bottom: 0;">
                         <thead>
@@ -623,7 +623,21 @@
                     </table>
                     <!-- Virtual scroll container for table body -->
                     <div id="eliteVirtualContainer" style="height: 600px; overflow-y: auto; border: 1px solid var(--border); border-top: none;">
-                        <table class="history-table elite-table" id="eliteTable" style="margin-top: 0; border-top: none;">
+                        <table class="history-table elite-table" id="eliteTable" style="table-layout: fixed; width: 100%; margin-top: 0; border-top: none;">
+                            <colgroup>
+                                <col style="width: 60px;">
+                                <col style="width: 70px;">
+                                <col style="min-width: 250px;">
+                                <col style="width: 80px;">
+                                <col style="width: 80px;">
+                                <col style="width: 80px;">
+                                <col style="width: 80px;">
+                                <col style="width: 80px;">
+                                <col style="width: 80px;">
+                                <col style="width: 80px;">
+                                <col style="width: 80px;">
+                                <col style="width: 160px;">
+                            </colgroup>
                             <tbody id="eliteTableBody">
                                 <!-- Populated dynamically by VirtualTable -->
                             </tbody>
