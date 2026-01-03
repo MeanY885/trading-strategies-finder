@@ -1053,7 +1053,7 @@ async def start_autonomous_optimizer(thread_pool):
         init_async_primitives()
 
     # Clean any orphaned entries from previous run/crash
-    global orphan_cleaner_instance
+    global orphan_cleaner_instance, cycle_sleeper
     orphan_count = app_state.get_running_count()
     if orphan_count > 0:
         log(f"[Parallel Optimizer] Cleaning {orphan_count} orphaned entries from previous run")
@@ -1239,7 +1239,6 @@ async def start_autonomous_optimizer(thread_pool):
                     log("[Parallel Optimizer] All combinations fresh, waiting 5 minutes before re-checking")
 
                     # Use interruptible sleep - check every 10s if still enabled
-                    global cycle_sleeper
                     if cycle_sleeper is None:
                         cycle_sleeper = InterruptibleSleep()
 
