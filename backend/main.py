@@ -133,15 +133,9 @@ async def start_background_services():
         # User must explicitly enable it via the UI toggle
         log("[Startup] Autonomous optimizer ready (requires manual start)")
 
-        # Wait before starting Elite validation
-        # This lets the system settle and prevents resource contention on startup
-        log("[Startup] Waiting 30 seconds before starting Elite validation...")
-        await asyncio.sleep(30)
-
-        # Start Elite validation in background
-        from services.elite_validator import start_auto_elite_validation
-        asyncio.create_task(start_auto_elite_validation())
-        log("[Startup] Elite validation service started")
+        # Note: Elite validation is NOT started automatically
+        # User must explicitly enable it via the UI toggle
+        log("[Startup] Elite validation ready (requires manual start)")
 
     except Exception as e:
         log(f"[Startup] Error starting background services: {e}", level='WARNING')

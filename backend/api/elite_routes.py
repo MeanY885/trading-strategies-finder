@@ -111,14 +111,47 @@ async def get_elite_stats():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/toggle")
+async def toggle_elite_validation():
+    """Toggle the Elite validation service on/off."""
+    from services.websocket_manager import broadcast_elite_status
+    from logging_config import log
+
+    status = app_state.get_elite_status()
+    currently_running = status.get("auto_running", False)
+
+    if currently_running:
+        # Stop the service
+        from services.elite_validator import stop_elite_validation
+        await stop_elite_validation()
+        log("[Elite Validation] Stopped via toggle")
+        return {"status": "disabled", "message": "Elite validation stopped"}
+    else:
+        # Start the service
+        app_state.update_elite_status(message="Starting...")
+        broadcast_elite_status(app_state.get_elite_status())
+
+        from services.elite_validator import start_auto_elite_validation
+        asyncio.create_task(start_auto_elite_validation())
+        log("[Elite Validation] Started via toggle")
+        return {"status": "enabled", "message": "Elite validation started"}
+
+
 @router.post("/start")
 async def start_elite_validation():
     """Start the Elite validation background service."""
+    from services.websocket_manager import broadcast_elite_status
+    from logging_config import log
+
     if app_state.is_elite_auto_running():
         return {"status": "already_running", "message": "Elite validation already running"}
 
+    app_state.update_elite_status(message="Starting...")
+    broadcast_elite_status(app_state.get_elite_status())
+
     from services.elite_validator import start_auto_elite_validation
     asyncio.create_task(start_auto_elite_validation())
+    log("[Elite Validation] Started via /start endpoint")
 
     return {"status": "started", "message": "Elite validation started"}
 
@@ -127,9 +160,40 @@ async def start_elite_validation():
 async def stop_elite_validation():
     """Stop the Elite validation background service."""
     from services.elite_validator import stop_elite_validation
+    from logging_config import log
+
     await stop_elite_validation()
+    log("[Elite Validation] Stopped via /stop endpoint")
 
     return {"status": "stopped", "message": "Elite validation stopped"}
+
+
+@router.post("/pause")
+async def pause_elite_validation():
+    """Toggle pause state - pause if running, resume if paused."""
+    from services.elite_validator import pause_elite_validation, resume_elite_validation
+    from services.websocket_manager import broadcast_elite_status
+    from logging_config import log
+
+    status = app_state.get_elite_status()
+    currently_paused = status.get("paused", False)
+    is_running = status.get("auto_running", False)
+
+    if not is_running:
+        return {"status": "not_running", "message": "Elite validation is not running"}
+
+    if currently_paused:
+        # Resume
+        resume_elite_validation()
+        log("[Elite Validation] Resumed via /pause toggle")
+        broadcast_elite_status(app_state.get_elite_status())
+        return {"status": "resumed", "message": "Elite validation resumed"}
+    else:
+        # Pause
+        pause_elite_validation()
+        log("[Elite Validation] Paused via /pause toggle")
+        broadcast_elite_status(app_state.get_elite_status())
+        return {"status": "paused", "message": "Elite validation paused"}
 
 
 @router.post("/validate-all")

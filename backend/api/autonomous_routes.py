@@ -228,6 +228,55 @@ async def stop_autonomous():
     return {"status": "stopped", "message": "Autonomous optimizer stopped"}
 
 
+@router.post("/pause")
+async def pause_autonomous():
+    """Toggle pause state of the autonomous optimizer.
+
+    When paused:
+    - Current running backtests are allowed to complete
+    - No new backtests are started
+    - System resources are freed (loop sleeps while paused)
+    - Position in optimization queue is maintained
+
+    When resumed:
+    - Continues from where it left off
+    """
+    from services.autonomous_optimizer import toggle_pause
+    from services.websocket_manager import broadcast_autonomous_status
+    from logging_config import log
+
+    status = app_state.get_autonomous_status()
+
+    # Can only pause/resume if the optimizer is running
+    if not status.get("auto_running", False):
+        return {
+            "success": False,
+            "paused": False,
+            "message": "Autonomous optimizer is not running"
+        }
+
+    # Toggle pause state
+    new_paused_state = toggle_pause()
+
+    # Broadcast status update
+    broadcast_autonomous_status(app_state.get_autonomous_status())
+
+    if new_paused_state:
+        log("[Autonomous Optimizer] Paused by user - will complete current backtests then wait")
+        return {
+            "success": True,
+            "paused": True,
+            "message": "Paused - current backtests will complete, no new ones will start"
+        }
+    else:
+        log("[Autonomous Optimizer] Resumed by user")
+        return {
+            "success": True,
+            "paused": False,
+            "message": "Resumed - continuing optimization"
+        }
+
+
 @router.post("/reset-cycle")
 async def reset_autonomous_cycle():
     """Reset autonomous optimizer cycle to beginning."""

@@ -520,6 +520,19 @@
                 <div class="card-header">
                     <div class="icon">🏆</div>
                     <h2>Elite Strategies</h2>
+
+                    <!-- Pause Button -->
+                    <button id="elitePauseBtn" class="btn btn-secondary btn-sm" onclick="toggleElitePause()" disabled style="margin-left: auto; padding: 0.4rem 0.75rem; font-size: 0.8rem;">
+                        <span id="elitePauseBtnIcon">⏸</span>
+                        <span id="elitePauseBtnText">Pause</span>
+                    </button>
+
+                    <!-- Toggle Switch -->
+                    <label class="toggle-switch" style="margin-left: 0.5rem;">
+                        <input type="checkbox" id="eliteToggle" onchange="toggleEliteValidation()">
+                        <span class="toggle-slider"></span>
+                        <span id="eliteToggleLabel" style="margin-left: 0.5rem; color: var(--text-secondary);">OFF</span>
+                    </label>
                 </div>
                 <p style="color: var(--text-secondary); margin-bottom: 0.5rem;">
                     Strategies validated across ALL time periods. Elite status means consistent performance.
@@ -620,8 +633,14 @@
                     <div class="icon" style="background: linear-gradient(135deg, #f59e0b, #ef4444);">⚡</div>
                     <h2>Autonomous Optimizer</h2>
 
+                    <!-- Pause Button -->
+                    <button id="autonomousPauseBtn" class="btn btn-secondary btn-sm" onclick="toggleAutonomousPause()" disabled style="margin-left: auto; padding: 0.4rem 0.75rem; font-size: 0.8rem;">
+                        <span id="autonomousPauseBtnIcon">⏸</span>
+                        <span id="autonomousPauseBtnText">Pause</span>
+                    </button>
+
                     <!-- Toggle Switch -->
-                    <label class="toggle-switch" style="margin-left: auto;">
+                    <label class="toggle-switch" style="margin-left: 0.5rem;">
                         <input type="checkbox" id="autonomousToggle" onchange="toggleAutonomousOptimizer()">
                         <span class="toggle-slider"></span>
                         <span id="autonomousToggleLabel" style="margin-left: 0.5rem; color: var(--text-secondary);">OFF</span>

@@ -1146,6 +1146,42 @@ async def start_autonomous_optimizer(thread_pool):
                 await asyncio.sleep(1)
                 continue
 
+            # Check for user-initiated pause (separate from manual optimizer pause)
+            if is_paused():
+                # When paused by user: wait for current tasks to complete, don't spawn new ones
+                if active_tasks:
+                    # Let current tasks finish
+                    done, pending = await asyncio.wait(active_tasks, timeout=1)
+                    for task in done:
+                        try:
+                            await task
+                        except Exception as e:
+                            log(f"[Parallel Optimizer] Task exception during pause: {e}", level='WARNING')
+                    active_tasks = pending
+
+                    # Update status to show how many tasks still running
+                    app_state.update_autonomous_status(
+                        message=f"Paused - {len(active_tasks)} backtest(s) completing..."
+                    )
+                else:
+                    # All tasks complete, now fully paused - sleep to free CPU
+                    app_state.update_autonomous_status(
+                        message="Paused - ready to resume"
+                    )
+
+                    # Broadcast paused state
+                    from services.websocket_manager import broadcast_autonomous_status
+                    broadcast_autonomous_status(app_state.get_autonomous_status())
+
+                    # Sleep while paused - check every 2 seconds if still paused
+                    # This frees up CPU resources while maintaining responsiveness
+                    if cycle_sleeper is None:
+                        cycle_sleeper = InterruptibleSleep()
+
+                    await cycle_sleeper.sleep(2, check_callback=lambda: not is_paused() and app_state.is_autonomous_enabled())
+
+                continue  # Skip the rest of the loop iteration while paused
+
             app_state.update_autonomous_status(paused=False)
 
             # Check cycle completion
@@ -1380,6 +1416,67 @@ async def start_autonomous_optimizer(thread_pool):
     broadcast_autonomous_status(app_state.get_autonomous_status())
 
     log("[Parallel Optimizer] Stopped")
+
+
+def toggle_pause() -> bool:
+    """Toggle the pause state of the autonomous optimizer.
+
+    Returns:
+        bool: The new paused state (True = paused, False = running)
+    """
+    status = app_state.get_autonomous_status()
+    current_paused = status.get("paused", False)
+    new_paused = not current_paused
+
+    if new_paused:
+        app_state.update_autonomous_status(
+            paused=True,
+            message="Paused - completing current backtests..."
+        )
+        log("[Autonomous Optimizer] Pause requested - will wait after current backtests complete")
+    else:
+        app_state.update_autonomous_status(
+            paused=False,
+            message="Resuming..."
+        )
+        log("[Autonomous Optimizer] Resume requested")
+
+        # Interrupt the pause sleep if waiting
+        global cycle_sleeper
+        if cycle_sleeper:
+            cycle_sleeper.interrupt()
+
+    return new_paused
+
+
+def pause_optimizer() -> None:
+    """Pause the autonomous optimizer (set paused = True)."""
+    app_state.update_autonomous_status(
+        paused=True,
+        message="Paused - completing current backtests..."
+    )
+    log("[Autonomous Optimizer] Paused")
+
+
+def resume_optimizer() -> None:
+    """Resume the autonomous optimizer (set paused = False)."""
+    global cycle_sleeper
+
+    app_state.update_autonomous_status(
+        paused=False,
+        message="Resuming..."
+    )
+    log("[Autonomous Optimizer] Resumed")
+
+    # Interrupt the pause sleep if waiting
+    if cycle_sleeper:
+        cycle_sleeper.interrupt()
+
+
+def is_paused() -> bool:
+    """Check if the autonomous optimizer is paused."""
+    status = app_state.get_autonomous_status()
+    return status.get("paused", False)
 
 
 async def stop_autonomous_optimizer():

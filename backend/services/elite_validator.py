@@ -223,6 +223,46 @@ def init_elite_async_primitives():
 
 
 # =============================================================================
+# PAUSE/RESUME FUNCTIONS
+# =============================================================================
+
+def pause_elite_validation():
+    """
+    Pause the elite validation service.
+    Current backtest will complete, but no new ones will start.
+    This frees up system resources while maintaining position in the queue.
+    """
+    from services.websocket_manager import broadcast_elite_status
+
+    app_state.update_elite_status(
+        paused=True,
+        message="Paused - current validation will complete"
+    )
+    broadcast_elite_status(app_state.get_elite_status())
+    log("[Elite Validation] Pause signal sent - will pause after current validation completes")
+
+
+def resume_elite_validation():
+    """
+    Resume the elite validation service from paused state.
+    Continues from where it left off in the queue.
+    """
+    from services.websocket_manager import broadcast_elite_status
+
+    app_state.update_elite_status(
+        paused=False,
+        message="Resumed - continuing validation"
+    )
+    broadcast_elite_status(app_state.get_elite_status())
+    log("[Elite Validation] Resume signal sent")
+
+
+def is_elite_paused() -> bool:
+    """Check if elite validation is currently paused."""
+    return app_state.get_elite_status().get("paused", False)
+
+
+# =============================================================================
 # VALIDATION STATUS
 # =============================================================================
 
@@ -641,6 +681,21 @@ async def validate_single_strategy_worker(strategy: dict, processed_count: list,
 
     # Wait for a slot - semaphore is dynamically sized
     async with task_slot:
+        # Check for pause state before starting new validation
+        # This allows current validations to complete but prevents new ones from starting
+        while is_elite_paused() and app_state.is_elite_auto_running():
+            from services.websocket_manager import broadcast_elite_status
+            app_state.update_elite_status(
+                message=f"Paused - waiting to resume ({strategy_name})"
+            )
+            broadcast_elite_status(app_state.get_elite_status())
+            await asyncio.sleep(2)  # Check every 2 seconds
+
+        # Check if service was stopped while paused
+        if not app_state.is_elite_auto_running():
+            log(f"[Elite Validation] Service stopped while paused, skipping {strategy_name}")
+            return
+
         # Track start time for ETA calculation (AFTER acquiring slot)
         validation_start_time = time.time()
 
@@ -940,17 +995,32 @@ async def start_auto_elite_validation():
 
     while app_state.is_elite_auto_running():
         try:
-            # Check parallel mode
-            if concurrency_config.get("elite_parallel", True):
-                app_state.update_elite_status(paused=False)
-            else:
-                while app_state.is_unified_running():
+            # Check for user-initiated pause (from /pause endpoint)
+            # This is separate from the parallel mode pause
+            while is_elite_paused() and app_state.is_elite_auto_running():
+                from services.websocket_manager import broadcast_elite_status
+                app_state.update_elite_status(
+                    message="Paused - waiting to resume"
+                )
+                broadcast_elite_status(app_state.get_elite_status())
+                await asyncio.sleep(2)  # Check every 2 seconds
+
+            # Check if service was stopped while paused
+            if not app_state.is_elite_auto_running():
+                break
+
+            # Check parallel mode (auto-pause when optimizer is running)
+            if not concurrency_config.get("elite_parallel", True):
+                while app_state.is_unified_running() and app_state.is_elite_auto_running():
                     app_state.update_elite_status(
                         message="Waiting for optimizer to finish...",
                         paused=True
                     )
                     await asyncio.sleep(5)
-                app_state.update_elite_status(paused=False)
+                # Only reset paused if it was set by the parallel mode check
+                # Don't reset if user manually paused
+                if not is_elite_paused():
+                    app_state.update_elite_status(paused=False)
 
             log("[Elite Validation] Checking for pending strategies...")
 

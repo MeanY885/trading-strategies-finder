@@ -71,6 +71,9 @@
         // PERFORMANCE: Toggle state tracking for optimistic UI updates
         // =============================================================================
         let togglePendingRequest = false; // Prevent double-clicks during pending request
+        let eliteTogglePending = false; // Prevent double-clicks on elite toggle
+        let elitePausePending = false; // Prevent double-clicks on elite pause
+        let autonomousPausePending = false; // Prevent double-clicks on autonomous pause
 
         // =============================================================================
         // HELPER FUNCTIONS
@@ -495,6 +498,25 @@
             // Note: Queue rendering is handled separately via renderTaskQueueFromCache
             // when queue data is received in the autonomous_status message
 
+            // Update pause button state
+            const pauseBtn = document.getElementById('autonomousPauseBtn');
+            const pauseIcon = document.getElementById('autonomousPauseBtnIcon');
+            const pauseText = document.getElementById('autonomousPauseBtnText');
+
+            if (pauseBtn) {
+                // Enable pause button only when optimizer is running
+                pauseBtn.disabled = !status.running;
+
+                if (status.running) {
+                    if (pauseIcon) pauseIcon.textContent = status.paused ? '▶' : '⏸';
+                    if (pauseText) pauseText.textContent = status.paused ? 'Resume' : 'Pause';
+                } else {
+                    // Reset to default when not running
+                    if (pauseIcon) pauseIcon.textContent = '⏸';
+                    if (pauseText) pauseText.textContent = 'Pause';
+                }
+            }
+
             // PERFORMANCE FIX: Debounce history table updates
             // Only update if: (1) enough time has passed AND (2) no update is in flight
             // This prevents the ~10 HTTP requests/second from rapid WebSocket messages
@@ -619,6 +641,37 @@
             // Update tracking state
             eliteWasRunning = status.running;
             eliteLastProcessedCount = currentProcessed;
+
+            // Update toggle switch state
+            const toggle = document.getElementById('eliteToggle');
+            const isEnabled = status.auto_running || status.enabled;
+            if (toggle && toggle.checked !== isEnabled) {
+                toggle.checked = isEnabled;
+                const label = document.getElementById('eliteToggleLabel');
+                if (label) {
+                    label.textContent = isEnabled ? 'ON' : 'OFF';
+                    label.style.color = isEnabled ? 'var(--success)' : 'var(--text-secondary)';
+                }
+            }
+
+            // Update pause button state
+            const pauseBtn = document.getElementById('elitePauseBtn');
+            const pauseIcon = document.getElementById('elitePauseBtnIcon');
+            const pauseText = document.getElementById('elitePauseBtnText');
+
+            if (pauseBtn) {
+                // Enable pause button only when validation is running
+                pauseBtn.disabled = !status.running;
+
+                if (status.running) {
+                    if (pauseIcon) pauseIcon.textContent = status.paused ? '▶' : '⏸';
+                    if (pauseText) pauseText.textContent = status.paused ? 'Resume' : 'Pause';
+                } else {
+                    // Reset to default when not running
+                    if (pauseIcon) pauseIcon.textContent = '⏸';
+                    if (pauseText) pauseText.textContent = 'Pause';
+                }
+            }
         }
 
         // Render the elite validation queue with progress bars (like Auto Optimizer)
@@ -5393,6 +5446,102 @@
                 label.style.color = !newState ? 'var(--success)' : 'var(--text-secondary)';
             } finally {
                 togglePendingRequest = false;
+            }
+        }
+
+        async function toggleAutonomousPause() {
+            const pauseBtn = document.getElementById('autonomousPauseBtn');
+            const pauseIcon = document.getElementById('autonomousPauseBtnIcon');
+            const pauseText = document.getElementById('autonomousPauseBtnText');
+
+            if (!pauseBtn || pauseBtn.disabled) return;
+            if (autonomousPausePending) return; // Prevent double-clicks
+
+            autonomousPausePending = true;
+
+            try {
+                const response = await fetch('/api/autonomous/pause', { method: 'POST' });
+                const data = await response.json();
+
+                if (data.paused !== undefined) {
+                    // Update UI based on response
+                    if (pauseIcon) pauseIcon.textContent = data.paused ? '▶' : '⏸';
+                    if (pauseText) pauseText.textContent = data.paused ? 'Resume' : 'Pause';
+                    addLog(`Autonomous optimizer ${data.paused ? 'paused' : 'resumed'}`, 'normal');
+                }
+            } catch (error) {
+                console.error('Failed to toggle autonomous pause:', error);
+            } finally {
+                autonomousPausePending = false;
+            }
+        }
+
+        async function toggleEliteValidation() {
+            const toggle = document.getElementById('eliteToggle');
+            const label = document.getElementById('eliteToggleLabel');
+
+            if (eliteTogglePending) return; // Prevent double-clicks
+
+            // Optimistic UI update
+            const newState = toggle.checked;
+            label.textContent = newState ? 'ON' : 'OFF';
+            label.style.color = newState ? 'var(--success)' : 'var(--text-secondary)';
+
+            eliteTogglePending = true;
+
+            try {
+                const response = await fetch('/api/elite/toggle', { method: 'POST' });
+                const data = await response.json();
+
+                // Confirm the actual state from server
+                if (data.status === 'enabled' || data.auto_running) {
+                    label.textContent = 'ON';
+                    label.style.color = 'var(--success)';
+                    toggle.checked = true;
+                    addLog('Elite validation enabled', 'normal');
+                } else {
+                    label.textContent = 'OFF';
+                    label.style.color = 'var(--text-secondary)';
+                    toggle.checked = false;
+                    addLog('Elite validation disabled', 'normal');
+                }
+
+                // WebSocket provides updates - no need to manually refresh
+            } catch (error) {
+                console.error('Failed to toggle elite validation:', error);
+                // Revert optimistic update on error
+                toggle.checked = !newState;
+                label.textContent = !newState ? 'ON' : 'OFF';
+                label.style.color = !newState ? 'var(--success)' : 'var(--text-secondary)';
+            } finally {
+                eliteTogglePending = false;
+            }
+        }
+
+        async function toggleElitePause() {
+            const pauseBtn = document.getElementById('elitePauseBtn');
+            const pauseIcon = document.getElementById('elitePauseBtnIcon');
+            const pauseText = document.getElementById('elitePauseBtnText');
+
+            if (!pauseBtn || pauseBtn.disabled) return;
+            if (elitePausePending) return; // Prevent double-clicks
+
+            elitePausePending = true;
+
+            try {
+                const response = await fetch('/api/elite/pause', { method: 'POST' });
+                const data = await response.json();
+
+                if (data.paused !== undefined) {
+                    // Update UI based on response
+                    if (pauseIcon) pauseIcon.textContent = data.paused ? '▶' : '⏸';
+                    if (pauseText) pauseText.textContent = data.paused ? 'Resume' : 'Pause';
+                    addLog(`Elite validation ${data.paused ? 'paused' : 'resumed'}`, 'normal');
+                }
+            } catch (error) {
+                console.error('Failed to toggle elite pause:', error);
+            } finally {
+                elitePausePending = false;
             }
         }
 
