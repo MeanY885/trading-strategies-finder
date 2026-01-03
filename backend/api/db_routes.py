@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from logging_config import log
 from strategy_database import get_strategy_db
 from pinescript_generator import PineScriptGenerator
+from services.cache import stats_cache, CacheKeys, invalidate_strategy_caches
 
 router = APIRouter(prefix="/api/db", tags=["database"])
 
@@ -44,8 +45,16 @@ def get_database_stats():
         raise HTTPException(status_code=503, detail="Database not available")
 
     try:
+        # Check cache first
+        cached = stats_cache.get(CacheKeys.DB_STATS)
+        if cached is not None:
+            return cached
+
+        # Cache miss - compute stats
         db = get_strategy_db()
-        return db.get_stats()
+        result = db.get_stats()
+        stats_cache.set(CacheKeys.DB_STATS, result)
+        return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -57,8 +66,16 @@ def get_filter_options():
         raise HTTPException(status_code=503, detail="Database not available")
 
     try:
+        # Check cache first
+        cached = stats_cache.get(CacheKeys.FILTER_OPTIONS)
+        if cached is not None:
+            return cached
+
+        # Cache miss - compute filter options
         db = get_strategy_db()
-        return db.get_filter_options()
+        result = db.get_filter_options()
+        stats_cache.set(CacheKeys.FILTER_OPTIONS, result)
+        return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -353,6 +370,8 @@ def delete_strategy(strategy_id: int):
     try:
         db = get_strategy_db()
         if db.delete_strategy(strategy_id):
+            # Invalidate caches since strategy data has changed
+            invalidate_strategy_caches()
             return {"message": f"Strategy {strategy_id} deleted"}
         raise HTTPException(status_code=404, detail="Strategy not found")
     except HTTPException:

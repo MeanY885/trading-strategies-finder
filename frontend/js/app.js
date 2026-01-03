@@ -10,6 +10,8 @@
         let historyGroupsCache = {};  // Cache groups for click handler
         let historyStrategiesRaw = [];  // Source of truth - unfiltered data from server
         let historyInitialized = false;
+        let historyVirtualTable = null;  // VirtualTable instance for history table
+        let historySortedGroups = [];    // Cache sorted groups for virtual rendering
         let validationInitialized = false;
         let eliteInitialized = false;
 
@@ -24,6 +26,8 @@
             status: '',
             direction: ''
         };
+        let eliteVirtualTable = null;  // VirtualTable instance for elite strategies
+        let eliteSortedGroups = [];    // Cache sorted groups for virtual rendering
         let autonomousInitialized = false;
         let autonomousPollingInterval = null;
 
@@ -74,6 +78,269 @@
         let eliteTogglePending = false; // Prevent double-clicks on elite toggle
         let elitePausePending = false; // Prevent double-clicks on elite pause
         let autonomousPausePending = false; // Prevent double-clicks on autonomous pause
+
+        // =============================================================================
+        // VIRTUAL TABLE CLASS - Performance optimization for large datasets
+        // Only renders visible rows for tables with 500-1000+ rows
+        // =============================================================================
+
+        /**
+         * VirtualTable - Efficient virtual scrolling for large tables
+         * Only renders visible rows to improve performance with large datasets
+         */
+        class VirtualTable {
+            /**
+             * Create a VirtualTable instance
+             * @param {string} containerSelector - CSS selector for the scrollable container
+             * @param {Object} options - Configuration options
+             * @param {number} options.rowHeight - Height of each row in pixels (default: 48)
+             * @param {number} options.bufferSize - Extra rows to render above/below visible area (default: 20)
+             */
+            constructor(containerSelector, options = {}) {
+                this.container = document.querySelector(containerSelector);
+                this.rowHeight = options.rowHeight || 48;
+                this.bufferSize = options.bufferSize || 20;
+                this.data = [];
+                this.filteredData = [];
+                this.renderRowFn = null;
+                this.scrollTop = 0;
+                this.scrollFrame = null; // RAF handle for scroll debouncing
+                this.initialized = false;
+
+                if (this.container) {
+                    this.setupStructure();
+                    this.setupScroll();
+                }
+            }
+
+            /**
+             * Set up the virtual scroll DOM structure
+             * Creates spacer and content containers inside the main container
+             */
+            setupStructure() {
+                // Store original content container reference or create structure
+                this.container.style.position = 'relative';
+                this.container.style.overflowY = 'auto';
+
+                // Create spacer div for maintaining scroll height
+                this.spacer = document.createElement('div');
+                this.spacer.className = 'virtual-scroll-spacer';
+                this.spacer.style.cssText = 'height: 0px; pointer-events: none;';
+
+                // Create content container for visible rows
+                this.content = document.createElement('div');
+                this.content.className = 'virtual-scroll-content';
+                this.content.style.cssText = 'position: absolute; top: 0; left: 0; right: 0;';
+
+                // Clear container and add virtual scroll elements
+                this.container.innerHTML = '';
+                this.container.appendChild(this.spacer);
+                this.container.appendChild(this.content);
+
+                this.initialized = true;
+            }
+
+            /**
+             * Set up scroll event listener with RAF debouncing
+             * Prevents excessive render calls during rapid scrolling
+             */
+            setupScroll() {
+                if (!this.container) return;
+
+                this.container.addEventListener('scroll', () => {
+                    // Cancel any pending animation frame
+                    if (this.scrollFrame) {
+                        cancelAnimationFrame(this.scrollFrame);
+                    }
+
+                    // Schedule render on next animation frame
+                    this.scrollFrame = requestAnimationFrame(() => {
+                        this.scrollTop = this.container.scrollTop;
+                        this.render();
+                        this.scrollFrame = null;
+                    });
+                }, { passive: true });
+            }
+
+            /**
+             * Set the full dataset for the table
+             * @param {Array} items - Array of data items to display
+             */
+            setData(items) {
+                this.data = items || [];
+                this.filteredData = [...this.data];
+                this.render();
+            }
+
+            /**
+             * Set the row rendering function
+             * @param {Function} fn - Function that takes (item, index) and returns HTML string
+             */
+            setRenderRow(fn) {
+                this.renderRowFn = fn;
+            }
+
+            /**
+             * Calculate the range of visible rows based on scroll position
+             * @returns {Object} Object with start and end indices
+             */
+            getVisibleRange() {
+                if (!this.container) {
+                    return { start: 0, end: 0 };
+                }
+
+                const containerHeight = this.container.clientHeight;
+                const totalRows = this.filteredData.length;
+
+                // Calculate first visible row
+                const firstVisible = Math.floor(this.scrollTop / this.rowHeight);
+
+                // Calculate number of rows that fit in viewport
+                const visibleCount = Math.ceil(containerHeight / this.rowHeight);
+
+                // Add buffer above and below
+                const start = Math.max(0, firstVisible - this.bufferSize);
+                const end = Math.min(totalRows, firstVisible + visibleCount + this.bufferSize);
+
+                return { start, end };
+            }
+
+            /**
+             * Render visible rows to the DOM
+             * Uses DocumentFragment for batch DOM insertion
+             */
+            render() {
+                if (!this.initialized || !this.renderRowFn || !this.content) {
+                    return;
+                }
+
+                const { start, end } = this.getVisibleRange();
+                const totalHeight = this.filteredData.length * this.rowHeight;
+
+                // Update spacer height to maintain scroll position
+                this.spacer.style.height = `${totalHeight}px`;
+
+                // Create fragment for batch DOM insertion
+                const fragment = document.createDocumentFragment();
+
+                // Render only visible rows
+                for (let i = start; i < end; i++) {
+                    const item = this.filteredData[i];
+                    if (!item) continue;
+
+                    // Create row container
+                    const rowWrapper = document.createElement('div');
+                    rowWrapper.className = 'virtual-row';
+                    rowWrapper.style.cssText = `
+                        position: absolute;
+                        width: 100%;
+                        height: ${this.rowHeight}px;
+                        transform: translateY(${i * this.rowHeight}px);
+                    `;
+                    rowWrapper.dataset.index = i;
+
+                    // Get row HTML from render function
+                    const rowHtml = this.renderRowFn(item, i);
+                    rowWrapper.innerHTML = rowHtml;
+
+                    fragment.appendChild(rowWrapper);
+                }
+
+                // Clear and update content
+                this.content.innerHTML = '';
+                this.content.appendChild(fragment);
+            }
+
+            /**
+             * Apply a filter function to the data
+             * @param {Function} filterFn - Function that takes an item and returns boolean
+             */
+            applyFilter(filterFn) {
+                if (typeof filterFn !== 'function') {
+                    this.filteredData = [...this.data];
+                } else {
+                    this.filteredData = this.data.filter(filterFn);
+                }
+                // Reset scroll position when filtering
+                if (this.container) {
+                    this.container.scrollTop = 0;
+                    this.scrollTop = 0;
+                }
+                this.render();
+            }
+
+            /**
+             * Apply a sort comparator to the filtered data
+             * @param {Function} compareFn - Standard Array.sort() comparator function
+             */
+            applySort(compareFn) {
+                if (typeof compareFn === 'function') {
+                    this.filteredData.sort(compareFn);
+                }
+                this.render();
+            }
+
+            /**
+             * Force a re-render of the visible rows
+             */
+            refresh() {
+                this.render();
+            }
+
+            /**
+             * Scroll to show a specific item by index
+             * @param {number} index - Index in filteredData to scroll to
+             */
+            scrollToIndex(index) {
+                if (!this.container || index < 0 || index >= this.filteredData.length) {
+                    return;
+                }
+
+                const targetScrollTop = index * this.rowHeight;
+                this.container.scrollTop = targetScrollTop;
+                this.scrollTop = targetScrollTop;
+                this.render();
+            }
+
+            /**
+             * Get the current filtered data
+             * @returns {Array} The filtered dataset
+             */
+            getFilteredData() {
+                return this.filteredData;
+            }
+
+            /**
+             * Get the count of filtered items
+             * @returns {number} Number of items after filtering
+             */
+            getFilteredCount() {
+                return this.filteredData.length;
+            }
+
+            /**
+             * Get the total count of items (before filtering)
+             * @returns {number} Total number of items
+             */
+            getTotalCount() {
+                return this.data.length;
+            }
+
+            /**
+             * Destroy the virtual table and clean up
+             */
+            destroy() {
+                if (this.scrollFrame) {
+                    cancelAnimationFrame(this.scrollFrame);
+                }
+                if (this.container) {
+                    this.container.innerHTML = '';
+                }
+                this.data = [];
+                this.filteredData = [];
+                this.initialized = false;
+            }
+        }
 
         // =============================================================================
         // HELPER FUNCTIONS
@@ -1571,16 +1838,19 @@
 
             const empty = document.getElementById('history-empty');
             const table = document.getElementById('history-table');
+            const virtualContainer = document.getElementById('history-virtual-container');
             const loading = document.getElementById('history-loading');
 
             if (historyStrategies.length > 0) {
                 if (loading) loading.style.display = 'none';
                 if (empty) empty.style.display = 'none';
                 if (table) table.style.display = 'table';
+                if (virtualContainer) virtualContainer.style.display = 'block';
                 renderHistoryTable();
             } else {
                 if (loading) loading.style.display = 'none';
                 if (table) table.style.display = 'none';
+                if (virtualContainer) virtualContainer.style.display = 'none';
                 if (empty) empty.style.display = 'block';
             }
         }
@@ -1615,6 +1885,9 @@
                 // Only mark initialized AFTER successful load
                 historyInitialized = true;
 
+                // Initialize virtual scrolling for history table
+                initHistoryVirtualScroll();
+
                 // Set up event delegation before rendering
                 setupHistoryTableDelegation();
 
@@ -1629,12 +1902,56 @@
             }
         }
 
+        // History Virtual Scroll State
+        const historyVirtualState = {
+            rowHeight: 48,        // Approximate height of each row in pixels
+            bufferSize: 15,       // Extra rows to render above/below viewport
+            scrollTop: 0,
+            scrollFrame: null,
+            container: null,
+            tbody: null,
+            initialized: false
+        };
+
+        // Initialize virtual scroll for history table
+        function initHistoryVirtualScroll() {
+            if (historyVirtualState.initialized) return;
+
+            const container = document.getElementById('history-virtual-container');
+            const tbody = document.getElementById('history-tbody');
+
+            if (!container || !tbody) {
+                console.warn('[History] Virtual scroll container not found');
+                return;
+            }
+
+            historyVirtualState.container = container;
+            historyVirtualState.tbody = tbody;
+            historyVirtualState.initialized = true;
+
+            // Set up scroll event listener with RAF debouncing
+            container.addEventListener('scroll', () => {
+                if (historyVirtualState.scrollFrame) {
+                    cancelAnimationFrame(historyVirtualState.scrollFrame);
+                }
+
+                historyVirtualState.scrollFrame = requestAnimationFrame(() => {
+                    historyVirtualState.scrollTop = container.scrollTop;
+                    renderHistoryVirtualRows();
+                    historyVirtualState.scrollFrame = null;
+                });
+            }, { passive: true });
+
+            console.log('[History] Virtual scroll initialized');
+        }
+
         // Load History Strategies
         async function loadHistoryStrategies() {
             const tbody = document.getElementById('history-tbody');
             const loading = document.getElementById('history-loading');
             const empty = document.getElementById('history-empty');
             const table = document.getElementById('history-table');
+            const virtualContainer = document.getElementById('history-virtual-container');
 
             // Null safety for DOM elements
             if (!tbody || !loading || !empty || !table) {
@@ -1646,6 +1963,7 @@
             loading.style.display = 'block';
             empty.style.display = 'none';
             table.style.display = 'none';
+            if (virtualContainer) virtualContainer.style.display = 'none';
 
             try {
                 // Build query parameters - fetch more to allow client-side filtering
@@ -1695,6 +2013,7 @@
                 if (historyStrategies.length > 0) {
                     loading.style.display = 'none';
                     table.style.display = 'table';
+                    if (virtualContainer) virtualContainer.style.display = 'block';
                     renderHistoryTable();
                 } else {
                     loading.style.display = 'none';
@@ -1752,12 +2071,14 @@
         }
 
         function renderHistoryTable() {
-            const tbody = document.getElementById('history-tbody');
+            const tbody = historyVirtualState.tbody || document.getElementById('history-tbody');
+            const container = historyVirtualState.container || document.getElementById('history-virtual-container');
+
             if (!tbody) {
                 console.warn('[History] tbody not found - DOM not ready');
                 return;
             }
-            tbody.innerHTML = '';
+
             // Reset expanded state since DOM is being rebuilt
             currentExpandedHistoryRow = null;
             currentExpandedHistoryId = null;
@@ -1775,8 +2096,8 @@
                 });
             });
 
-            // Convert to array and sort groups by the selected column
-            const sortedGroups = Object.values(groups).sort((a, b) => {
+            // Convert to array and sort groups by the selected column - store in global for virtual scroll
+            historySortedGroups = Object.values(groups).sort((a, b) => {
                 let aVal, bVal;
 
                 // Special handling for period - calculate days from date range
@@ -1807,19 +2128,64 @@
                 return historySortOrder === 'asc' ? aVal - bVal : bVal - aVal;
             });
 
-            // Use DocumentFragment for batch DOM insert (single reflow instead of N)
+            // Reset scroll position and render virtual rows
+            if (container) {
+                container.scrollTop = 0;
+                historyVirtualState.scrollTop = 0;
+            }
+
+            renderHistoryVirtualRows();
+
+            // Update sort indicators
+            updateSortIndicators();
+        }
+
+        // Render only visible rows for virtual scrolling
+        function renderHistoryVirtualRows() {
+            const tbody = historyVirtualState.tbody || document.getElementById('history-tbody');
+            const container = historyVirtualState.container || document.getElementById('history-virtual-container');
+
+            if (!tbody || !historySortedGroups.length) {
+                if (tbody) tbody.innerHTML = '';
+                return;
+            }
+
+            const { rowHeight, bufferSize, scrollTop } = historyVirtualState;
+            const containerHeight = container ? container.clientHeight : 600;
+            const totalGroups = historySortedGroups.length;
+
+            // Calculate visible range
+            const firstVisible = Math.floor(scrollTop / rowHeight);
+            const visibleCount = Math.ceil(containerHeight / rowHeight);
+            const start = Math.max(0, firstVisible - bufferSize);
+            const end = Math.min(totalGroups, firstVisible + visibleCount + bufferSize);
+
+            // Create fragment for visible rows
             const fragment = document.createDocumentFragment();
-            let rowIndex = 0;
-            sortedGroups.forEach(group => {
+
+            // Add top spacer row to maintain scroll position
+            if (start > 0) {
+                const spacerTop = document.createElement('tr');
+                spacerTop.className = 'virtual-spacer-top';
+                spacerTop.innerHTML = `<td colspan="15" style="height: ${start * rowHeight}px; padding: 0; border: none;"></td>`;
+                fragment.appendChild(spacerTop);
+            }
+
+            // Render visible rows
+            for (let i = start; i < end; i++) {
+                const group = historySortedGroups[i];
+                if (!group) continue;
+
                 const bestStrategy = group[0]; // Lowest SL
                 const hasVariants = group.length > 1;
-                rowIndex++;
+                const rowIndex = i + 1; // 1-based index for display
 
                 const row = document.createElement('tr');
                 row.className = 'strategy-row';
                 row.dataset.strategyId = bestStrategy.id;
                 row.dataset.groupKey = `${bestStrategy.strategy_name}|${bestStrategy.symbol}|${bestStrategy.timeframe}`;
                 row.dataset.hasVariants = hasVariants ? 'true' : 'false';
+                row.dataset.groupIndex = i; // Store index for variant lookup
                 row.style.cursor = 'pointer';
 
                 // Win rate color class
@@ -1849,9 +2215,13 @@
                 // Show variant count badge if there are variants
                 const variantBadge = hasVariants ? `<span class="variant-badge" style="background: var(--primary); color: white; padding: 0.1rem 0.4rem; border-radius: 10px; font-size: 0.7rem; margin-left: 0.3rem;">${group.length}</span>` : '';
 
+                // Check if this row is currently expanded
+                const isExpanded = currentExpandedHistoryId === bestStrategy.id;
+                const expandIcon = hasVariants ? (isExpanded ? '▼' : '▶') : '•';
+
                 const periodLabel = calculatePeriodLabel(bestStrategy.data_start, bestStrategy.data_end);
                 row.innerHTML = `
-                    <td><span class="expand-icon">${hasVariants ? '▶' : '•'}</span> ${rowIndex}</td>
+                    <td><span class="expand-icon">${expandIcon}</span> ${rowIndex}</td>
                     <td title="${bestStrategy.strategy_name}">${truncateText(bestStrategy.strategy_name, 18)}${variantBadge}</td>
                     <td><span class="symbol-badge">${bestStrategy.symbol || '-'}</span></td>
                     <td><span class="period-badge">${periodLabel}</span></td>
@@ -1878,28 +2248,93 @@
                     </td>
                 `;
 
-                // Event handling is done via delegation in setupHistoryTableDelegation()
+                if (isExpanded) {
+                    row.classList.add('expanded');
+                }
+
                 fragment.appendChild(row);
 
-                // Create variants container row (hidden by default)
+                // If this row has variants and is expanded, show the variants row
                 if (hasVariants) {
                     const variantsRow = document.createElement('tr');
                     variantsRow.className = 'variants-row';
                     variantsRow.id = `variants-row-${bestStrategy.id}`;
-                    variantsRow.style.display = 'none';
+                    variantsRow.style.display = isExpanded ? 'table-row' : 'none';
                     variantsRow.innerHTML = `<td colspan="15" class="variants-cell" style="padding: 0; background: var(--bg-secondary);"></td>`;
+
+                    // If expanded, populate the variants content
+                    if (isExpanded) {
+                        const variantsCell = variantsRow.querySelector('.variants-cell');
+                        variantsCell.innerHTML = buildVariantsHtml(group);
+                    }
+
                     fragment.appendChild(variantsRow);
                 }
-            });
+            }
 
-            // Single DOM operation: append all rows at once
+            // Add bottom spacer row to maintain scroll height
+            const bottomSpacerHeight = (totalGroups - end) * rowHeight;
+            if (bottomSpacerHeight > 0) {
+                const spacerBottom = document.createElement('tr');
+                spacerBottom.className = 'virtual-spacer-bottom';
+                spacerBottom.innerHTML = `<td colspan="15" style="height: ${bottomSpacerHeight}px; padding: 0; border: none;"></td>`;
+                fragment.appendChild(spacerBottom);
+            }
+
+            // Clear and update tbody
+            tbody.innerHTML = '';
             tbody.appendChild(fragment);
-
-            // Update sort indicators
-            updateSortIndicators();
         }
 
-        // Toggle variants dropdown
+        // Build HTML for variants table (extracted for reuse)
+        function buildVariantsHtml(group) {
+            let variantsHtml = `<div style="padding: 0.5rem 1rem 0.5rem 2rem;">
+                <table style="width: 100%; font-size: 0.85rem; border-collapse: collapse;">
+                    <thead>
+                        <tr style="background: var(--bg-card);">
+                            <th style="padding: 0.3rem; text-align: left; color: var(--text-muted);">TP%</th>
+                            <th style="padding: 0.3rem; text-align: left; color: var(--text-muted);">SL%</th>
+                            <th style="padding: 0.3rem; text-align: left; color: var(--text-muted);">Score</th>
+                            <th style="padding: 0.3rem; text-align: left; color: var(--text-muted);">Win Rate</th>
+                            <th style="padding: 0.3rem; text-align: left; color: var(--text-muted);">PF</th>
+                            <th style="padding: 0.3rem; text-align: left; color: var(--text-muted);">PnL</th>
+                            <th style="padding: 0.3rem; text-align: center; color: var(--text-muted);">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>`;
+
+            group.forEach((variant, idx) => {
+                const tp = variant.tp_percent || variant.params?.tp_percent || '-';
+                const sl = variant.sl_percent || variant.params?.sl_percent || '-';
+                const pnlClass = variant.total_pnl >= 0 ? 'pnl-positive' : 'pnl-negative';
+                const pnlPrefix = variant.total_pnl >= 0 ? '+' : '';
+                const isBest = idx === 0;
+
+                variantsHtml += `
+                    <tr style="border-bottom: 1px solid var(--border-subtle); ${isBest ? 'background: rgba(34, 197, 94, 0.1);' : ''}">
+                        <td style="padding: 0.4rem; color: var(--success);">${typeof tp === 'number' ? formatNumber(tp, 1) : tp}${isBest ? ' <span style="color: var(--success); font-size: 0.7rem;">★ Best</span>' : ''}</td>
+                        <td style="padding: 0.4rem; color: var(--danger);">${typeof sl === 'number' ? formatNumber(sl, 1) : sl}</td>
+                        <td style="padding: 0.4rem;">${formatNumber(variant.composite_score, 1)}</td>
+                        <td style="padding: 0.4rem; color: ${variant.win_rate >= 50 ? 'var(--success)' : 'var(--text-primary)'};">${formatNumber(variant.win_rate, 1)}%</td>
+                        <td style="padding: 0.4rem;">${formatNumber(variant.profit_factor, 2)}</td>
+                        <td style="padding: 0.4rem;" class="${pnlClass}">${pnlPrefix}${formatNumber(variant.total_pnl, 2)}</td>
+                        <td style="padding: 0.4rem; text-align: center;">
+                            <button class="action-btn chart-btn" onclick="event.stopPropagation(); openTVChart('${variant.symbol}', ${variant.timeframe}, ${variant.id})" title="View Chart">📈</button>
+                            <button class="action-btn" onclick="event.stopPropagation(); copyPineScript(${variant.id})" title="Copy Pine Script">📋</button>
+                            <button class="action-btn" onclick="event.stopPropagation(); downloadPineScript(${variant.id}, '${variant.strategy_name}')" title="Download">📜</button>
+                            <button class="action-btn" onclick="event.stopPropagation(); exportTradesCSV(${variant.id}, '${variant.strategy_name}')" title="Export Trades CSV">📊</button>
+                            <button class="action-btn validate" onclick="event.stopPropagation(); validateFromHistory(${variant.id})" title="Validate">🔬</button>
+                            <button class="action-btn debug" onclick="event.stopPropagation(); openDebugModal(${variant.id})" title="Debug vs TradingView">🐛</button>
+                            <button class="action-btn danger" onclick="event.stopPropagation(); deleteStrategy(${variant.id}, '${variant.strategy_name}')" title="Delete">🗑️</button>
+                        </td>
+                    </tr>`;
+            });
+
+            variantsHtml += `</tbody></table></div>`;
+            return variantsHtml;
+        }
+
+        // Toggle variants dropdown (updated for virtual scrolling)
         function toggleVariants(rowElement, group) {
             const bestStrategy = group[0];
             const variantsRow = document.getElementById(`variants-row-${bestStrategy.id}`);
@@ -1907,77 +2342,39 @@
 
             if (!variantsRow) return;
 
-            // Close previously expanded row (O(1) instead of O(n²))
-            if (currentExpandedHistoryRow && currentExpandedHistoryRow !== rowElement) {
-                const prevVariantsRow = document.getElementById(`variants-row-${currentExpandedHistoryId}`);
-                if (prevVariantsRow) prevVariantsRow.style.display = 'none';
-                currentExpandedHistoryRow.classList.remove('expanded');
-                const prevIcon = currentExpandedHistoryRow.querySelector('.expand-icon');
-                if (prevIcon) prevIcon.textContent = '▶';
-            }
+            // Check if we're expanding or collapsing
+            const isCurrentlyExpanded = currentExpandedHistoryId === bestStrategy.id;
 
-            // Toggle current row
-            if (variantsRow.style.display === 'none') {
-                variantsRow.style.display = 'table-row';
-                rowElement.classList.add('expanded');
-                expandIcon.textContent = '▼';
-                // Track expanded state
-                currentExpandedHistoryRow = rowElement;
-                currentExpandedHistoryId = bestStrategy.id;
-
-                // Build variants table
-                const variantsCell = variantsRow.querySelector('.variants-cell');
-                let variantsHtml = `<div style="padding: 0.5rem 1rem 0.5rem 2rem;">
-                    <table style="width: 100%; font-size: 0.85rem; border-collapse: collapse;">
-                        <thead>
-                            <tr style="background: var(--bg-card);">
-                                <th style="padding: 0.3rem; text-align: left; color: var(--text-muted);">TP%</th>
-                                <th style="padding: 0.3rem; text-align: left; color: var(--text-muted);">SL%</th>
-                                <th style="padding: 0.3rem; text-align: left; color: var(--text-muted);">Score</th>
-                                <th style="padding: 0.3rem; text-align: left; color: var(--text-muted);">Win Rate</th>
-                                <th style="padding: 0.3rem; text-align: left; color: var(--text-muted);">PF</th>
-                                <th style="padding: 0.3rem; text-align: left; color: var(--text-muted);">PnL</th>
-                                <th style="padding: 0.3rem; text-align: center; color: var(--text-muted);">Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody>`;
-
-                group.forEach((variant, idx) => {
-                    const tp = variant.tp_percent || variant.params?.tp_percent || '-';
-                    const sl = variant.sl_percent || variant.params?.sl_percent || '-';
-                    const pnlClass = variant.total_pnl >= 0 ? 'pnl-positive' : 'pnl-negative';
-                    const pnlPrefix = variant.total_pnl >= 0 ? '+' : '';
-                    const isBest = idx === 0;
-
-                    variantsHtml += `
-                        <tr style="border-bottom: 1px solid var(--border-subtle); ${isBest ? 'background: rgba(34, 197, 94, 0.1);' : ''}">
-                            <td style="padding: 0.4rem; color: var(--success);">${typeof tp === 'number' ? formatNumber(tp, 1) : tp}${isBest ? ' <span style="color: var(--success); font-size: 0.7rem;">★ Best</span>' : ''}</td>
-                            <td style="padding: 0.4rem; color: var(--danger);">${typeof sl === 'number' ? formatNumber(sl, 1) : sl}</td>
-                            <td style="padding: 0.4rem;">${formatNumber(variant.composite_score, 1)}</td>
-                            <td style="padding: 0.4rem; color: ${variant.win_rate >= 50 ? 'var(--success)' : 'var(--text-primary)'};">${formatNumber(variant.win_rate, 1)}%</td>
-                            <td style="padding: 0.4rem;">${formatNumber(variant.profit_factor, 2)}</td>
-                            <td style="padding: 0.4rem;" class="${pnlClass}">${pnlPrefix}${formatNumber(variant.total_pnl, 2)}</td>
-                            <td style="padding: 0.4rem; text-align: center;">
-                                <button class="action-btn chart-btn" onclick="event.stopPropagation(); openTVChart('${variant.symbol}', ${variant.timeframe}, ${variant.id})" title="View Chart">📈</button>
-                                <button class="action-btn" onclick="event.stopPropagation(); copyPineScript(${variant.id})" title="Copy Pine Script">📋</button>
-                                <button class="action-btn" onclick="event.stopPropagation(); downloadPineScript(${variant.id}, '${variant.strategy_name}')" title="Download">📜</button>
-                                <button class="action-btn" onclick="event.stopPropagation(); exportTradesCSV(${variant.id}, '${variant.strategy_name}')" title="Export Trades CSV">📊</button>
-                                <button class="action-btn validate" onclick="event.stopPropagation(); validateFromHistory(${variant.id})" title="Validate">🔬</button>
-                                <button class="action-btn debug" onclick="event.stopPropagation(); openDebugModal(${variant.id})" title="Debug vs TradingView">🐛</button>
-                                <button class="action-btn danger" onclick="event.stopPropagation(); deleteStrategy(${variant.id}, '${variant.strategy_name}')" title="Delete">🗑️</button>
-                            </td>
-                        </tr>`;
-                });
-
-                variantsHtml += `</tbody></table></div>`;
-                variantsCell.innerHTML = variantsHtml;
-            } else {
+            if (isCurrentlyExpanded) {
+                // Collapse current row
                 variantsRow.style.display = 'none';
                 rowElement.classList.remove('expanded');
                 expandIcon.textContent = '▶';
                 // Clear expanded state
                 currentExpandedHistoryRow = null;
                 currentExpandedHistoryId = null;
+            } else {
+                // Close previously expanded row if any (in DOM, for rows currently visible)
+                if (currentExpandedHistoryRow && currentExpandedHistoryRow !== rowElement) {
+                    const prevVariantsRow = document.getElementById(`variants-row-${currentExpandedHistoryId}`);
+                    if (prevVariantsRow) prevVariantsRow.style.display = 'none';
+                    currentExpandedHistoryRow.classList.remove('expanded');
+                    const prevIcon = currentExpandedHistoryRow.querySelector('.expand-icon');
+                    if (prevIcon) prevIcon.textContent = '▶';
+                }
+
+                // Expand current row
+                variantsRow.style.display = 'table-row';
+                rowElement.classList.add('expanded');
+                expandIcon.textContent = '▼';
+
+                // Track expanded state (this persists across virtual scroll re-renders)
+                currentExpandedHistoryRow = rowElement;
+                currentExpandedHistoryId = bestStrategy.id;
+
+                // Build variants table using shared helper function
+                const variantsCell = variantsRow.querySelector('.variants-cell');
+                variantsCell.innerHTML = buildVariantsHtml(group);
             }
         }
 
@@ -4921,6 +5318,7 @@
         }
 
         // Set up event delegation for elite table (only once)
+        // Updated to work with virtual scrolling
         let eliteTableDelegationSetup = false;
         function setupEliteTableDelegation() {
             if (eliteTableDelegationSetup) return;
@@ -4939,29 +5337,19 @@
                 const hasVariants = row.dataset.hasVariants === 'true';
                 if (!hasVariants) return;
 
-                const groupIndex = parseInt(row.dataset.groupIndex, 10);
+                const groupKey = row.dataset.groupKey;
 
-                // Find the group from stored grouped data
-                if (eliteGroupedData && eliteGroupedData[groupIndex]) {
-                    const group = eliteGroupedData[groupIndex];
-                    // formatPnL helper matching the one used in renderEliteTable
-                    const formatPnL = (periodData) => {
-                        if (!periodData) return '<span style="color: var(--text-muted);">--</span>';
-                        if (periodData.status === 'limit_exceeded') return '<span style="color: var(--text-muted);">N/A</span>';
-                        if (periodData.status === 'no_trades') return '<span style="color: var(--text-muted);">0</span>';
-                        if (periodData.status === 'error') return '<span style="color: var(--text-muted);">err</span>';
-                        if (periodData.pnl === undefined) return '<span style="color: var(--text-muted);">--</span>';
-                        const pnl = periodData.pnl;
-                        const returnPct = periodData.return_pct !== undefined
-                            ? periodData.return_pct
-                            : Math.round((pnl / 1000) * 1000) / 10;
-                        const sign = pnl >= 0 ? '+' : '';
-                        const colorClass = pnl >= 0 ? 'success' : 'danger';
-                        const pctSign = returnPct >= 0 ? '+' : '';
-                        return `<span class="${colorClass}">£${sign}${pnl.toFixed(0)}<br><small style="opacity: 0.7;">(${pctSign}${returnPct.toFixed(1)}%)</small></span>`;
-                    };
-                    toggleEliteVariants(row, group, formatPnL, getCachedValidation);
+                // Toggle expanded state and re-render
+                if (expandedEliteGroupKey === groupKey) {
+                    // Collapse
+                    expandedEliteGroupKey = null;
+                } else {
+                    // Expand this group
+                    expandedEliteGroupKey = groupKey;
                 }
+
+                // Re-render to show/hide the expanded variants
+                renderEliteVirtualRows();
             });
         }
 
@@ -4971,8 +5359,262 @@
             setupEliteTableDelegation();
             // Initialize sort indicators
             updateEliteSortIndicators();
+            // Initialize virtual scrolling for elite table
+            initEliteVirtualScroll();
             await loadEliteData();
             // WebSocket provides real-time updates, no polling needed
+        }
+
+        // =============================================================================
+        // ELITE VIRTUAL SCROLL - Custom implementation for grouped table rows
+        // =============================================================================
+        const ELITE_ROW_HEIGHT = 60;  // Height of each collapsed group row in pixels
+        const ELITE_BUFFER_SIZE = 10; // Extra rows to render above/below visible area
+        let eliteScrollHandler = null;
+
+        function initEliteVirtualScroll() {
+            const container = document.getElementById('eliteVirtualContainer');
+            if (!container || eliteScrollHandler) return;
+
+            // Add scroll listener with RAF debouncing
+            let scrollFrame = null;
+            eliteScrollHandler = () => {
+                if (scrollFrame) cancelAnimationFrame(scrollFrame);
+                scrollFrame = requestAnimationFrame(() => {
+                    renderEliteVirtualRows();
+                    scrollFrame = null;
+                });
+            };
+            container.addEventListener('scroll', eliteScrollHandler, { passive: true });
+        }
+
+        function renderEliteVirtualRows() {
+            const container = document.getElementById('eliteVirtualContainer');
+            const tbody = document.getElementById('eliteTableBody');
+            if (!container || !tbody || !eliteSortedGroups || eliteSortedGroups.length === 0) return;
+
+            const scrollTop = container.scrollTop;
+            const containerHeight = container.clientHeight;
+            const totalGroups = eliteSortedGroups.length;
+
+            // Calculate visible range
+            const firstVisible = Math.floor(scrollTop / ELITE_ROW_HEIGHT);
+            const visibleCount = Math.ceil(containerHeight / ELITE_ROW_HEIGHT);
+            const start = Math.max(0, firstVisible - ELITE_BUFFER_SIZE);
+            const end = Math.min(totalGroups, firstVisible + visibleCount + ELITE_BUFFER_SIZE);
+
+            // Build HTML for visible rows
+            const fragment = document.createDocumentFragment();
+
+            // Add spacer row at top to maintain scroll position
+            if (start > 0) {
+                const topSpacer = document.createElement('tr');
+                topSpacer.className = 'elite-spacer';
+                topSpacer.innerHTML = `<td colspan="12" style="height: ${start * ELITE_ROW_HEIGHT}px; padding: 0; border: none;"></td>`;
+                fragment.appendChild(topSpacer);
+            }
+
+            // Render visible rows
+            for (let i = start; i < end; i++) {
+                const group = eliteSortedGroups[i];
+                if (!group || !group.strategies || group.strategies.length === 0) continue;
+
+                const rowHtml = renderEliteGroupRow(group, i);
+                const tempDiv = document.createElement('div');
+                tempDiv.innerHTML = rowHtml;
+                while (tempDiv.firstChild) {
+                    fragment.appendChild(tempDiv.firstChild);
+                }
+            }
+
+            // Add spacer row at bottom to maintain scroll height
+            const remainingRows = totalGroups - end;
+            if (remainingRows > 0) {
+                const bottomSpacer = document.createElement('tr');
+                bottomSpacer.className = 'elite-spacer';
+                bottomSpacer.innerHTML = `<td colspan="12" style="height: ${remainingRows * ELITE_ROW_HEIGHT}px; padding: 0; border: none;"></td>`;
+                fragment.appendChild(bottomSpacer);
+            }
+
+            // Replace tbody content
+            tbody.innerHTML = '';
+            tbody.appendChild(fragment);
+        }
+
+        // Render a single elite group row (used by virtual scroll)
+        function renderEliteGroupRow(groupData, groupIndex) {
+            const { strategies, rank } = groupData;
+            const best = strategies[0];
+            const hasVariants = strategies.length > 1;
+            const direction = best.params?.direction || best.trade_mode || 'long';
+            const dirClass = direction === 'short' ? 'danger' : 'success';
+            const score = (best.elite_score || 0).toFixed(2);
+
+            // Score color
+            let scoreClass = 'danger';
+            if (score >= 5) scoreClass = 'success';
+            else if (score >= 3) scoreClass = 'warning';
+
+            // Medal for top 3
+            let medal = '';
+            if (rank === 1) medal = '🥇';
+            else if (rank === 2) medal = '🥈';
+            else if (rank === 3) medal = '🥉';
+
+            // Get cached validation data
+            const periodData = getCachedValidation(best);
+
+            // TP/SL for best
+            const tpRaw = best.tp_percent || best.params?.tp_percent;
+            const slRaw = best.sl_percent || best.params?.sl_percent;
+            const tp = tpRaw !== undefined ? parseFloat(tpRaw).toFixed(1) : '--';
+            const sl = slRaw !== undefined ? parseFloat(slRaw).toFixed(1) : '--';
+
+            // Variant badge
+            const variantBadge = hasVariants ? `<span style="background: var(--primary); color: white; padding: 0.1rem 0.4rem; border-radius: 10px; font-size: 0.7rem; margin-left: 0.3rem;">${strategies.length}</span>` : '';
+
+            // Check if this group was expanded
+            const groupKey = `${best.strategy_name}|${best.symbol}|${best.timeframe}|${direction}`;
+            const isExpanded = expandedEliteGroupKey === groupKey;
+
+            let html = `
+                <tr class="elite-row${isExpanded ? ' expanded' : ''}"
+                    data-group-key="${groupKey}"
+                    data-group-index="${groupIndex}"
+                    data-has-variants="${hasVariants}"
+                    style="cursor: ${hasVariants ? 'pointer' : 'default'}; height: ${ELITE_ROW_HEIGHT}px;">
+                    <td><span class="expand-icon">${hasVariants ? (isExpanded ? '▼' : '▶') : '•'}</span> ${medal}#${rank}</td>
+                    <td class="${scoreClass}"><strong>${score}</strong></td>
+                    <td style="text-align: left;">
+                        <div style="display: flex; align-items: center; gap: 0.5rem;">
+                            <span class="status-badge ${dirClass}" style="font-size: 0.65rem; padding: 0.1rem 0.35rem;">
+                                ${direction.toUpperCase()}
+                            </span>
+                            <strong>${best.strategy_name}</strong>${variantBadge}
+                        </div>
+                        <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.2rem;">
+                            ${best.symbol || 'BTCUSDT'} · ${best.timeframe || '15m'} · TP ${tp}% / SL ${sl}%
+                        </div>
+                    </td>
+                    <td>${formatElitePnL(periodData['1 week'])}</td>
+                    <td>${formatElitePnL(periodData['2 weeks'])}</td>
+                    <td>${formatElitePnL(periodData['1 month'])}</td>
+                    <td>${formatElitePnL(periodData['3 months'])}</td>
+                    <td>${formatElitePnL(periodData['6 months'])}</td>
+                    <td>${formatElitePnL(periodData['9 months'])}</td>
+                    <td>${formatElitePnL(periodData['1 year'])}</td>
+                    <td>${formatElitePnL(periodData['2 years'])}</td>
+                    <td>
+                        <button class="btn btn-small" onclick="event.stopPropagation(); showPineScript(${best.id})" title="Pine Script">📋</button>
+                        <button class="btn btn-small" onclick="event.stopPropagation(); showExportPeriodModal(${best.id}, '${best.strategy_name.replace(/'/g, "\\'")}')" title="Export Trades CSV">📊</button>
+                        <button class="btn btn-small" onclick="event.stopPropagation(); validateFromHistory(${best.id})" title="Re-validate">🔬</button>
+                        <button class="btn btn-small" onclick="event.stopPropagation(); openDebugModal(${best.id})" title="Debug vs TradingView">🐛</button>
+                    </td>
+                </tr>`;
+
+            // Add variants row if expanded
+            if (hasVariants && isExpanded) {
+                html += renderEliteVariantsRow(strategies, best.id);
+            } else if (hasVariants) {
+                // Hidden placeholder for variants
+                html += `<tr class="elite-variants-row" id="elite-variants-${best.id}" style="display: none;"><td colspan="12" style="padding: 0; background: var(--bg-secondary);"></td></tr>`;
+            }
+
+            return html;
+        }
+
+        // Render the expanded variants row content
+        function renderEliteVariantsRow(strategies, bestId) {
+            let html = `<tr class="elite-variants-row" id="elite-variants-${bestId}" style="display: table-row;">
+                <td colspan="12" style="padding: 0; background: var(--bg-secondary);">
+                    <div style="padding: 0.5rem 1rem 0.5rem 2rem;">
+                        <table style="width: 100%; font-size: 0.85rem; border-collapse: collapse;">
+                            <thead>
+                                <tr style="background: var(--bg-card);">
+                                    <th style="padding: 0.3rem; text-align: left; color: var(--text-muted);">TP%</th>
+                                    <th style="padding: 0.3rem; text-align: left; color: var(--text-muted);">SL%</th>
+                                    <th style="padding: 0.3rem; text-align: left; color: var(--text-muted);">Score</th>
+                                    <th style="padding: 0.3rem; text-align: center; color: var(--text-muted);">1W</th>
+                                    <th style="padding: 0.3rem; text-align: center; color: var(--text-muted);">2W</th>
+                                    <th style="padding: 0.3rem; text-align: center; color: var(--text-muted);">1M</th>
+                                    <th style="padding: 0.3rem; text-align: center; color: var(--text-muted);">3M</th>
+                                    <th style="padding: 0.3rem; text-align: center; color: var(--text-muted);">6M</th>
+                                    <th style="padding: 0.3rem; text-align: center; color: var(--text-muted);">9M</th>
+                                    <th style="padding: 0.3rem; text-align: center; color: var(--text-muted);">1Y</th>
+                                    <th style="padding: 0.3rem; text-align: center; color: var(--text-muted);">2Y</th>
+                                    <th style="padding: 0.3rem; text-align: center; color: var(--text-muted);">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>`;
+
+            strategies.forEach((variant, idx) => {
+                const tpRaw = variant.tp_percent || variant.params?.tp_percent;
+                const slRaw = variant.sl_percent || variant.params?.sl_percent;
+                const tp = tpRaw !== undefined ? parseFloat(tpRaw).toFixed(1) : '--';
+                const sl = slRaw !== undefined ? parseFloat(slRaw).toFixed(1) : '--';
+                const score = (variant.elite_score || 0).toFixed(2);
+                const isBest = idx === 0;
+                const periodData = getCachedValidation(variant);
+
+                html += `
+                    <tr style="border-bottom: 1px solid var(--border-subtle); ${isBest ? 'background: rgba(34, 197, 94, 0.1);' : ''}">
+                        <td style="padding: 0.4rem; color: var(--success);">${tp}${isBest ? ' <span style="color: var(--success); font-size: 0.7rem;">★ Best</span>' : ''}</td>
+                        <td style="padding: 0.4rem; color: var(--danger);">${sl}</td>
+                        <td style="padding: 0.4rem;">${score}</td>
+                        <td style="padding: 0.4rem; text-align: center;">${formatElitePnL(periodData['1 week'])}</td>
+                        <td style="padding: 0.4rem; text-align: center;">${formatElitePnL(periodData['2 weeks'])}</td>
+                        <td style="padding: 0.4rem; text-align: center;">${formatElitePnL(periodData['1 month'])}</td>
+                        <td style="padding: 0.4rem; text-align: center;">${formatElitePnL(periodData['3 months'])}</td>
+                        <td style="padding: 0.4rem; text-align: center;">${formatElitePnL(periodData['6 months'])}</td>
+                        <td style="padding: 0.4rem; text-align: center;">${formatElitePnL(periodData['9 months'])}</td>
+                        <td style="padding: 0.4rem; text-align: center;">${formatElitePnL(periodData['1 year'])}</td>
+                        <td style="padding: 0.4rem; text-align: center;">${formatElitePnL(periodData['2 years'])}</td>
+                        <td style="padding: 0.4rem; text-align: center;">
+                            <button class="btn btn-small" onclick="event.stopPropagation(); showPineScript(${variant.id})" title="Pine Script">📋</button>
+                            <button class="btn btn-small" onclick="event.stopPropagation(); showExportPeriodModal(${variant.id}, '${variant.strategy_name.replace(/'/g, "\\'")}')" title="Export Trades CSV">📊</button>
+                            <button class="btn btn-small" onclick="event.stopPropagation(); validateFromHistory(${variant.id})" title="Re-validate">🔬</button>
+                            <button class="btn btn-small" onclick="event.stopPropagation(); openDebugModal(${variant.id})" title="Debug vs TradingView">🐛</button>
+                        </td>
+                    </tr>`;
+            });
+
+            html += `</tbody></table></div></td></tr>`;
+            return html;
+        }
+
+        // Helper function to format PnL for elite table (module-level for reuse)
+        function formatElitePnL(periodData) {
+            // Format the validated_at date compactly with time
+            function formatDate(timestamp) {
+                if (!timestamp) return '';
+                try {
+                    const date = new Date(timestamp);
+                    const day = date.getDate();
+                    const month = date.toLocaleString('en-GB', { month: 'short' });
+                    const time = date.toLocaleTimeString('en-GB', { hour: 'numeric', minute: '2-digit', hour12: true });
+                    return `${day} ${month} ${time}`;
+                } catch (e) {
+                    return '';
+                }
+            }
+
+            const dateStr = formatDate(periodData?.validated_at);
+            const dateHtml = dateStr ? `<br><small style="opacity: 0.4; font-size: 0.6rem;">${dateStr}</small>` : '';
+
+            if (!periodData) return '<span style="color: var(--text-muted);">--</span>';
+            if (periodData.status === 'limit_exceeded') return `<span style="color: var(--text-muted);">N/A${dateHtml}</span>`;
+            if (periodData.status === 'no_trades') return `<span style="color: var(--text-muted);">0${dateHtml}</span>`;
+            if (periodData.status === 'error') return `<span style="color: var(--text-muted);">err${dateHtml}</span>`;
+            if (periodData.pnl === undefined) return '<span style="color: var(--text-muted);">--</span>';
+
+            const pnl = periodData.pnl;
+            const returnPct = periodData.return_pct !== undefined
+                ? periodData.return_pct
+                : Math.round((pnl / 1000) * 1000) / 10;
+            const sign = pnl >= 0 ? '+' : '';
+            const colorClass = pnl >= 0 ? 'success' : 'danger';
+            const pctSign = returnPct >= 0 ? '+' : '';
+            return `<span class="${colorClass}">£${sign}${pnl.toFixed(0)}<br><small style="opacity: 0.7;">(${pctSign}${returnPct.toFixed(1)}%)</small>${dateHtml}</span>`;
         }
 
         // Track expanded elite group to preserve state on re-render
@@ -5017,13 +5659,18 @@
             const tbody = document.getElementById('eliteTableBody');
             const emptyMsg = document.getElementById('eliteEmpty');
             const table = document.getElementById('eliteTable');
+            const tableHeader = document.getElementById('eliteTableHeader');
+            const container = document.getElementById('eliteVirtualContainer');
 
             const validatedStrategies = eliteStrategies || [];
 
             if (validatedStrategies.length === 0) {
                 table.style.display = 'none';
+                if (tableHeader) tableHeader.style.display = 'none';
+                if (container) container.style.display = 'none';
                 emptyMsg.style.display = 'block';
                 eliteStrategiesData = [];
+                eliteSortedGroups = [];
                 return;
             }
 
@@ -5037,71 +5684,39 @@
             applyEliteSortAndFilter();
         }
 
-        // Render elite table with filtered data
+        // Render elite table with filtered data - NOW USING VIRTUAL SCROLLING
         function renderEliteTableFiltered(strategies) {
             const tbody = document.getElementById('eliteTableBody');
             const emptyMsg = document.getElementById('eliteEmpty');
             const table = document.getElementById('eliteTable');
+            const tableHeader = document.getElementById('eliteTableHeader');
+            const container = document.getElementById('eliteVirtualContainer');
 
             if (!strategies || strategies.length === 0) {
                 table.style.display = 'none';
+                if (tableHeader) tableHeader.style.display = 'none';
+                if (container) container.style.display = 'none';
                 emptyMsg.style.display = 'block';
                 emptyMsg.textContent = eliteStrategiesData.length > 0
                     ? 'No strategies match your filters.'
                     : 'No elite strategies found. Run validation to identify consistent strategies.';
+                eliteSortedGroups = [];
                 return;
             }
 
             table.style.display = 'table';
+            if (tableHeader) tableHeader.style.display = 'table';
+            if (container) container.style.display = 'block';
             emptyMsg.style.display = 'none';
-            tbody.innerHTML = '';
-            // Reset expanded state since DOM is being rebuilt
+
+            // Reset expanded row tracking since DOM is being rebuilt
             currentExpandedEliteRow = null;
             currentExpandedEliteId = null;
 
             // Clear validation cache on re-render to pick up new data
             eliteValidationCache.clear();
 
-            // Helper to format P&L cell with validated date
-            function formatPnL(periodData) {
-                // Format the validated_at date compactly with time
-                function formatDate(timestamp) {
-                    if (!timestamp) return '';
-                    try {
-                        const date = new Date(timestamp);
-                        const day = date.getDate();
-                        const month = date.toLocaleString('en-GB', { month: 'short' });
-                        const time = date.toLocaleTimeString('en-GB', { hour: 'numeric', minute: '2-digit', hour12: true });
-                        return `${day} ${month} ${time}`;
-                    } catch (e) {
-                        return '';
-                    }
-                }
-
-                const dateStr = formatDate(periodData?.validated_at);
-                const dateHtml = dateStr ? `<br><small style="opacity: 0.4; font-size: 0.6rem;">${dateStr}</small>` : '';
-
-                if (!periodData) return '<span style="color: var(--text-muted);">--</span>';
-                if (periodData.status === 'limit_exceeded') return `<span style="color: var(--text-muted);">N/A${dateHtml}</span>`;
-                if (periodData.status === 'no_trades') return `<span style="color: var(--text-muted);">0${dateHtml}</span>`;
-                if (periodData.status === 'error') return `<span style="color: var(--text-muted);">err${dateHtml}</span>`;
-                if (periodData.pnl === undefined) return '<span style="color: var(--text-muted);">--</span>';
-
-                const pnl = periodData.pnl;
-                // Use return_pct if available, otherwise calculate from PnL (£1000 capital)
-                const returnPct = periodData.return_pct !== undefined
-                    ? periodData.return_pct
-                    : Math.round((pnl / 1000) * 1000) / 10;  // Calculate from PnL, round to 1 decimal
-                const sign = pnl >= 0 ? '+' : '';
-                const colorClass = pnl >= 0 ? 'success' : 'danger';
-
-                // Always show both £ and %
-                const pctSign = returnPct >= 0 ? '+' : '';
-                return `<span class="${colorClass}">£${sign}${pnl.toFixed(0)}<br><small style="opacity: 0.7;">(${pctSign}${returnPct.toFixed(1)}%)</small>${dateHtml}</span>`;
-            }
-
             // Helper to get period PnL value for sorting
-            // PERFORMANCE FIX: Now uses validation cache instead of parsing JSON each time
             function getPeriodPnL(strategy, periodName) {
                 const periodData = getCachedValidation(strategy);
                 return periodData[periodName]?.pnl || 0;
@@ -5118,12 +5733,6 @@
                 '1y': '1 year',
                 '2y': '2 years'
             };
-
-            // Debug: log first strategy to see structure
-            if (strategies.length > 0) {
-                console.log('First strategy from API:', strategies[0]);
-                console.log('Strategy ID:', strategies[0].id);
-            }
 
             // Group strategies by name+symbol+timeframe+direction
             const groups = {};
@@ -5147,10 +5756,6 @@
 
                 switch (eliteSortBy) {
                     case 'rank':
-                        // Rank is determined by score, so same as score
-                        aVal = bestA.elite_score || 0;
-                        bVal = bestB.elite_score || 0;
-                        break;
                     case 'score':
                         aVal = bestA.elite_score || 0;
                         bVal = bestB.elite_score || 0;
@@ -5160,7 +5765,6 @@
                         bVal = bestB.strategy_name.toLowerCase();
                         break;
                     case 'status':
-                        // Status sorting no longer needed - sort by score instead
                         aVal = bestA.elite_score || 0;
                         bVal = bestB.elite_score || 0;
                         break;
@@ -5193,106 +5797,20 @@
                 return eliteSortOrder === 'asc' ? aVal - bVal : bVal - aVal;
             });
 
-            // Store grouped data for event delegation
+            // Convert to format expected by virtual scroll renderer
+            // Each item has: { strategies: [...], rank: N }
+            eliteSortedGroups = sortedGroups.map((group, index) => ({
+                strategies: group,
+                rank: index + 1
+            }));
+
+            // Also store for event delegation (legacy compatibility)
             eliteGroupedData = sortedGroups;
 
-            // Use DocumentFragment for batch DOM insert (single reflow instead of N)
-            const fragment = document.createDocumentFragment();
-            let rank = 0;
-            let groupIndex = 0;
-            sortedGroups.forEach(group => {
-                const best = group[0];
-                const hasVariants = group.length > 1;
-                rank++;
+            // Use virtual scrolling to render only visible rows
+            renderEliteVirtualRows();
 
-                const direction = best.params?.direction || best.trade_mode || 'long';
-                const dirClass = direction === 'short' ? 'danger' : 'success';
-                const score = (best.elite_score || 0).toFixed(2);
-
-                // Score color
-                let scoreClass = 'danger';
-                if (score >= 5) scoreClass = 'success';
-                else if (score >= 3) scoreClass = 'warning';
-
-                // Medal for top 3
-                let medal = '';
-                if (rank === 1) medal = '🥇';
-                else if (rank === 2) medal = '🥈';
-                else if (rank === 3) medal = '🥉';
-
-                // PERFORMANCE FIX: Use cached validation data instead of parsing JSON
-                const periodData = getCachedValidation(best);
-
-                // TP/SL for best (format to 1 decimal place)
-                const tpRaw = best.tp_percent || best.params?.tp_percent;
-                const slRaw = best.sl_percent || best.params?.sl_percent;
-                const tp = tpRaw !== undefined ? parseFloat(tpRaw).toFixed(1) : '--';
-                const sl = slRaw !== undefined ? parseFloat(slRaw).toFixed(1) : '--';
-
-                // Variant badge
-                const variantBadge = hasVariants ? `<span style="background: var(--primary); color: white; padding: 0.1rem 0.4rem; border-radius: 10px; font-size: 0.7rem; margin-left: 0.3rem;">${group.length}</span>` : '';
-
-                const row = document.createElement('tr');
-                row.className = 'elite-row';
-                row.dataset.groupKey = `${best.strategy_name}|${best.symbol}|${best.timeframe}|${direction}`;
-                row.dataset.groupIndex = groupIndex;
-                row.dataset.hasVariants = hasVariants ? 'true' : 'false';
-                row.style.cursor = hasVariants ? 'pointer' : 'default';
-                groupIndex++;
-
-                row.innerHTML = `
-                    <td><span class="expand-icon">${hasVariants ? '▶' : '•'}</span> ${medal}#${rank}</td>
-                    <td class="${scoreClass}"><strong>${score}</strong></td>
-                    <td style="text-align: left;">
-                        <div style="display: flex; align-items: center; gap: 0.5rem;">
-                            <span class="status-badge ${dirClass}" style="font-size: 0.65rem; padding: 0.1rem 0.35rem;">
-                                ${direction.toUpperCase()}
-                            </span>
-                            <strong>${best.strategy_name}</strong>${variantBadge}
-                        </div>
-                        <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.2rem;">
-                            ${best.symbol || 'BTCUSDT'} · ${best.timeframe || '15m'} · TP ${tp}% / SL ${sl}%
-                        </div>
-                    </td>
-                    <td>${formatPnL(periodData['1 week'])}</td>
-                    <td>${formatPnL(periodData['2 weeks'])}</td>
-                    <td>${formatPnL(periodData['1 month'])}</td>
-                    <td>${formatPnL(periodData['3 months'])}</td>
-                    <td>${formatPnL(periodData['6 months'])}</td>
-                    <td>${formatPnL(periodData['9 months'])}</td>
-                    <td>${formatPnL(periodData['1 year'])}</td>
-                    <td>${formatPnL(periodData['2 years'])}</td>
-                    <td>
-                        <button class="btn btn-small" onclick="event.stopPropagation(); showPineScript(${best.id})" title="Pine Script">📋</button>
-                        <button class="btn btn-small" onclick="event.stopPropagation(); showExportPeriodModal(${best.id}, '${best.strategy_name.replace(/'/g, "\\'")}')" title="Export Trades CSV">📊</button>
-                        <button class="btn btn-small" onclick="event.stopPropagation(); validateFromHistory(${best.id})" title="Re-validate">🔬</button>
-                        <button class="btn btn-small" onclick="event.stopPropagation(); openDebugModal(${best.id})" title="Debug vs TradingView">🐛</button>
-                    </td>
-                `;
-
-                // Event handling is done via delegation in setupEliteTableDelegation()
-                fragment.appendChild(row);
-
-                // Create variants container row (hidden by default)
-                if (hasVariants) {
-                    const variantsRow = document.createElement('tr');
-                    variantsRow.className = 'elite-variants-row';
-                    variantsRow.id = `elite-variants-${best.id}`;
-                    variantsRow.style.display = 'none';
-                    variantsRow.innerHTML = `<td colspan="14" style="padding: 0; background: var(--bg-secondary);"></td>`;
-                    fragment.appendChild(variantsRow);
-
-                    // Restore expanded state if this was the previously expanded group
-                    const groupKey = `${best.strategy_name}|${best.symbol}|${best.timeframe}|${direction}`;
-                    if (expandedEliteGroupKey === groupKey) {
-                        // Re-expand this group
-                        setTimeout(() => toggleEliteVariants(row, group, formatPnL, getCachedValidation), 0);
-                    }
-                }
-            });
-
-            // Single DOM operation: append all rows at once
-            tbody.appendChild(fragment);
+            console.log(`[Elite] Virtual scroll: ${eliteSortedGroups.length} groups, rendering visible rows only`);
         }
 
         // Toggle elite variants dropdown

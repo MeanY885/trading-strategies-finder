@@ -381,7 +381,7 @@
 
                 <!-- Results Table -->
                 <div class="table-container">
-                    <table class="history-table" id="history-table">
+                    <table class="history-table" id="history-table" style="table-layout: fixed; width: 100%;">
                         <thead>
                             <tr>
                                 <th class="sortable" data-sort="rank" onclick="sortHistoryTable('rank')">#</th>
@@ -401,10 +401,15 @@
                                 <th>Actions</th>
                             </tr>
                         </thead>
-                        <tbody id="history-tbody">
-                            <!-- Populated by JavaScript -->
-                        </tbody>
                     </table>
+                    <!-- Virtual scroll container for history table body -->
+                    <div id="history-virtual-container" style="height: 600px; overflow-y: auto; position: relative; border-top: none;">
+                        <table class="history-table" style="table-layout: fixed; width: 100%; margin-top: 0;">
+                            <tbody id="history-tbody">
+                                <!-- Populated by JavaScript via VirtualTable -->
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
 
                 <!-- Loading/Empty States -->
@@ -597,27 +602,33 @@
 
                 <!-- Elite Strategies Table -->
                 <div style="overflow-x: auto; margin-top: 1rem;">
-                    <table class="history-table elite-table" id="eliteTable">
+                    <!-- Table header (fixed, outside scroll container) -->
+                    <table class="history-table elite-table" id="eliteTableHeader" style="margin-bottom: 0;">
                         <thead>
                             <tr>
-                                <th class="sortable" data-sort="rank" onclick="sortEliteTable('rank')">#</th>
-                                <th class="sortable active desc" data-sort="score" onclick="sortEliteTable('score')">Score</th>
-                                <th class="sortable" data-sort="strategy" onclick="sortEliteTable('strategy')" style="text-align: left;">Strategy</th>
-                                <th class="sortable" data-sort="1w" onclick="sortEliteTable('1w')">1W</th>
-                                <th class="sortable" data-sort="2w" onclick="sortEliteTable('2w')">2W</th>
-                                <th class="sortable" data-sort="1m" onclick="sortEliteTable('1m')">1M</th>
-                                <th class="sortable" data-sort="3m" onclick="sortEliteTable('3m')">3M</th>
-                                <th class="sortable" data-sort="6m" onclick="sortEliteTable('6m')">6M</th>
-                                <th class="sortable" data-sort="9m" onclick="sortEliteTable('9m')">9M</th>
-                                <th class="sortable" data-sort="1y" onclick="sortEliteTable('1y')">1Y</th>
-                                <th class="sortable" data-sort="2y" onclick="sortEliteTable('2y')">2Y</th>
-                                <th>Actions</th>
+                                <th class="sortable" data-sort="rank" onclick="sortEliteTable('rank')" style="width: 60px;">#</th>
+                                <th class="sortable active desc" data-sort="score" onclick="sortEliteTable('score')" style="width: 70px;">Score</th>
+                                <th class="sortable" data-sort="strategy" onclick="sortEliteTable('strategy')" style="text-align: left; min-width: 250px;">Strategy</th>
+                                <th class="sortable" data-sort="1w" onclick="sortEliteTable('1w')" style="width: 80px;">1W</th>
+                                <th class="sortable" data-sort="2w" onclick="sortEliteTable('2w')" style="width: 80px;">2W</th>
+                                <th class="sortable" data-sort="1m" onclick="sortEliteTable('1m')" style="width: 80px;">1M</th>
+                                <th class="sortable" data-sort="3m" onclick="sortEliteTable('3m')" style="width: 80px;">3M</th>
+                                <th class="sortable" data-sort="6m" onclick="sortEliteTable('6m')" style="width: 80px;">6M</th>
+                                <th class="sortable" data-sort="9m" onclick="sortEliteTable('9m')" style="width: 80px;">9M</th>
+                                <th class="sortable" data-sort="1y" onclick="sortEliteTable('1y')" style="width: 80px;">1Y</th>
+                                <th class="sortable" data-sort="2y" onclick="sortEliteTable('2y')" style="width: 80px;">2Y</th>
+                                <th style="width: 160px;">Actions</th>
                             </tr>
                         </thead>
-                        <tbody id="eliteTableBody">
-                            <!-- Populated dynamically -->
-                        </tbody>
                     </table>
+                    <!-- Virtual scroll container for table body -->
+                    <div id="eliteVirtualContainer" style="height: 600px; overflow-y: auto; border: 1px solid var(--border); border-top: none;">
+                        <table class="history-table elite-table" id="eliteTable" style="margin-top: 0; border-top: none;">
+                            <tbody id="eliteTableBody">
+                                <!-- Populated dynamically by VirtualTable -->
+                            </tbody>
+                        </table>
+                    </div>
                     <div id="eliteEmpty" style="text-align: center; padding: 2rem; color: var(--text-secondary);">
                         No elite strategies found. Run validation to identify consistent strategies.
                     </div>
