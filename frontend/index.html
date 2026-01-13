@@ -603,21 +603,35 @@
                 <!-- Elite Strategies Table -->
                 <div style="margin-top: 1rem;">
                     <!-- Table header (fixed, outside scroll container) -->
-                    <table class="history-table elite-table" id="eliteTableHeader" style="margin-bottom: 0;">
+                    <table class="history-table elite-table" id="eliteTableHeader" style="table-layout: fixed; width: 100%; margin-bottom: 0;">
+                        <colgroup>
+                            <col style="width: 60px;">
+                            <col style="width: 70px;">
+                            <col>
+                            <col style="width: 80px;">
+                            <col style="width: 80px;">
+                            <col style="width: 80px;">
+                            <col style="width: 80px;">
+                            <col style="width: 80px;">
+                            <col style="width: 80px;">
+                            <col style="width: 80px;">
+                            <col style="width: 80px;">
+                            <col style="width: 160px;">
+                        </colgroup>
                         <thead>
                             <tr>
-                                <th class="sortable" data-sort="rank" onclick="sortEliteTable('rank')" style="width: 60px;">#</th>
-                                <th class="sortable active desc" data-sort="score" onclick="sortEliteTable('score')" style="width: 70px;">Score</th>
-                                <th class="sortable" data-sort="strategy" onclick="sortEliteTable('strategy')" style="text-align: left; min-width: 250px;">Strategy</th>
-                                <th class="sortable" data-sort="1w" onclick="sortEliteTable('1w')" style="width: 80px;">1W</th>
-                                <th class="sortable" data-sort="2w" onclick="sortEliteTable('2w')" style="width: 80px;">2W</th>
-                                <th class="sortable" data-sort="1m" onclick="sortEliteTable('1m')" style="width: 80px;">1M</th>
-                                <th class="sortable" data-sort="3m" onclick="sortEliteTable('3m')" style="width: 80px;">3M</th>
-                                <th class="sortable" data-sort="6m" onclick="sortEliteTable('6m')" style="width: 80px;">6M</th>
-                                <th class="sortable" data-sort="9m" onclick="sortEliteTable('9m')" style="width: 80px;">9M</th>
-                                <th class="sortable" data-sort="1y" onclick="sortEliteTable('1y')" style="width: 80px;">1Y</th>
-                                <th class="sortable" data-sort="2y" onclick="sortEliteTable('2y')" style="width: 80px;">2Y</th>
-                                <th style="width: 160px;">Actions</th>
+                                <th class="sortable" data-sort="rank" onclick="sortEliteTable('rank')">#</th>
+                                <th class="sortable active desc" data-sort="score" onclick="sortEliteTable('score')">Score</th>
+                                <th class="sortable" data-sort="strategy" onclick="sortEliteTable('strategy')" style="text-align: left;">Strategy</th>
+                                <th class="sortable" data-sort="1w" onclick="sortEliteTable('1w')">1W</th>
+                                <th class="sortable" data-sort="2w" onclick="sortEliteTable('2w')">2W</th>
+                                <th class="sortable" data-sort="1m" onclick="sortEliteTable('1m')">1M</th>
+                                <th class="sortable" data-sort="3m" onclick="sortEliteTable('3m')">3M</th>
+                                <th class="sortable" data-sort="6m" onclick="sortEliteTable('6m')">6M</th>
+                                <th class="sortable" data-sort="9m" onclick="sortEliteTable('9m')">9M</th>
+                                <th class="sortable" data-sort="1y" onclick="sortEliteTable('1y')">1Y</th>
+                                <th class="sortable" data-sort="2y" onclick="sortEliteTable('2y')">2Y</th>
+                                <th style="padding-right: 17px;">Actions</th>
                             </tr>
                         </thead>
                     </table>
@@ -627,7 +641,7 @@
                             <colgroup>
                                 <col style="width: 60px;">
                                 <col style="width: 70px;">
-                                <col style="min-width: 250px;">
+                                <col>
                                 <col style="width: 80px;">
                                 <col style="width: 80px;">
                                 <col style="width: 80px;">
